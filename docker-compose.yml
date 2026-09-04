@@ -1,0 +1,147 @@
+services:
+  api:
+    image: python:3.12-slim
+    command:
+      - python
+      - -c
+      - |
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        class HealthHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path != "/health":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"status":"ok"}')
+
+            def log_message(self, format, *args):
+                return
+
+        HTTPServer(("0.0.0.0", 8000), HealthHandler).serve_forever()
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      # Set REDIS_HOST, REDIS_PORT, REDIS_PASSWORD and REDIS_SSL in .env for a cloud Redis service.
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_SSL: ${REDIS_SSL:-false}
+      REDIS_QUEUE: video_jobs
+      # Set MINIO_ENDPOINT, MINIO_USE_SSL and the access credentials in .env for cloud object storage.
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
+      MINIO_BUCKET: ${MINIO_BUCKET:-videos}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
+      # Uncomment POSTGRES_DSN in .env to use a cloud PostgreSQL instance.
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://${POSTGRES_USER:-flickpond}:${POSTGRES_PASSWORD:-flickpond_dev_password}@postgres:5432/${POSTGRES_DB:-flickpond}}
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  worker:
+    image: python:3.12-slim
+    command:
+      - python
+      - -c
+      - |
+        import time
+        print("worker skeleton ready", flush=True)
+        while True:
+            time.sleep(3600)
+    environment:
+      # Keep these values identical to the API values so both services use the same backends.
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_SSL: ${REDIS_SSL:-false}
+      REDIS_QUEUE: video_jobs
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
+      MINIO_BUCKET: ${MINIO_BUCKET:-videos}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
+      # Keep this value identical to the API value when using a cloud PostgreSQL instance.
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://${POSTGRES_USER:-flickpond}:${POSTGRES_PASSWORD:-flickpond_dev_password}@postgres:5432/${POSTGRES_DB:-flickpond}}
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      # This is the local host port only; the application port is REDIS_PORT above.
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-flickpond}
+      POSTGRES_USER: ${POSTGRES_USER:-flickpond}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flickpond_dev_password}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2024-06-13T22-53-53Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  postgres-data:
+  minio-data:
