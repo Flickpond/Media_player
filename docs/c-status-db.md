@@ -6,11 +6,8 @@ From `/mnt/e/workspace/Media_player`:
 
 ```bash
 cp .env.example .env
-docker compose up -d postgres minio redis
-docker compose run --rm --service-ports \
-  -v "$PWD:/workspace" -w /workspace api \
-  sh -c "python -m pip install -e . && alembic upgrade head && \
-         uvicorn app.main:app --host 0.0.0.0 --port 8000"
+docker compose up --build -d
+docker compose ps
 ```
 
 The API is available at `http://127.0.0.1:8000`, and its OpenAPI UI is at `http://127.0.0.1:8000/docs`.
