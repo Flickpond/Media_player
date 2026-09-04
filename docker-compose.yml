@@ -33,8 +33,11 @@ services:
       REDIS_QUEUE: video_jobs
       # Set MINIO_ENDPOINT, MINIO_USE_SSL and the access credentials in .env for cloud object storage.
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      # Used only when signing URLs returned to a browser; it must be host-accessible.
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-127.0.0.1:9000}
       MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
       MINIO_BUCKET: ${MINIO_BUCKET:-videos}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
       # Uncomment POSTGRES_DSN in .env to use a cloud PostgreSQL instance.
@@ -73,6 +76,7 @@ services:
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
       MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
       MINIO_BUCKET: ${MINIO_BUCKET:-videos}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
       # Keep this value identical to the API value when using a cloud PostgreSQL instance.
