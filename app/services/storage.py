@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import BinaryIO
 
 from minio import Minio
 from starlette.concurrency import run_in_threadpool
@@ -54,6 +55,25 @@ class StorageService:
             local_path,
         )
 
+    async def upload_stream(
+        self,
+        object_key: str,
+        stream: BinaryIO,
+        *,
+        length: int,
+        content_type: str = "application/octet-stream",
+    ) -> None:
+        await self.ensure_bucket()
+
+        await run_in_threadpool(
+            self._client.put_object,
+            self._bucket,
+            object_key,
+            stream,
+            length,
+            content_type=content_type,
+        )
+
 
 @lru_cache
 def get_storage_service() -> StorageService:
@@ -70,23 +90,4 @@ def get_storage_service() -> StorageService:
     return StorageService(
         client,
         bucket=settings.minio_bucket,
-    )
-
-async def upload_stream(
-    self,
-    object_key: str,
-    stream,
-    *,
-    length: int,
-    content_type: str = "application/octet-stream",
-) -> None:
-    await self.ensure_bucket()
-
-    await run_in_threadpool(
-        self._client.put_object,
-        self._bucket,
-        object_key,
-        stream,
-        length,
-        content_type=content_type,
     )
