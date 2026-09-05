@@ -25,6 +25,21 @@ class Settings(BaseSettings):
     minio_use_ssl: bool = False
     output_url_expiry_seconds: int = 3600
 
+    redis_host: str = "127.0.0.1"
+    redis_port: int = 6379
+    redis_password: str = ""
+    redis_ssl: bool = False
+    redis_queue: str = "video_jobs"
+
+    worker_output_prefix: str = "outputs"
+    worker_job_timeout_seconds: int = 900
+
+    @property
+    def redis_url(self) -> str:
+        scheme = "rediss" if self.redis_ssl else "redis"
+        credentials = f":{self.redis_password}@" if self.redis_password else ""
+        return f"{scheme}://{credentials}{self.redis_host}:{self.redis_port}/0"
+
     @field_validator("postgres_dsn")
     @classmethod
     def use_asyncpg_driver(cls, value: str) -> str:
