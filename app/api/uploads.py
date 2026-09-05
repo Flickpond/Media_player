@@ -4,8 +4,10 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.database import get_session
+from app.queue import enqueue_job
 from app.repositories.jobs import create_job
 from app.services.storage import StorageService, get_storage_service
 
@@ -60,6 +62,12 @@ async def upload_video(
         filename=filename,
         source_key=source_key,
     )
+
+    # Enqueue last, and only after the row exists: a worker can pick the job up
+    # the instant this returns, and it reads source_key from that row. Redis is
+    # sub-millisecond but the client is blocking, so it goes to a thread like
+    # the storage calls above -- the upload must stay under 1s (N1).
+    await run_in_threadpool(enqueue_job, job_id)
 
     return {
         "job_id": str(job_id),
