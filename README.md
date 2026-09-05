@@ -21,6 +21,7 @@ The Sprint 1 source of truth is [`docs/sprint1-plan.md`](docs/sprint1-plan.md). 
 
 | Component | Responsibility | Default local address |
 | --- | --- | --- |
+| Frontend | Upload form, 2s status polling, playback | `http://localhost:3000` |
 | FastAPI | Upload and job-status HTTP API | `http://127.0.0.1:8000` |
 | PostgreSQL | Durable job metadata and processing state | `127.0.0.1:5432` |
 | Redis + RQ | Delivery of job IDs to workers | `127.0.0.1:6379` |
@@ -35,13 +36,18 @@ The queue coordinates work, PostgreSQL records state, and MinIO stores the video
 Media_player/
 |-- app/
 |   |-- api/jobs.py               # GET /jobs and GET /jobs/{id}
+|   |-- api/uploads.py            # POST /upload
 |   |-- models/job.py             # SQLAlchemy Job model and state names
 |   |-- repositories/jobs.py      # Shared DB functions for API and worker
 |   |-- schemas/job.py            # Public response schemas
 |   |-- services/output_urls.py   # Browser-accessible MinIO signed URLs
+|   |-- services/storage.py       # MinIO client used by the upload path
+|   |-- worker/                   # RQ worker, state machine, copy step
+|   |-- queue.py                  # Shared enqueue/consume seam
 |   |-- config.py                 # Environment configuration
 |   |-- database.py               # Async SQLAlchemy engine and sessions
 |   `-- main.py                   # FastAPI application and /health
+|-- frontend/                     # Static UI: upload, poll, play
 |-- migrations/
 |   `-- versions/                 # Alembic database revisions
 |-- tests/
@@ -53,7 +59,7 @@ Media_player/
 |   |-- proposal.md               # Full module proposal
 |   `-- sprint1-plan.md           # Current Sprint 1 plan
 |-- Dockerfile                    # Python 3.12 API image
-|-- docker-compose.yml            # API, worker, Redis, PostgreSQL, MinIO
+|-- docker-compose.yml            # Frontend, API, worker, Redis, PostgreSQL, MinIO
 |-- alembic.ini                   # Migration configuration
 |-- pyproject.toml                # Runtime and development dependencies
 `-- .env.example                  # Safe local configuration template
@@ -79,7 +85,7 @@ Create the local environment file. `.env` is ignored by Git.
 cp .env.example .env
 ```
 
-Build and start all five services:
+Build and start all six services:
 
 ```bash
 docker compose up --build -d
@@ -99,6 +105,21 @@ Expected responses from an empty installation:
 {"status":"ok"}
 []
 ```
+
+Then open the app:
+
+```text
+http://localhost:3000
+```
+
+Choose a video file and click Upload. The status line moves through
+`Queued...` -> `Processing...` -> `Processing complete.` and the player appears
+with the processed result.
+
+Use `localhost:3000` (or `127.0.0.1:3000`) exactly. The API's CORS allowlist
+only accepts those two origins, and opening `frontend/index.html` directly from
+disk will not work - the browser sends a `null` origin and every request is
+blocked.
 
 Interactive API documentation is available at <http://127.0.0.1:8000/docs>.
 
@@ -135,6 +156,22 @@ queued -> processing -> done
 ```
 
 Database constraints reject unknown states, a `done` row without `output_key`, and a `failed` row without a readable error. Indexes exist on `status` and `created_at`.
+
+## Upload API
+
+```http
+POST /upload
+```
+
+Multipart form with a single `file` field. Stores the object, inserts the job
+row, enqueues the job id, and returns immediately - it never waits for
+processing:
+
+```json
+{"job_id": "9b4595b8-9bd3-4a71-b99d-488c7c7f381c"}
+```
+
+Returns `202`, or `400 {"error": "file too large"}` above the 100MB limit.
 
 ## Status API
 
@@ -225,6 +262,15 @@ docker compose run --rm \
 ```
 
 Without `RUN_POSTGRES_TESTS=1`, tests that require a real PostgreSQL service are skipped. The configured coverage gate is 80%.
+
+The frontend has its own suite (Node 20+ required):
+
+```bash
+cd frontend
+npm install
+npm test                                    # unit tests, mocked fetch
+RUN_LIVE_TESTS=1 npx vitest run app.live.test.js   # against the running stack
+```
 
 ## Environment variables
 
