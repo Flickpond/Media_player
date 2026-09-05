@@ -213,7 +213,8 @@ limitation reads as an oversight.
   the encoding. Sprint 2 replaces one class behind the `ProcessingStep` protocol.
 - **No authentication, quotas, or format selection.** Out of module scope.
 - **Single-node only.** Scaling shown with Compose replicas on one host — a
-  documented, accepted constraint.
+  documented, accepted constraint. See [`scaling-notes.md`](scaling-notes.md)
+  for what serving 50 concurrent users would require.
 
 ---
 
