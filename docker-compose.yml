@@ -131,6 +131,26 @@ services:
       retries: 10
     restart: unless-stopped
 
+  frontend:
+    image: nginx:1.27-alpine
+    # Serves the static UI. Port 3000 is not arbitrary: the API's CORS
+    # allowlist in app/main.py is 127.0.0.1:3000 and localhost:3000, so
+    # changing this port means changing allow_origins too, or the browser
+    # will block every request the page makes.
+    ports:
+      - "3000:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost/index.html"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
 volumes:
   redis-data:
   postgres-data:
