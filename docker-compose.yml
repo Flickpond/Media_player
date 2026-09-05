@@ -39,15 +39,13 @@ services:
     restart: unless-stopped
 
   worker:
-    image: python:3.12-slim
-    command:
-      - python
-      - -c
-      - |
-        import time
-        print("worker skeleton ready", flush=True)
-        while True:
-            time.sleep(3600)
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flickpond-worker:dev
+    # No container_name and no host ports, so `docker compose up --scale worker=2`
+    # brings up interchangeable replicas sharing one queue (N2/N5).
+    command: ["python", "-m", "app.worker"]
     environment:
       # Keep these values identical to the API values so both services use the same backends.
       REDIS_HOST: ${REDIS_HOST:-redis}
@@ -70,11 +68,17 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      # The api container runs `alembic upgrade head` on start, so waiting for
+      # it to be healthy is how the worker knows the jobs table exists.
+      api:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
+      # The worker holds a Redis connection for its whole life; if it can still
+      # talk to Redis it can still take jobs.
+      test: ["CMD", "python", "-c", "from app.queue import get_redis_connection; get_redis_connection().ping()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   redis:
