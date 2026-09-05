@@ -1,0 +1,16 @@
+{
+  "name": "flickpond-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Tests for the Flickpond upload/poll frontend. No build step - app.js stays a plain script the browser loads directly.",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^2.1.9",
+    "jsdom": "^25.0.1",
+    "vitest": "^2.1.8"
+  }
+}
