@@ -219,3 +219,48 @@ def test_readable_error_truncates_runaway_messages():
 
     assert len(message) <= tasks.MAX_ERROR_LENGTH
     assert message.endswith("...")
+
+
+# --- the row moving underneath us -----------------------------------------
+#
+# These should not happen while the write-ownership rule holds. They are
+# covered because the failure mode if it ever breaks is a job stuck in
+# `processing` with nobody logging why.
+
+
+async def test_losing_the_row_before_recording_failure_is_logged_not_raised(
+    store, session_factory, monkeypatch, caplog: pytest.LogCaptureFixture
+):
+    job = store.add()
+
+    async def vanished(_session, job_id, *, error):
+        raise JobNotFoundError(str(job_id))
+
+    monkeypatch.setattr(tasks, "mark_failed", vanished)
+
+    with caplog.at_level(logging.ERROR, logger="app.worker"):
+        outcome = await process_job_async(
+            job.id,
+            session_factory=session_factory,
+            step=FakeStep(raises=ObjectStoreError("storage down")),
+        )
+
+    assert outcome is JobOutcome.SKIPPED
+    assert any("could not record failure" in r.getMessage() for r in caplog.records)
+
+
+async def test_losing_the_row_before_recording_completion_is_logged_not_raised(
+    store, session_factory, monkeypatch, caplog: pytest.LogCaptureFixture
+):
+    job = store.add()
+
+    async def stolen(_session, job_id, *, output_key):
+        raise InvalidJobTransitionError(f"job {job_id} is failed, not processing")
+
+    monkeypatch.setattr(tasks, "mark_done", stolen)
+
+    with caplog.at_level(logging.ERROR, logger="app.worker"):
+        outcome = await process_job_async(job.id, session_factory=session_factory, step=FakeStep())
+
+    assert outcome is JobOutcome.SKIPPED
+    assert any("could not record completion" in r.getMessage() for r in caplog.records)

@@ -86,6 +86,12 @@ def test_object_exists_surfaces_real_storage_faults():
         store.object_exists("uploads/demo.mp4")
 
 
+def test_object_exists_is_true_for_a_present_key():
+    store = MinioObjectStore(FakeMinio(), bucket="videos")
+
+    assert store.object_exists("uploads/demo.mp4") is True
+
+
 def test_copy_object_wraps_s3_failures():
     store = MinioObjectStore(FakeMinio(copy_error=s3_error("InternalError")), bucket="videos")
 

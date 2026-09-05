@@ -16,9 +16,12 @@ from app.queue import get_redis_connection
 
 
 def configure_logging(level: str) -> None:
+    # force=True because basicConfig is a no-op once the root logger has
+    # handlers, and RQ installs its own before we get here.
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)-8s %(name)s %(message)s",
+        force=True,
     )
 
 
