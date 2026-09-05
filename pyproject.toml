@@ -13,12 +13,15 @@ dependencies = [
   "fastapi>=0.115,<1",
   "minio>=7.2,<8",
   "pydantic-settings>=2.7,<3",
+  "redis>=5,<7",
+  "rq>=2,<3",
   "sqlalchemy[asyncio]>=2.0,<3",
   "uvicorn[standard]>=0.34,<1",
 ]
 
 [project.optional-dependencies]
 dev = [
+  "fakeredis>=2.26,<3",
   "httpx>=0.28,<1",
   "pytest>=8,<10",
   "pytest-asyncio>=0.24,<2",
