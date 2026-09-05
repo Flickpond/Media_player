@@ -15,7 +15,7 @@ browser -> FastAPI -> MinIO + PostgreSQL + Redis queue
                          browser polls the status API
 ```
 
-The Sprint 1 source of truth is [`docs/sprint1-plan.md`](docs/sprint1-plan.md). The shared schema and API boundary are in [`docs/contract.md`](docs/contract.md).
+The Sprint 1 source of truth is [`docs/sprint1-plan.md`](docs/sprint1-plan.md). The shared schema and API boundary are in [`docs/contract.md`](docs/contract.md). For what has actually been built, by whom, and what broke along the way, see [`docs/sprint1-report.md`](docs/sprint1-report.md) - keep it updated as the sprint runs.
 
 ## Architecture
 
@@ -55,6 +55,7 @@ Media_player/
 |   `-- test_*.py                 # API and service unit tests
 |-- docs/
 |   |-- contract.md               # Sprint 1 integration contract
+|   |-- sprint1-report.md         # Living record: contributions, bugs, evidence
 |   |-- c-status-db.md            # Detailed C-track commands
 |   |-- proposal.md               # Full module proposal
 |   `-- sprint1-plan.md           # Current Sprint 1 plan
