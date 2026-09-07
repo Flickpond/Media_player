@@ -9,6 +9,7 @@ from app.api import jobs as jobs_api
 from app.database import get_session
 from app.main import create_app
 from app.models.job import Job, JobStatus
+from app.repositories.jobs import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.services.output_urls import get_output_url_signer
 
 
@@ -137,7 +138,7 @@ async def test_list_jobs_returns_contract_shape(
     queued = make_job()
     done = make_job(status=JobStatus.DONE, output_key="outputs/ready.mp4")
 
-    async def fake_list_jobs(_session):
+    async def fake_list_jobs(_session, *, limit, offset):
         return [done, queued]
 
     monkeypatch.setattr(jobs_api, "list_jobs", fake_list_jobs)
@@ -152,7 +153,7 @@ async def test_list_jobs_returns_contract_shape(
 
 @pytest.mark.asyncio
 async def test_list_jobs_can_be_empty(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_list_jobs(_session):
+    async def fake_list_jobs(_session, *, limit, offset):
         return []
 
     monkeypatch.setattr(jobs_api, "list_jobs", fake_list_jobs)
@@ -160,3 +161,71 @@ async def test_list_jobs_can_be_empty(client: AsyncClient, monkeypatch: pytest.M
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+# --- pagination (P5) ------------------------------------------------------
+
+
+@pytest.fixture
+def captured_page(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Records the limit/offset the endpoint actually asked the repository for."""
+    seen: dict = {}
+
+    async def fake_list_jobs(_session, *, limit, offset):
+        seen["limit"] = limit
+        seen["offset"] = offset
+        return []
+
+    monkeypatch.setattr(jobs_api, "list_jobs", fake_list_jobs)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_a_caller_that_asks_for_nothing_gets_a_capped_page(
+    client: AsyncClient, captured_page: dict
+) -> None:
+    """The one behaviour that changed in the review: no parameters used to mean
+    the whole table, and the endpoint mints a signed URL per row returned.
+    """
+    response = await client.get("/jobs")
+
+    assert response.status_code == 200
+    assert captured_page == {"limit": DEFAULT_PAGE_SIZE, "offset": 0}
+
+
+@pytest.mark.asyncio
+async def test_limit_and_offset_reach_the_repository(
+    client: AsyncClient, captured_page: dict
+) -> None:
+    response = await client.get("/jobs", params={"limit": 10, "offset": 40})
+
+    assert response.status_code == 200
+    assert captured_page == {"limit": 10, "offset": 40}
+
+
+@pytest.mark.asyncio
+async def test_the_cap_cannot_be_argued_past(client: AsyncClient, captured_page: dict) -> None:
+    response = await client.get("/jobs", params={"limit": MAX_PAGE_SIZE + 1})
+
+    assert response.status_code == 422
+    assert captured_page == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("params", [{"limit": 0}, {"limit": -1}, {"offset": -1}])
+async def test_nonsense_paging_is_refused(
+    client: AsyncClient, captured_page: dict, params: dict
+) -> None:
+    response = await client.get("/jobs", params=params)
+
+    assert response.status_code == 422
+    assert captured_page == {}
+
+
+@pytest.mark.asyncio
+async def test_the_maximum_page_size_is_allowed(client: AsyncClient, captured_page: dict) -> None:
+    """Test *at* the limit, not only past it."""
+    response = await client.get("/jobs", params={"limit": MAX_PAGE_SIZE})
+
+    assert response.status_code == 200
+    assert captured_page["limit"] == MAX_PAGE_SIZE

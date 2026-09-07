@@ -13,6 +13,7 @@ from app.repositories.jobs import (
     InvalidJobTransitionError,
     create_job,
     get_job,
+    list_jobs,
     mark_done,
     mark_failed,
     mark_processing,
@@ -107,3 +108,69 @@ async def test_empty_failure_message_is_rejected(session_factory) -> None:
         async with session_factory() as cleanup_session:
             await cleanup_session.execute(delete(Job).where(Job.id == job_id))
             await cleanup_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_pages_without_repeating_or_dropping_rows(session_factory) -> None:
+    """Real SQL, because LIMIT/OFFSET and the tie-break are the whole point.
+
+    All five rows are created in a tight loop, so `created_at` values can be
+    identical to the microsecond -- exactly the case where ordering on
+    `created_at` alone lets a row appear on two pages, or on none.
+    """
+    made = []
+    try:
+        async with session_factory() as session:
+            for index in range(5):
+                job = await create_job(
+                    session,
+                    filename=f"page-{index}.mp4",
+                    source_key=f"uploads/page-{index}.mp4",
+                    job_id=uuid4(),
+                )
+                made.append(job.id)
+
+        # Page through the whole table rather than assuming these five rows are
+        # the only ones in it -- this database is shared with the live stack.
+        seen: list = []
+        async with session_factory() as session:
+            offset = 0
+            while offset < 1000:  # a bound, so a paging bug cannot spin forever
+                page = await list_jobs(session, limit=2, offset=offset)
+                if not page:
+                    break
+                assert len(page) <= 2, "a page came back larger than its limit"
+                seen.extend(job.id for job in page)
+                offset += 2
+
+        assert len(seen) == len(set(seen)), "a row was returned on two pages"
+        assert set(made) <= set(seen), "a row was never returned at all"
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id.in_(made)))
+            await cleanup.commit()
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_returns_newest_first(session_factory) -> None:
+    made = []
+    try:
+        async with session_factory() as session:
+            for index in range(3):
+                job = await create_job(
+                    session,
+                    filename=f"order-{index}.mp4",
+                    source_key=f"uploads/order-{index}.mp4",
+                    job_id=uuid4(),
+                )
+                made.append(job)
+
+        async with session_factory() as session:
+            listed = await list_jobs(session, limit=50, offset=0)
+
+        timestamps = [job.created_at for job in listed]
+        assert timestamps == sorted(timestamps, reverse=True)
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id.in_([job.id for job in made])))
+            await cleanup.commit()

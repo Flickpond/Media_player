@@ -2,7 +2,7 @@
 
 **Project:** Flickpond — asynchronous video upload and processing platform
 **Sprint window:** 4–10 September 2026
-**Last updated:** 5 September 2026 · `main` @ `0e85e5c`
+**Last updated:** 7 September 2026 · after the security and code review
 
 A living record of what was built, by whom, what broke, and what evidence exists.
 Update it as the sprint continues — see [Revision log](#revision-log) at the bottom.
@@ -23,7 +23,7 @@ inspection.
 
 | Measure | Value |
 |---|---|
-| Tests passing | 99 |
+| Tests passing | 160 (137 Python, 23 frontend) |
 | Python coverage | 99% |
 | Frontend coverage (`app.js`) | 100% |
 | Upload response, 3 MB file | 95 ms |
@@ -80,7 +80,7 @@ Figures from `git log` across all branches, excluding merge commits and
 
 | Track | Contributor | Owned and delivered | Commits | Lines added |
 |---|---|---|--:|--:|
-| **A** | Ibrahim Mammadov (@1brahim74) | `app/worker/` (state machine, copy step, db, entrypoint), `app/queue.py`, Compose worker + frontend services, 9 test modules | 10 | 2,493 |
+| **A** | Ibrahim Mammadov (@1brahim74) | `app/worker/` (state machine, copy step, db, entrypoint), `app/queue.py`, `app/services/media_type.py`, Compose worker + frontend services, 12 test modules, the 7 Sep security and code review | 14 | 4,227 |
 | **C** | David (@ttydw-ch) | `app/api/jobs.py`, `app/repositories/jobs.py`, models, schemas, `database.py`, `output_urls.py`, `migrations/`, Dockerfile, README, `docs/contract.md` | 2 | 1,457 |
 | **D** | @JiangYibai666 | `docker-compose.yml` (5 services, health checks, startup gating), `.env.example`, `docs/proposal.md` | 2 | 606 |
 | **B** | @zhanj384 | `app/api/uploads.py` (POST /upload), `app/services/storage.py` (MinIO client), `tests/integration/test_storage.py` | 4 | 220 |
@@ -93,10 +93,25 @@ foundation every other track depends on, and they landed first. Track E's 212
 lines are the only part of the system a user actually sees. Track B's 220 lines
 are the entry point for the whole pipeline.
 
-Of track A's 2,493 lines, **1,565 are test code** and only 390 are application
-code — the remainder is documentation and Compose configuration. A large share
-of that testing covers other tracks' components, added during the 5 September
-integration session.
+Of track A's 4,227 lines, roughly **2,128 are test code** and 646 are
+application code — the remainder is documentation and Compose configuration. A
+large share of that testing covers other tracks' components, added during the
+5 September integration session and the 7 September review.
+
+The 7 September review contributed 1,157 of those lines, split 563 tests / 298
+documentation / 256 application / 40 configuration. That ratio is the point
+rather than an accident: the review's output is mostly evidence that the fixes
+hold and a written record of what was deliberately left undone, not new
+features.
+
+**One caveat on all these figures.** A local `git config user.email` of
+`ibrahim.22@intl.zju.edu.cn` does not match the GitHub account, and the local
+`user.name` is `1brhme1974` rather than `1brahim74`. Commits made without
+overriding both land under a third identity and are not counted here or
+credited on GitHub. One commit in the history is already split off this way
+(`Ibrahim Mammadov`, 1 line). Fix the global config, or pass
+`-c user.name=1brahim74 -c user.email=ibrahimmemmedov9a@gmail.com` on every
+commit.
 
 ---
 
@@ -185,10 +200,10 @@ than a clean pass — see section 6.
 
 | Suite | Tests | Coverage | Requires |
 |---|--:|--:|---|
-| Python unit | 72 | — | nothing |
-| Python integration | 8 | — | `RUN_POSTGRES_TESTS=1` + live PostgreSQL |
-| **Python total** | **80** | **99%** | — |
-| Frontend unit | 16 | 100% | Node 20+ |
+| Python unit | 127 | — | nothing |
+| Python integration | 10 | — | `RUN_POSTGRES_TESTS=1` + live PostgreSQL |
+| **Python total** | **137** | **99%** | — |
+| Frontend unit | 20 | 100% | Node 20+ |
 | Frontend live | 3 | — | `RUN_LIVE_TESTS=1` + running stack |
 
 One test is skipped by design: the forking-worker assertion cannot pass on
@@ -211,10 +226,24 @@ limitation reads as an oversight.
   guarantees would hide bugs rather than survive them.
 - **Processing is a file copy, not a transcode.** Proves the architecture before
   the encoding. Sprint 2 replaces one class behind the `ProcessingStep` protocol.
-- **No authentication, quotas, or format selection.** Out of module scope.
+- **No authentication, quotas, or format selection.** Out of module scope. The
+  consequence is worth stating plainly: `GET /jobs` returns every job in the
+  table together with a signed download URL for each, so any client that can
+  reach the API can read every upload. Every published port in
+  `docker-compose.yml` is therefore bound to `127.0.0.1`. Giving jobs an owner
+  and the API a caller identity is the sprint 2 item this creates.
 - **Single-node only.** Scaling shown with Compose replicas on one host — a
   documented, accepted constraint. See [`scaling-notes.md`](scaling-notes.md)
   for what serving 50 concurrent users would require.
+- **The upload is not atomic.** `POST /upload` writes to MinIO, PostgreSQL and
+  Redis in sequence with nothing spanning the three. A failure part-way leaves
+  either an orphaned object or a row stuck at `queued` that no worker will ever
+  claim, and neither is reported. See §4.1 of
+  [`sprint2-backlog.md`](sprint2-backlog.md).
+
+A security and code review of all five merged tracks was run on 7 September
+2026. The exploitable findings were fixed in the same pass; everything it found
+and deferred is recorded in [`sprint2-backlog.md`](sprint2-backlog.md).
 
 ---
 
@@ -290,6 +319,8 @@ and when.
 | Date | Author | What changed |
 |---|---|---|
 | 5 Sep 2026 | @1brahim74 | Initial record: contributions, BUG-01 to BUG-03, ENV-01, NFR evidence, limitations, outstanding items. |
+| 7 Sep 2026 | @1brahim74 | Security and code review of all merged tracks. Exploitable findings fixed; deferred work recorded in `sprint2-backlog.md`. Added the non-atomic upload to §6 and refreshed the test counts in §5 (80 → 124). |
+| 7 Sep 2026 | @1brahim74 | Closed review items P3, P4, P5, P7, P8 — `GET /jobs` pagination (contract updated), lazy database engine, non-root containers, a poll cap in the UI, and the `--burst` worker comment. Test counts now 137 Python / 23 frontend. P1, P2, P6, P9 remain open. |
 
 ### How to update this
 

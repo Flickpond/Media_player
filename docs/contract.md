@@ -43,13 +43,16 @@ GET /jobs/{id}
   200 { "id", "filename", "status", "output_url"?, "error"? }
   404 { "error": "not found" }
 
-GET /jobs
+GET /jobs?limit=<1..200>&offset=<n>
   200 [ ...same job shape... ]
+  422 { "detail": [...] }   // limit or offset out of range
 ```
 
 The API never returns `source_key` or `output_key`. For a completed job, it converts `output_key` to a time-limited MinIO `output_url`. Null optional fields are omitted from JSON.
 
-`GET /jobs` returns newest jobs first. Pagination is outside Sprint 1 scope.
+`GET /jobs` returns newest jobs first, ordered by `created_at` descending with `id` breaking ties so page boundaries are stable.
+
+Both query parameters are optional: `limit` defaults to 50 and is capped at 200, `offset` defaults to 0. A caller that passes neither gets the first 50 rows — this is the one behaviour that changed after Sprint 1's review, and it is deliberate: the endpoint mints a signed URL per row returned, so an uncapped list makes its cost grow with the table.
 
 ## Repository interface
 
@@ -58,7 +61,7 @@ The shared asynchronous repository functions are:
 ```python
 create_job(session, *, filename, source_key, job_id=None)
 get_job(session, job_id)
-list_jobs(session)
+list_jobs(session, *, limit=50, offset=0)
 mark_processing(session, job_id)
 mark_done(session, job_id, *, output_key)
 mark_failed(session, job_id, *, error)
