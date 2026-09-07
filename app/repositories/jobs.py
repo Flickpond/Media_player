@@ -5,6 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job import Job, JobStatus
 
+# Page sizes for `list_jobs`. A default rather than "everything" because the
+# endpoint's cost grows with the table: each row returned is a signed URL to
+# mint. The cap is what stops a caller asking for the whole table anyway.
+DEFAULT_PAGE_SIZE = 50
+MAX_PAGE_SIZE = 200
+
 
 class JobNotFoundError(LookupError):
     pass
@@ -37,8 +43,17 @@ async def get_job(session: AsyncSession, job_id: UUID) -> Job | None:
     return await session.get(Job, job_id)
 
 
-async def list_jobs(session: AsyncSession) -> list[Job]:
-    result = await session.execute(select(Job).order_by(Job.created_at.desc()))
+async def list_jobs(
+    session: AsyncSession,
+    *,
+    limit: int = DEFAULT_PAGE_SIZE,
+    offset: int = 0,
+) -> list[Job]:
+    # `id` breaks ties on `created_at`. Without it two rows written in the same
+    # transaction have no defined order between pages, so one can appear on
+    # both sides of a boundary while another appears on neither.
+    statement = select(Job).order_by(Job.created_at.desc(), Job.id).limit(limit).offset(offset)
+    result = await session.execute(statement)
     return list(result.scalars().all())
 
 

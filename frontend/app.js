@@ -13,6 +13,15 @@ const player = document.getElementById("player");
 
 let pollTimer = null;
 
+const POLL_INTERVAL_MS = 2000;
+// 30 polls is a minute. The sprint 1 copy job finishes inside a single
+// interval, so past this something is wrong -- most likely a worker that died
+// holding the job, which leaves the row at `processing` with nobody left to
+// write to it. Keep polling anyway: the page cannot tell "stuck" from "slow",
+// and saying it failed would be a claim we cannot support. Say it is taking
+// long, hand the form back, and let the user decide.
+const SLOW_AFTER_POLLS = 30;
+
 function setStatus(message) {
   statusEl.textContent = message;
   statusEl.hidden = false;
@@ -63,7 +72,7 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
-async function poll(jobId) {
+async function poll(jobId, attempt = 0) {
   let job;
   try {
     const res = await fetch(`${API}/jobs/${jobId}`);
@@ -88,9 +97,16 @@ async function poll(jobId) {
     return; // Stop polling.
   }
 
-  const labels = { queued: "Queued...", processing: "Processing..." };
-  setStatus(labels[job.status] ?? job.status);
+  if (attempt >= SLOW_AFTER_POLLS) {
+    setStatus(`Still working on it — this is taking longer than expected. Job ${jobId}`);
+    // Give the form back. Without this the button stays disabled for as long
+    // as the job is stuck, which is forever, and the only way out is a reload.
+    uploadButton.disabled = false;
+  } else {
+    const labels = { queued: "Queued...", processing: "Processing..." };
+    setStatus(labels[job.status] ?? job.status);
+  }
 
   // Poll every 2 seconds.
-  pollTimer = setTimeout(() => poll(jobId), 2000);
+  pollTimer = setTimeout(() => poll(jobId, attempt + 1), POLL_INTERVAL_MS);
 }

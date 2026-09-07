@@ -233,6 +233,53 @@ describe("polling", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  // --- a job that never finishes (P4) -------------------------------------
+
+  /** 30 polls at 2s: the point where the page starts saying it is slow. */
+  const SLOW_AFTER_MS = 30 * 2000;
+
+  it("says so once a job has been processing far longer than it should", async () => {
+    const el = await pollReturning({ status: "processing" });
+    expect(el.status.textContent).toBe("Processing...");
+
+    await vi.advanceTimersByTimeAsync(SLOW_AFTER_MS);
+
+    expect(el.status.textContent).toContain("longer than expected");
+    expect(el.status.textContent).toContain("job-1");
+  });
+
+  it("hands the form back so a stuck job does not lock the page", async () => {
+    const el = await pollReturning({ status: "processing" });
+    expect(el.button.disabled).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(SLOW_AFTER_MS);
+
+    expect(el.button.disabled).toBe(false);
+  });
+
+  it("keeps polling after saying it is slow, because slow is not failed", async () => {
+    const el = await pollReturning({ status: "processing" });
+    await vi.advanceTimersByTimeAsync(SLOW_AFTER_MS);
+    const before = fetchMock.mock.calls.length;
+
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(fetchMock.mock.calls.length).toBe(before + 1);
+    expect(el.status.textContent).not.toContain("failed");
+  });
+
+  it("recovers normally if a long-running job does eventually finish", async () => {
+    const el = await pollReturning({ status: "processing" });
+    await vi.advanceTimersByTimeAsync(SLOW_AFTER_MS);
+    expect(el.status.textContent).toContain("longer than expected");
+
+    fetchMock.mockResolvedValue(jsonResponse({ status: "done", output_url: "http://minio/late.mp4" }));
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(el.status.textContent).toBe("Processing complete.");
+    expect(el.player.getAttribute("src")).toBe("http://minio/late.mp4");
+  });
+
   it("shows an unrecognised status verbatim rather than blanking the UI", async () => {
     const el = await pollReturning({ status: "cancelled" });
 

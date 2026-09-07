@@ -15,7 +15,7 @@ browser -> FastAPI -> MinIO + PostgreSQL + Redis queue
                          browser polls the status API
 ```
 
-The Sprint 1 source of truth is [`docs/sprint1-plan.md`](docs/sprint1-plan.md). The shared schema and API boundary are in [`docs/contract.md`](docs/contract.md). For what has actually been built, by whom, and what broke along the way, see [`docs/sprint1-report.md`](docs/sprint1-report.md) - keep it updated as the sprint runs. [`docs/scaling-notes.md`](docs/scaling-notes.md) covers what would have to change to serve 50 concurrent users.
+The Sprint 1 source of truth is [`docs/sprint1-plan.md`](docs/sprint1-plan.md). The shared schema and API boundary are in [`docs/contract.md`](docs/contract.md). For what has actually been built, by whom, and what broke along the way, see [`docs/sprint1-report.md`](docs/sprint1-report.md) - keep it updated as the sprint runs. [`docs/scaling-notes.md`](docs/scaling-notes.md) covers what would have to change to serve 50 concurrent users, and [`docs/sprint2-backlog.md`](docs/sprint2-backlog.md) records what the sprint 1 security and code review left open.
 
 ## Architecture
 
@@ -41,6 +41,7 @@ Media_player/
 |   |-- repositories/jobs.py      # Shared DB functions for API and worker
 |   |-- schemas/job.py            # Public response schemas
 |   |-- services/output_urls.py   # Browser-accessible MinIO signed URLs
+|   |-- services/media_type.py    # Container sniffing: what an upload actually is
 |   |-- services/storage.py       # MinIO client used by the upload path
 |   |-- worker/                   # RQ worker, state machine, copy step
 |   |-- queue.py                  # Shared enqueue/consume seam
@@ -57,6 +58,8 @@ Media_player/
 |   |-- contract.md               # Sprint 1 integration contract
 |   |-- sprint1-report.md         # Living record: contributions, bugs, evidence
 |   |-- scaling-notes.md          # Capacity analysis and sprint 2 proposal
+|   |-- sprint2-backlog.md        # Open findings from the sprint 1 review
+|   |-- a-worker.md               # Worker and state machine notes
 |   |-- c-status-db.md            # Detailed C-track commands
 |   |-- proposal.md               # Full module proposal
 |   `-- sprint1-plan.md           # Current Sprint 1 plan
@@ -173,7 +176,15 @@ processing:
 {"job_id": "9b4595b8-9bd3-4a71-b99d-488c7c7f381c"}
 ```
 
-Returns `202`, or `400 {"error": "file too large"}` above the 100MB limit.
+Returns `202`. Rejections:
+
+| Status | Body | When |
+| --- | --- | --- |
+| `413` | `{"error": "file too large"}` | Above the 100MB limit. Checked against `Content-Length` before the body is read, and again against the bytes that arrived. |
+| `415` | `{"error": "unsupported media type"}` | The declared `Content-Type` is not an accepted video type. |
+| `415` | `{"error": "file content is not a recognized video format"}` | The bytes are not a recognised video container. The declared type is attacker-supplied — a browser fills it in from the file extension — so the content is checked too. |
+
+The stored object is served back under the *sniffed* type, not the client's claim.
 
 ## Status API
 
@@ -183,11 +194,13 @@ Get one job:
 GET /jobs/{uuid}
 ```
 
-Get all jobs, newest first:
+Get a page of jobs, newest first:
 
 ```http
-GET /jobs
+GET /jobs?limit=50&offset=0
 ```
+
+`limit` defaults to 50 and is capped at 200; `offset` defaults to 0. Ordering is `created_at` descending with `id` breaking ties, so paging never repeats or drops a row. Out-of-range values return `422`.
 
 Queued response:
 
@@ -225,7 +238,7 @@ An unknown UUID returns:
 ```python
 create_job(session, filename=..., source_key=..., job_id=None)
 get_job(session, job_id)
-list_jobs(session)
+list_jobs(session, *, limit=50, offset=0)
 mark_processing(session, job_id)
 mark_done(session, job_id, output_key=...)
 mark_failed(session, job_id, error=...)

@@ -14,6 +14,7 @@ import pytest
 from rq import Queue, SimpleWorker, Worker
 
 from app import queue as queue_module
+from app.config import Settings
 from app.worker import __main__ as entrypoint
 from app.worker import db as worker_db
 from app.worker import storage, tasks
@@ -38,6 +39,15 @@ def test_windows_falls_back_to_the_in_process_worker(fake_connection):
     worker = entrypoint.build_worker(burst_safe=True)
 
     assert isinstance(worker, SimpleWorker)
+
+
+def test_burst_mode_uses_the_in_process_worker(fake_connection):
+    """Deliberate, not a side effect of the Windows fallback: burst drains and
+    exits, so forking hides exceptions and coverage from the caller for no
+    isolation benefit. Pinned here because the flag reads like it is only
+    about platform support.
+    """
+    assert isinstance(entrypoint.build_worker(burst_safe=True), SimpleWorker)
 
 
 def test_containers_use_the_forking_worker(fake_connection):
@@ -102,6 +112,12 @@ def test_redis_connection_is_built_from_the_configured_url(monkeypatch: pytest.M
             captured["url"] = url
             return "connection"
 
+    # Pin the settings instead of reading the ambient environment. Settings
+    # loads `.env`, and the documented dev `.env` now sets REDIS_PASSWORD, so
+    # reading it here would make this test pass or fail depending on whether
+    # the developer running it has a configured stack.
+    pinned = Settings(redis_host="127.0.0.1", redis_port=6379, redis_password="", redis_ssl=False)
+    monkeypatch.setattr(queue_module, "get_settings", lambda: pinned)
     monkeypatch.setattr(queue_module, "Redis", FakeRedis)
     try:
         queue_module.get_redis_connection()
@@ -109,6 +125,28 @@ def test_redis_connection_is_built_from_the_configured_url(monkeypatch: pytest.M
         queue_module.get_redis_connection.cache_clear()
 
     assert captured["url"] == "redis://127.0.0.1:6379/0"
+
+
+def test_redis_connection_carries_the_configured_password(monkeypatch: pytest.MonkeyPatch):
+    """Redis requires a password in compose; a client that drops it gets NOAUTH."""
+    queue_module.get_redis_connection.cache_clear()
+    captured = {}
+
+    class FakeRedis:
+        @classmethod
+        def from_url(cls, url: str):
+            captured["url"] = url
+            return "connection"
+
+    pinned = Settings(redis_host="redis", redis_port=6379, redis_password="s3cret", redis_ssl=False)
+    monkeypatch.setattr(queue_module, "get_settings", lambda: pinned)
+    monkeypatch.setattr(queue_module, "Redis", FakeRedis)
+    try:
+        queue_module.get_redis_connection()
+    finally:
+        queue_module.get_redis_connection.cache_clear()
+
+    assert captured["url"] == "redis://:s3cret@redis:6379/0"
 
 
 def test_get_queue_uses_the_shared_queue_name_and_timeout():
