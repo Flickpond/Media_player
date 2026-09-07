@@ -30,9 +30,17 @@ def build_worker(*, burst_safe: bool = False):
     connection = get_redis_connection()
     queue = Queue(settings.redis_queue, connection=connection)
 
-    # RQ's default worker forks per job. Windows has no fork, so fall back to
-    # the in-process worker there. Containers run Linux, so the deployed path
-    # is the forking one.
+    # RQ's default worker forks per job, which is what isolates the worker from
+    # a job that dies badly. Two cases give that up deliberately:
+    #
+    #   no fork      -- Windows has none, so a teammate there needs the
+    #                   in-process worker to run anything at all. Containers
+    #                   run Linux, so the deployed path is still the forking one.
+    #   burst_safe   -- burst drains the queue and exits, and is how the tests
+    #                   and CI invoke it. Running in-process keeps exceptions,
+    #                   coverage and the exit code visible to the caller, and
+    #                   crash isolation buys nothing for a process that is about
+    #                   to exit anyway.
     worker_class = Worker if hasattr(os, "fork") and not burst_safe else SimpleWorker
     return worker_class([queue], connection=connection)
 

@@ -27,6 +27,15 @@ def test_redis_url_includes_a_password_when_set():
     assert make(redis_password="s3cret").redis_url == "redis://:s3cret@redis:6379/0"
 
 
+def test_redis_url_percent_encodes_the_password():
+    """An unescaped @ ends the userinfo early, silently repointing the client
+    at a host the operator never configured.
+    """
+    url = make(redis_password="p@ss/w:rd").redis_url
+
+    assert url == "redis://:p%40ss%2Fw%3Ard@redis:6379/0"
+
+
 def test_redis_url_with_tls_and_password():
     url = make(redis_ssl=True, redis_password="s3cret", redis_host="cache.example.com").redis_url
 

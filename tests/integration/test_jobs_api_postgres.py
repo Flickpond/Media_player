@@ -5,7 +5,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete
 
-from app.database import AsyncSessionFactory
+from app.database import get_session_factory
 from app.main import create_app
 from app.models.job import Job
 from app.repositories.jobs import create_job, mark_done, mark_processing
@@ -20,7 +20,7 @@ pytestmark = pytest.mark.skipif(
 async def test_status_endpoints_read_real_postgres_data() -> None:
     job_id = uuid4()
     try:
-        async with AsyncSessionFactory() as session:
+        async with get_session_factory()() as session:
             await create_job(
                 session,
                 job_id=job_id,
@@ -43,7 +43,7 @@ async def test_status_endpoints_read_real_postgres_data() -> None:
         assert list_response.status_code == 200
         assert str(job_id) in {item["id"] for item in list_response.json()}
 
-        async with AsyncSessionFactory() as session:
+        async with get_session_factory()() as session:
             await mark_processing(session, job_id)
             await mark_done(
                 session,
@@ -59,6 +59,6 @@ async def test_status_endpoints_read_real_postgres_data() -> None:
         assert f"outputs/{job_id}/integration.mp4" in output_url
         assert "X-Amz-Signature=" in output_url
     finally:
-        async with AsyncSessionFactory() as cleanup_session:
+        async with get_session_factory()() as cleanup_session:
             await cleanup_session.execute(delete(Job).where(Job.id == job_id))
             await cleanup_session.commit()

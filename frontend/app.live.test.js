@@ -67,7 +67,16 @@ describe.skipIf(!live)("frontend against the live stack", () => {
   it("uploads a real file and plays the processed result", async () => {
     // A real multipart upload, driven by clicking the form -- not by calling
     // fetch directly. Everything app.js does, it does for real here.
+    // The API sniffs the head of every upload and refuses anything that is not
+    // a recognised video container, so filler bytes alone no longer pass. This
+    // is a real 32-byte ISO base media `ftyp` box in front of the padding.
     const bytes = new Uint8Array(256 * 1024).fill(7);
+    bytes.set([
+      0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, // box length, "ftyp"
+      0x69, 0x73, 0x6f, 0x6d, 0x00, 0x00, 0x02, 0x00, // major brand "isom", minor version
+      0x69, 0x73, 0x6f, 0x6d, 0x69, 0x73, 0x6f, 0x32, // compatible brands "isom", "iso2"
+      0x61, 0x76, 0x63, 0x31, 0x6d, 0x70, 0x34, 0x31, // "avc1", "mp41"
+    ]);
     const file = new File([bytes], "live-clip.mp4", { type: "video/mp4" });
     Object.defineProperty(el.fileInput, "files", { value: [file], configurable: true });
 

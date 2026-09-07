@@ -1,4 +1,5 @@
 from functools import lru_cache
+from urllib.parse import quote
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -37,7 +38,11 @@ class Settings(BaseSettings):
     @property
     def redis_url(self) -> str:
         scheme = "rediss" if self.redis_ssl else "redis"
-        credentials = f":{self.redis_password}@" if self.redis_password else ""
+        # Percent-encode the password: it lands in the userinfo part of a URL,
+        # so an unescaped `@` or `/` in a real secret would silently repoint
+        # the client at a different host instead of failing loudly.
+        password = quote(self.redis_password, safe="")
+        credentials = f":{password}@" if self.redis_password else ""
         return f"{scheme}://{credentials}{self.redis_host}:{self.redis_port}/0"
 
     @field_validator("postgres_dsn")

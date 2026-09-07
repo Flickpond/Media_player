@@ -51,7 +51,7 @@ literal claim only becomes true with presigned uploads (section 4).
 
 ## 3. Bottlenecks, in the order they bite
 
-### 3.1 One uvicorn process, no workers — `Dockerfile:17`
+### 3.1 One uvicorn process, no workers — the `CMD` in `Dockerfile`
 
 ```
 CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
@@ -78,7 +78,7 @@ uploads is **5 GB of temp files** on a host the plan sizes at 4 GB / 2 vCPU.
 This is the wall you hit first, and it is the reason section 4 leads with
 presigned uploads.
 
-### 3.3 Database pool caps at 15 — `app/database.py:18`
+### 3.3 Database pool caps at 15 — `get_engine()` in `app/database.py`
 
 ```python
 engine = create_async_engine(settings.postgres_dsn, pool_pre_ping=True)
@@ -92,15 +92,16 @@ The worker side is fine — `app/worker/db.py:21` uses `NullPool` deliberately,
 because each RQ task runs its own `asyncio.run` and a pooled connection cannot
 cross event loops.
 
-### 3.4 `GET /jobs` has no limit — `app/repositories/jobs.py:41`
+### 3.4 `GET /jobs` has no limit — ~~`app/repositories/jobs.py:41`~~ **fixed 7 Sep 2026**
 
-```python
-result = await session.execute(select(Job).order_by(Job.created_at.desc()))
-```
+Was every row, every call. The sprint 1 review pulled this forward rather than
+leaving it for sprint 2, on the grounds that it is a public API contract and
+gets harder to change once more than one consumer depends on the shape.
 
-Every row, every call. `docs/contract.md` deferred pagination explicitly, which
-was right for sprint 1. At 50 users generating jobs daily it stops being
-deferrable. `created_at` is already indexed, so keyset pagination is cheap.
+`list_jobs` now takes `limit` (default 50, capped at 200) and `offset`, ordered
+by `created_at` descending with `id` breaking ties so page boundaries are
+stable. Signing is batched with `asyncio.gather` instead of one row at a time.
+See P5 in [`sprint2-backlog.md`](sprint2-backlog.md).
 
 ### 3.5 A wasted MinIO round trip per upload — `app/services/storage.py:66`
 
@@ -137,15 +138,16 @@ and it is already evidenced at a 5 / 4 split across two replicas.
 
 | Change | Location | Size |
 |---|---|---|
-| Raise pool to `pool_size=20, max_overflow=10` | `app/database.py:18` | 1 line |
+| Raise pool to `pool_size=20, max_overflow=10` | `app/database.py`, in `get_engine()` | 1 line |
 | Cache `ensure_bucket()` after first success | `app/services/storage.py:66` | ~4 lines |
-| `uvicorn --workers 4` **and** move `alembic upgrade head` to a one-shot service | `Dockerfile:17`, `docker-compose.yml` | 2 small changes, must land together |
+| `uvicorn --workers 4` **and** move `alembic upgrade head` to a one-shot service | `Dockerfile` (the `CMD`), `docker-compose.yml` | 2 small changes, must land together |
 
-### Half a day, small contract change
+### ~~Half a day, small contract change~~ — done 7 Sep 2026
 
-Paginate `GET /jobs` with `limit` / `offset` or a keyset cursor. ~10 lines
-across `app/repositories/jobs.py` and `app/api/jobs.py`. `created_at` is
-indexed so it is cheap. Track E consumes this endpoint, so it needs announcing.
+`GET /jobs` is paginated. `limit` / `offset` landed in
+`app/repositories/jobs.py` and `app/api/jobs.py`, and `docs/contract.md` was
+updated with the new shape. Track E consumes this endpoint; the defaults are
+backward compatible for a caller that passes nothing.
 
 ### The one worth real effort — presigned PUT uploads
 

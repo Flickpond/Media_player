@@ -25,11 +25,18 @@ class MinioOutputUrlSigner:
         self._expiry = timedelta(seconds=expiry_seconds)
 
     async def create_url(self, output_key: str) -> str:
+        # Ask the object store to serve the object as a download rather than
+        # rendering it inline. Uploads are already restricted to video types,
+        # so this is the second layer: if something non-video ever reaches a
+        # bucket, opening its URL saves a file instead of executing it on the
+        # object store's origin. A <video> element ignores the header, so the
+        # player still plays the result.
         return await run_in_threadpool(
             self._client.presigned_get_object,
             self._bucket,
             output_key,
             expires=self._expiry,
+            response_headers={"response-content-disposition": "attachment"},
         )
 
 

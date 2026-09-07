@@ -1,13 +1,14 @@
+import asyncio
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.errors import ApiNotFoundError
 from app.models.job import Job, JobStatus
-from app.repositories.jobs import get_job, list_jobs
+from app.repositories.jobs import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, get_job, list_jobs
 from app.schemas.job import ErrorResponse, JobResponse
 from app.services.output_urls import OutputUrlSigner, get_output_url_signer
 
@@ -39,9 +40,14 @@ async def _to_response(job: Job, signer: OutputUrlSigner) -> JobResponse:
 async def get_jobs(
     session: SessionDependency,
     signer: SignerDependency,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[JobResponse]:
-    jobs = await list_jobs(session)
-    return [await _to_response(job, signer) for job in jobs]
+    jobs = await list_jobs(session, limit=limit, offset=offset)
+    # Signed as a batch. Each signature is a local HMAC that still costs a hop
+    # to the thread pool, so awaiting them one at a time made the endpoint's
+    # latency the sum of every row's hop rather than the slowest one.
+    return list(await asyncio.gather(*(_to_response(job, signer) for job in jobs)))
 
 
 @router.get(
