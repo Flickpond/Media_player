@@ -94,8 +94,9 @@ services:
     # password even though the port is loopback-only.
     command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
     ports:
-      # This is the local host port only; the application port is REDIS_PORT above.
-      - "127.0.0.1:6379:6379"
+      # Keep Redis private by default. Set REDIS_BIND=0.0.0.0 only when a
+      # remote client must connect, and restrict port 6379 in the cloud firewall.
+      - "${REDIS_BIND:-127.0.0.1}:${REDIS_PUBLIC_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -112,7 +113,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-flickpond}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flickpond_dev_password}
     ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      # Keep PostgreSQL private by default. Set POSTGRES_BIND=0.0.0.0 only
+      # when a remote client must connect, and restrict port 5432 in the
+      # cloud firewall to the team's public IP addresses.
+      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -137,7 +141,10 @@ services:
       # admin console -- holding every uploaded and processed video, behind
       # the well-known default credentials above -- on the local network.
       - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
-      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+      # The console can be public independently of the S3 API. Set
+      # MINIO_CONSOLE_BIND=0.0.0.0 for a cloud demo and use strong root
+      # credentials in .env before opening this port.
+      - "${MINIO_CONSOLE_BIND:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio-data:/data
     healthcheck:
