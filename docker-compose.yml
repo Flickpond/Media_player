@@ -1,40 +1,29 @@
 services:
   api:
-    image: python:3.12-slim
-    command:
-      - python
-      - -c
-      - |
-        from http.server import BaseHTTPRequestHandler, HTTPServer
-
-        class HealthHandler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                if self.path != "/health":
-                    self.send_response(404)
-                    self.end_headers()
-                    return
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b'{"status":"ok"}')
-
-            def log_message(self, format, *args):
-                return
-
-        HTTPServer(("0.0.0.0", 8000), HealthHandler).serve_forever()
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flickpond-api:dev
     ports:
-      - "${API_PORT:-8000}:8000"
+      # Loopback-bound like every other service here. The API has no
+      # authentication in sprint 1 -- GET /jobs returns every job and a signed
+      # URL for each -- so it must not be reachable from the network until it
+      # does. Publishing it wider is a deliberate act, not a default.
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     environment:
       # Set REDIS_HOST, REDIS_PORT, REDIS_PASSWORD and REDIS_SSL in .env for a cloud Redis service.
       REDIS_HOST: ${REDIS_HOST:-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-flickpond_dev_redis_password}
       REDIS_SSL: ${REDIS_SSL:-false}
       REDIS_QUEUE: video_jobs
       # Set MINIO_ENDPOINT, MINIO_USE_SSL and the access credentials in .env for cloud object storage.
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      # Used only when signing URLs returned to a browser; it must be host-accessible.
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-127.0.0.1:9000}
       MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
       MINIO_BUCKET: ${MINIO_BUCKET:-videos}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
       # Uncomment POSTGRES_DSN in .env to use a cloud PostgreSQL instance.
@@ -54,25 +43,24 @@ services:
     restart: unless-stopped
 
   worker:
-    image: python:3.12-slim
-    command:
-      - python
-      - -c
-      - |
-        import time
-        print("worker skeleton ready", flush=True)
-        while True:
-            time.sleep(3600)
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flickpond-worker:dev
+    # No container_name and no host ports, so `docker compose up --scale worker=2`
+    # brings up interchangeable replicas sharing one queue (N2/N5).
+    command: ["python", "-m", "app.worker"]
     environment:
       # Keep these values identical to the API values so both services use the same backends.
       REDIS_HOST: ${REDIS_HOST:-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-flickpond_dev_redis_password}
       REDIS_SSL: ${REDIS_SSL:-false}
       REDIS_QUEUE: video_jobs
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
       MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
       MINIO_BUCKET: ${MINIO_BUCKET:-videos}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
       # Keep this value identical to the API value when using a cloud PostgreSQL instance.
@@ -84,23 +72,34 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      # The api container runs `alembic upgrade head` on start, so waiting for
+      # it to be healthy is how the worker knows the jobs table exists.
+      api:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
+      # The worker holds a Redis connection for its whole life; if it can still
+      # talk to Redis it can still take jobs.
+      test: ["CMD", "python", "-c", "from app.queue import get_redis_connection; get_redis_connection().ping()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-flickpond_dev_redis_password}
+    # An RQ payload names a Python import path for the worker to call, so write
+    # access to this queue is a code-execution path into the worker. Require a
+    # password even though the port is loopback-only.
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
     ports:
       # This is the local host port only; the application port is REDIS_PORT above.
       - "127.0.0.1:6379:6379"
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -127,11 +126,18 @@ services:
     image: minio/minio:RELEASE.2024-06-13T22-53-53Z
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
+      # Development credentials, and only safe because both ports below are
+      # loopback-bound. Any deployment that publishes MinIO beyond this host
+      # must set MINIO_ROOT_USER and MINIO_ROOT_PASSWORD in .env first.
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
     ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      # Loopback-bound, matching redis and postgres. Without the 127.0.0.1
+      # prefix Docker binds these to 0.0.0.0, which puts the S3 API and the
+      # admin console -- holding every uploaded and processed video, behind
+      # the well-known default credentials above -- on the local network.
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio-data:/data
     healthcheck:
@@ -139,6 +145,26 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
+
+  frontend:
+    image: nginx:1.27-alpine
+    # Serves the static UI. Port 3000 is not arbitrary: the API's CORS
+    # allowlist in app/main.py is 127.0.0.1:3000 and localhost:3000, so
+    # changing this port means changing allow_origins too, or the browser
+    # will block every request the page makes.
+    ports:
+      - "127.0.0.1:3000:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost/index.html"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
 volumes:
