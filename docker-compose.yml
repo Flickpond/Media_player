@@ -149,14 +149,12 @@ services:
 
   frontend:
     image: nginx:1.27-alpine
-    # Serves the static UI. Port 3000 is not arbitrary: the API's CORS
-    # allowlist in app/main.py is 127.0.0.1:3000 and localhost:3000, so
-    # changing this port means changing allow_origins too, or the browser
-    # will block every request the page makes.
+    # nginx is the only public entry point; it proxies API and video requests.
     ports:
-      - "127.0.0.1:3000:80"
+      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-3000}:80"
     volumes:
       - ./frontend:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       api:
         condition: service_healthy
