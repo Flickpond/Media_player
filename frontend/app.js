@@ -3,7 +3,12 @@
 // Backend endpoints it depends on (see docs/contract.md):
 //   POST /upload     -> 202 { "job_id": "<uuid>" }                     (track B; not implemented yet)
 //   GET  /jobs/{id}  -> { id, filename, status, output_url?, error? }  (implemented)
-const API = window.location.port === "3000" ? "/api" : "http://127.0.0.1:8000";
+// nginx serves this page and proxies /api/ to the API on the internal network,
+// so a relative base is correct wherever the site is hosted. It must not depend
+// on the public port: a check like `location.port === "3000"` is false on 80 and
+// 443, which is every real deployment, and the fallback would then point the
+// browser at the *visitor's* own machine.
+const API = "/api";
 
 const form = document.getElementById("upload-form");
 const fileInput = document.getElementById("file-input");

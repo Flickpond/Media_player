@@ -78,7 +78,7 @@ describe("upload", () => {
     await submit(el);
 
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://127.0.0.1:8000/upload");
+    expect(url).toBe("/api/upload");
     expect(init.method).toBe("POST");
     expect(init.body.get("file")).toBeInstanceOf(File);
   });
@@ -92,7 +92,7 @@ describe("upload", () => {
 
     await submit(el);
 
-    expect(fetchMock.mock.calls[1][0]).toBe("http://127.0.0.1:8000/jobs/abc-123");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/jobs/abc-123");
   });
 
   it("disables the button while uploading so a double click cannot double post", async () => {

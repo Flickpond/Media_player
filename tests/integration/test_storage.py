@@ -1,6 +1,14 @@
+import os
 from pathlib import Path
 
+import pytest
+
 from app.services.storage import get_storage_service
+
+pytestmark = pytest.mark.skipif(
+    os.getenv("RUN_POSTGRES_TESTS") != "1",
+    reason="set RUN_POSTGRES_TESTS=1 to run tests that need the live compose stack",
+)
 
 
 async def test_upload_and_download(tmp_path: Path):
