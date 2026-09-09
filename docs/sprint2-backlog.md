@@ -68,10 +68,24 @@ This is a design gap, not a coding slip — sprint 1 scoped auth out
 deliberately. It only becomes exploitable the moment the API is reachable by
 someone who should not see everything.
 
-**Mitigated for now** by binding every published port to `127.0.0.1`. That is a
-deployment constraint, not a fix: the first time anyone publishes port 8000
-wider, every upload on the system becomes readable by whoever can reach it.
-Pagination (P5) caps how much leaks per request; it does not stop the leak.
+**Mitigated two ways, neither of them a fix.**
+
+1. Every service except nginx is pinned to `127.0.0.1`, and that is no longer
+   configurable — see the port policy in the README. nginx proxies `/api/` and
+   `/videos/` over the compose network, so nothing else needs a host port.
+2. A published deployment puts HTTP basic auth in front of the whole server via
+   `deploy/auth` — the page, `/api/` and `/videos/` alike. See
+   [`../deploy/auth/README.md`](../deploy/auth/README.md).
+
+Both are deployment controls. Basic auth is a *shared* password: it tells you
+nobody uninvited got in, not who did what, and it cannot express "this user may
+see their own jobs". Pagination (P5) caps how much leaks per request; it does
+not stop the leak. Delete the gate when this lands.
+
+This was not hypothetical. The Alibaba deployment ran for a time with
+PostgreSQL, Redis and the MinIO console on `0.0.0.0` and the API reachable
+through nginx, and `GET /api/jobs` served every job with a working signed
+download URL to anyone who found the address.
 
 **What it takes:**
 

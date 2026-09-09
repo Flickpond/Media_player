@@ -37,3 +37,22 @@ docker compose up -d frontend
 
 Both files are ignored by git (see the repository `.gitignore`). `/healthz`
 stays exempt so the container healthcheck keeps working.
+
+## The htpasswd file must be readable by the nginx *worker*
+
+Leave it world-readable (`chmod 644`). It holds a password hash, not a
+plaintext password, and the host it sits on should already be root-only.
+
+`chmod 600` looks more careful and silently breaks the gate. nginx's master
+process runs as root but drops its workers to the `nginx` user, and it is a
+worker that opens `auth_basic_user_file`. The failure is easy to miss because
+it only appears once someone supplies credentials:
+
+| Request | With `chmod 600` |
+|---|---|
+| no `Authorization` header | `401` — correct, the file is never opened |
+| correct username/password | **`500`** — `open() ... (13: Permission denied)` |
+
+So an unauthenticated probe suggests the gate is working perfectly, right up
+until a real user tries to log in. If you see a 500 from an authenticated
+request, check `docker logs` for `Permission denied` before anything else.
