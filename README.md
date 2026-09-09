@@ -21,14 +21,37 @@ The Sprint 1 source of truth is [`docs/sprint1-plan.md`](docs/sprint1-plan.md). 
 
 | Component | Responsibility | Default local address |
 | --- | --- | --- |
-| Frontend | Upload form, 2s status polling, playback | `http://localhost:3000` |
-| FastAPI | Upload and job-status HTTP API | `http://127.0.0.1:8000` |
+| nginx (frontend) | Serves the UI; proxies `/api/` and `/videos/`. The only public port. | `http://localhost:3000` (deploy: `:80`) |
+| FastAPI | Upload and job-status HTTP API | `127.0.0.1:8000` (loopback only) |
 | PostgreSQL | Durable job metadata and processing state | `127.0.0.1:5432` |
 | Redis + RQ | Delivery of job IDs to workers | `127.0.0.1:6379` |
-| MinIO | Original and processed video objects | API `127.0.0.1:9000`, console `127.0.0.1:9001` |
+| MinIO | Original and processed video objects | API `127.0.0.1:9000`, console `127.0.0.1:9001` (both loopback only) |
 | Worker | Copy job and one-way state transitions | Internal Compose service |
 
 The queue coordinates work, PostgreSQL records state, and MinIO stores the video bytes. Workers remain stateless, so any worker replica can process any queued job.
+
+### Port policy
+
+**nginx is the only service published beyond loopback.** The API, MinIO's S3 API
+and console, PostgreSQL and Redis are pinned to `127.0.0.1` in
+`docker-compose.yml` and that is deliberately not configurable — the application
+has no authentication of its own yet (**P1** in
+[`docs/sprint2-backlog.md`](docs/sprint2-backlog.md)), so anything that can reach
+the API can read every upload on the system.
+
+Reach an internal service from another machine with a tunnel, not a published
+port:
+
+```bash
+ssh -L 5432:127.0.0.1:5432 user@host    # psql against localhost:5432
+ssh -L 9001:127.0.0.1:9001 user@host    # MinIO console on localhost:9001
+```
+
+A deployment anyone else can reach sets `FRONTEND_BIND=0.0.0.0` and
+`FRONTEND_PORT=80`, and **must** put an access gate in `deploy/auth` first — see
+[`deploy/auth/README.md`](deploy/auth/README.md). Note that `ufw` will not save
+you here: Docker publishes ports through its own iptables chain and bypasses ufw
+entirely, so a host that believes it is firewalled is not.
 
 ## Repository layout
 
