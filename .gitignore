@@ -8,3 +8,17 @@ __pycache__/
 .coverage
 htmlcov/
 .mypy_cache/
+
+# Credentials and keys. Never commit these -- a key in a public repo is
+# compromised the moment it is pushed, whether or not anyone notices.
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+*.ppk
+
+# Deployment access gate. The directory is tracked (see deploy/auth/README.md),
+# its contents are not -- a committed password is a leaked password.
+deploy/auth/*
+!deploy/auth/README.md
