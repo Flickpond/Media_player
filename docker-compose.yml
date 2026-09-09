@@ -182,7 +182,13 @@ services:
     healthcheck:
       # /healthz, not /index.html: the gate in deploy/auth applies to the whole
       # server, and this check runs inside the container with no credentials.
-      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost/healthz"]
+      #
+      # 127.0.0.1, not localhost: mounting nginx.conf read-only stops the image's
+      # 10-listen-on-ipv6-by-default.sh from adding `listen [::]:80`, so nginx is
+      # IPv4-only -- while /etc/hosts still maps localhost to ::1 first. wget
+      # would try IPv6, get refused, and report an otherwise healthy service as
+      # failed.
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
