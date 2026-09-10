@@ -12,6 +12,7 @@ from app.models.job import JobStatus
 from app.queue import enqueue_job, get_redis_connection
 from app.repositories.jobs import list_source_keys, list_stale, mark_stale_failed
 from app.services.storage import get_storage_service
+from app.worker.__main__ import configure_logging
 
 logger = logging.getLogger("app.worker.reaper")
 
@@ -19,7 +20,7 @@ logger = logging.getLogger("app.worker.reaper")
 async def run_once() -> tuple[int, int, int]:
     settings = get_settings()
     now = datetime.now(UTC)
-    lease_before = now - timedelta(seconds=settings.worker_job_timeout_seconds * 2)
+    lease_before = now - timedelta(seconds=settings.reaper_lease_seconds)
     grace_before = now - timedelta(seconds=settings.reaper_orphan_grace_seconds)
     reaped = requeued = deleted = 0
 
@@ -49,6 +50,7 @@ async def run_once() -> tuple[int, int, int]:
 
 
 async def main() -> None:
+    configure_logging("INFO")
     settings = get_settings()
     while True:
         try:
