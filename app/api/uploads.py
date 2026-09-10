@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
+from app.api.deps import CurrentUser
 from app.database import get_session
 from app.queue import enqueue_job
 from app.repositories.jobs import create_job
@@ -68,6 +69,7 @@ def safe_filename(raw: str | None) -> str:
 @router.post("/upload", status_code=202)
 async def upload_video(
     file: Annotated[UploadFile, File(...)],
+    user: CurrentUser,
     storage: StorageDependency,
     session: SessionDependency,
 ):
@@ -123,6 +125,7 @@ async def upload_video(
     await create_job(
         session,
         job_id=job_id,
+        owner_id=user.id,
         filename=filename,
         source_key=source_key,
     )

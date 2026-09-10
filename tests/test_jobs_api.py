@@ -11,6 +11,7 @@ from app.main import create_app
 from app.models.job import Job, JobStatus
 from app.repositories.jobs import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.services.output_urls import get_output_url_signer
+from tests.conftest import authenticate_as
 
 
 class FakeSigner:
@@ -19,7 +20,7 @@ class FakeSigner:
 
 
 @pytest_asyncio.fixture
-async def client():
+async def client(test_user):
     application = create_app()
 
     async def fake_session():
@@ -27,6 +28,7 @@ async def client():
 
     application.dependency_overrides[get_session] = fake_session
     application.dependency_overrides[get_output_url_signer] = FakeSigner
+    authenticate_as(application, test_user)
     transport = ASGITransport(app=application)
     async with AsyncClient(transport=transport, base_url="http://test") as test_client:
         yield test_client
@@ -65,7 +67,7 @@ async def test_get_queued_job_omits_internal_and_empty_fields(
 ) -> None:
     job = make_job()
 
-    async def fake_get_job(_session, job_id: UUID):
+    async def fake_get_job(_session, job_id: UUID, *, owner_id=None):
         assert job_id == job.id
         return job
 
@@ -86,7 +88,7 @@ async def test_get_done_job_returns_presigned_output_url(
 ) -> None:
     job = make_job(status=JobStatus.DONE, output_key="outputs/demo.mp4")
 
-    async def fake_get_job(_session, _job_id: UUID):
+    async def fake_get_job(_session, _job_id: UUID, *, owner_id=None):
         return job
 
     monkeypatch.setattr(jobs_api, "get_job", fake_get_job)
@@ -106,7 +108,7 @@ async def test_get_failed_job_returns_readable_error(
 ) -> None:
     job = make_job(status=JobStatus.FAILED, error="copy failed: object missing")
 
-    async def fake_get_job(_session, _job_id: UUID):
+    async def fake_get_job(_session, _job_id: UUID, *, owner_id=None):
         return job
 
     monkeypatch.setattr(jobs_api, "get_job", fake_get_job)
@@ -121,7 +123,7 @@ async def test_get_failed_job_returns_readable_error(
 async def test_get_unknown_job_returns_contract_error(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def fake_get_job(_session, _job_id: UUID):
+    async def fake_get_job(_session, _job_id: UUID, *, owner_id=None):
         return None
 
     monkeypatch.setattr(jobs_api, "get_job", fake_get_job)
@@ -138,7 +140,7 @@ async def test_list_jobs_returns_contract_shape(
     queued = make_job()
     done = make_job(status=JobStatus.DONE, output_key="outputs/ready.mp4")
 
-    async def fake_list_jobs(_session, *, limit, offset):
+    async def fake_list_jobs(_session, *, owner_id=None, limit, offset):
         return [done, queued]
 
     monkeypatch.setattr(jobs_api, "list_jobs", fake_list_jobs)
@@ -153,7 +155,7 @@ async def test_list_jobs_returns_contract_shape(
 
 @pytest.mark.asyncio
 async def test_list_jobs_can_be_empty(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_list_jobs(_session, *, limit, offset):
+    async def fake_list_jobs(_session, *, owner_id=None, limit, offset):
         return []
 
     monkeypatch.setattr(jobs_api, "list_jobs", fake_list_jobs)
@@ -171,7 +173,7 @@ def captured_page(monkeypatch: pytest.MonkeyPatch) -> dict:
     """Records the limit/offset the endpoint actually asked the repository for."""
     seen: dict = {}
 
-    async def fake_list_jobs(_session, *, limit, offset):
+    async def fake_list_jobs(_session, *, owner_id=None, limit, offset):
         seen["limit"] = limit
         seen["offset"] = offset
         return []
