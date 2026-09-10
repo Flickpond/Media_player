@@ -27,3 +27,8 @@ deploy/auth/*
 # Let's Encrypt state. conf/ holds private keys; www/ is transient challenge
 # files. The directories are created on demand -- see docs/sprint2-plan.md S2-05.
 deploy/certbot/
+
+# Deployment TLS server block. The directory is tracked, its contents are not:
+# hostnames and certificate paths are deployment-specific. See the README.
+deploy/nginx-tls/*
+!deploy/nginx-tls/README.md
