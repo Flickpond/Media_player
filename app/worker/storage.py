@@ -17,6 +17,7 @@ from minio import Minio
 from minio.commonconfig import CopySource
 
 from app.config import get_settings
+from app.services.minio_client import bucket, internal_client
 
 
 class ObjectStoreError(RuntimeError):
@@ -196,14 +197,8 @@ class CopyProcessor:
 @lru_cache
 def get_processing_step() -> ProcessingStep:
     settings = get_settings()
-    client = Minio(
-        settings.minio_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=settings.minio_use_ssl,
-        region=settings.minio_region,
-    )
-    store = MinioObjectStore(client, bucket=settings.minio_bucket)
+    # The internal client: the worker only ever reads and writes objects.
+    store = MinioObjectStore(internal_client(), bucket=bucket())
     return FfmpegProcessor(
         store,
         output_prefix=settings.worker_output_prefix,

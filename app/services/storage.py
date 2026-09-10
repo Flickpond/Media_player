@@ -5,7 +5,7 @@ from typing import BinaryIO
 from minio import Minio
 from starlette.concurrency import run_in_threadpool
 
-from app.config import get_settings
+from app.services.minio_client import bucket, internal_client
 
 
 class StorageService:
@@ -92,17 +92,6 @@ class StorageService:
 
 @lru_cache
 def get_storage_service() -> StorageService:
-    settings = get_settings()
-
-    client = Minio(
-        settings.minio_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=settings.minio_use_ssl,
-        region=settings.minio_region,
-    )
-
-    return StorageService(
-        client,
-        bucket=settings.minio_bucket,
-    )
+    # The internal client: this runs inside the compose network and never
+    # produces a URL anyone else opens. See app/services/minio_client.py.
+    return StorageService(internal_client(), bucket=bucket())
