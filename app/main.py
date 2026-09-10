@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -8,10 +10,27 @@ from app.api.jobs import router as jobs_router
 from app.api.uploads import MAX_FILE_SIZE
 from app.api.uploads import router as uploads_router
 from app.errors import ApiForbiddenError, ApiNotFoundError, ApiUnauthorizedError
+from app.services.storage import get_storage_service
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Make sure the bucket exists, once, before serving anything.
+
+    This used to happen on every upload. Doing it here costs one round trip per
+    process instead of one per request, and the worker can rely on it because
+    compose gates the worker on the API being healthy.
+
+    A failure here is deliberately fatal: an API that cannot reach object
+    storage has nothing useful to offer, and failing at startup is far easier
+    to diagnose than every upload failing later.
+    """
+    await get_storage_service().ensure_bucket()
+    yield
 
 
 def create_app() -> FastAPI:
-    application = FastAPI(title="Flickpond API", version="0.1.0")
+    application = FastAPI(title="Flickpond API", version="0.1.0", lifespan=lifespan)
 
     @application.middleware("http")
     async def reject_oversized_bodies(request: Request, call_next):
