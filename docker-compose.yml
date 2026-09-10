@@ -224,6 +224,16 @@ services:
     ports:
       - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-3000}:80"
       - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_TLS_PORT:-3443}:443"
+    # Reload periodically so a renewed certificate is actually picked up.
+    # nginx reads the certificate once at startup and keeps it in memory --
+    # certbot rewriting the file on disk changes nothing until the master
+    # process re-reads it, so without this the site would serve an expired
+    # certificate despite a valid one sitting right there. The reload is
+    # graceful: in-flight requests finish on the old workers. Harmless with no
+    # certificate, which is why it is unconditional rather than deployment-only.
+    command: >-
+      sh -c "while :; do sleep 12h & wait $${!}; nginx -s reload; done &
+      exec nginx -g 'daemon off;'"
     volumes:
       - ./frontend:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
@@ -256,6 +266,23 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  certbot:
+    image: certbot/certbot:latest
+    # Behind a profile: a developer with no certificate has nothing to renew,
+    # and should not pull this image on `docker compose up`. A deployment sets
+    # COMPOSE_PROFILES=tls in .env so it starts with everything else.
+    profiles: ["tls"]
+    volumes:
+      - ./deploy/certbot/conf:/etc/letsencrypt
+      - ./deploy/certbot/www:/var/www/certbot
+    # `renew` is a no-op until roughly 30 days before expiry, so running it
+    # twice a day costs nothing and means a transient failure has many more
+    # chances before the certificate actually lapses.
+    entrypoint: >-
+      sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet;
+      sleep 12h & wait $${!}; done"
     restart: unless-stopped
 
 volumes:
