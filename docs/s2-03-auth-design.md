@@ -1,10 +1,12 @@
 # S2-03 — Authorization: design decisions
 
 **Written:** 10 September 2026 · against `main` @ `e6fcee9`
-**Status:** decided, not implemented. Owned mainly by **track C**.
+**Status:** implemented. Every decision below is now in the code; this stays
+as the record of *why*, not as a plan.
 
-This exists so nobody re-derives choices that have already been made. Where a
-decision is still open it says so explicitly, and says who has to make it.
+This exists so nobody re-derives choices that have already been made. Every
+decision here is settled and built; the reasoning is kept because the reasoning
+is the part that is expensive to reconstruct.
 
 Read alongside [`sprint2-plan.md`](sprint2-plan.md) §S2-03 for the work
 breakdown, and [`known-traps.md`](known-traps.md) before touching the schema.
@@ -48,10 +50,11 @@ Three consequences to design for, not discover:
 
 ### Prerequisite that outranks all of this
 
-**TLS.** Over plain HTTP the login POST and the cookie both cross the network
-readable, and `Secure` is a no-op. Shipping authentication over HTTP is worse
-than the current basic-auth gate, because it looks like a control and is not.
-S2-05 is blocked only on a domain name. Get one before this ships.
+**TLS**, which landed first (S2-05). Over plain HTTP the login POST and the
+cookie both cross the network readable and `Secure` is a no-op -- shipping
+authentication over HTTP is worse than a basic-auth gate, because it looks like
+a control and is not. The site is on <https://flickpond.com>, so the `Secure`
+flag now means something.
 
 ---
 
@@ -103,14 +106,19 @@ option for marks.
 
 ---
 
-## 3. Dependencies to add
+## 3. Dependencies
 
-None of these are present today:
+Added to `pyproject.toml`:
 
 ```toml
-"pyjwt>=2.10,<3",        # or python-jose; pyjwt is smaller and sufficient
-"bcrypt>=4.2,<5",        # or argon2-cffi, declared explicitly — see §2
+"pyjwt>=2.10,<3",
+"bcrypt>=4.2,<5",
+"email-validator>=2.2,<3",   # pydantic's EmailStr needs it
 ```
+
+bcrypt was chosen over argon2id: the proposal names it, and `argon2-cffi` is
+only in the tree transitively via `minio`, so depending on it without declaring
+it would break the day minio drops it.
 
 ---
 
@@ -124,9 +132,12 @@ None of these are present today:
 
 **Algorithm:** HS256 is sufficient — one service issues and verifies. The
 secret goes in `Settings` as `jwt_secret`, with **no default** so it fails
-loudly when unset, and it must reach the container through
-`docker-compose.yml` (T-19 — a settings field is not configurable until compose
-passes it through).
+loudly when unset, and it reaches the container through `docker-compose.yml`
+(T-19 — a settings field is not configurable until compose passes it through).
+
+It must also be **at least 32 bytes**. RFC 7518 §3.2 wants an HMAC key at least
+as long as the hash output, and PyJWT only *warns* below that — a warning in a
+log nobody reads is not a control, so `security.py` refuses instead.
 
 **Lifetime:** 15–30 minutes. Short, because it cannot be revoked. Add a refresh
 token only if sessions need to outlive that.
@@ -152,7 +163,7 @@ TLS lands — set it anyway so it is correct the moment TLS arrives.
 | `POST /auth/register` | email + password → creates a user, role `user`. 409 on duplicate email. |
 | `POST /auth/login` | email + password → `Set-Cookie` with the JWT. **401 with an identical message for both unknown email and wrong password** — distinguishing them tells an attacker which emails exist. |
 | `POST /auth/logout` | responds `Set-Cookie: access_token=; Max-Age=0`. Needed because JS cannot clear an `HttpOnly` cookie. |
-| `GET /api/me` | `{ id, email, role }` for the current caller. The frontend needs this because it cannot read the token. |
+| `GET /auth/me` | `{ id, email, role }` for the current caller. The frontend needs this because it cannot read the token. |
 
 ### Changed
 
@@ -167,9 +178,9 @@ the endpoints stay readable and there is one place to audit.
 
 ---
 
-## 6. The open decision: the operator view
+## 6. The operator view — decided
 
-**This needs the team, and it needs deciding before anyone writes the query.**
+**Option 2: a separate `GET /admin/jobs`, operator-only.** Implemented.
 
 Sprint 1's plan carries an operator story — *"see all jobs and their status, so
 I can spot stuck jobs"*. That is precisely the endpoint that must stop being
@@ -185,10 +196,19 @@ Three options:
 3. **Drop the operator view for now.** Honest, and the reaper plus its logging
    now covers most of "spot stuck jobs" — that was the story's actual purpose.
 
-**Recommendation: option 2.** Conditional behaviour on a shared endpoint is the
-kind of thing that passes tests written by the person who built it and
-surprises everyone else. And it changes the endpoint's *shape*, not just its
-filter, which is why this must be settled first.
+**Chosen: option 2.** Conditional behaviour on a shared endpoint is the kind of
+thing that passes tests written by the person who built it and surprises
+everyone else.
+
+It also turned out to be nearly free: `list_jobs` already returned every
+owner's jobs, so the operator route reuses that query unchanged and the
+user-facing one gained the scoping. And it gives RBAC something real to gate,
+which the proposal asks for as a Must Have -- a role that guards nothing is
+hollow evidence.
+
+Option 3 stays defensible if the team later decides nobody wants an operator
+screen: the reaper now detects stuck jobs and logs them, which is what that
+story existed to serve. An unused privileged endpoint is only attack surface.
 
 ---
 

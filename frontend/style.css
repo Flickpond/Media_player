@@ -81,3 +81,15 @@ video {
 [hidden] {
   display: none !important;
 }
+
+/* A button that reads as a link: used for the sign-in/register toggle and for
+   signing out, neither of which is the page's primary action. */
+.linkish {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #4f8ef7;
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}

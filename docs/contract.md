@@ -22,6 +22,7 @@ Sprint 1 has no retries. A failed job must contain a readable error.
 | Column | Type | Rule |
 | --- | --- | --- |
 | `id` | UUID | Primary key |
+| `owner_id` | UUID | Who uploaded it. FK to `users.id`, indexed, NOT NULL |
 | `filename` | Text | Original filename |
 | `status` | Text | One of the four states above |
 | `source_key` | Text | MinIO input object key |
@@ -31,6 +32,30 @@ Sprint 1 has no retries. A failed job must contain a readable error.
 | `updated_at` | Timestamp with time zone | Updated on every worker transition |
 
 The table has indexes on `status` and `created_at`.
+
+## Authentication
+
+Every job endpoint requires a caller. Authentication uses signed JWTs per
+proposal §5.4, delivered in an **HttpOnly cookie** rather than an
+`Authorization` header, so the token is not reachable by script.
+
+```text
+POST /auth/register   201 { id, email, role }   409 if the email is taken
+POST /auth/login      200 { id, email, role }   401, identical for a wrong
+                                                password and an unknown email
+POST /auth/logout     204, clears the cookie
+GET  /auth/me         200 { id, email, role }   401 if not signed in
+```
+
+`/auth/me` exists because the page cannot read an HttpOnly cookie, and logout
+is a server endpoint for the same reason -- a script cannot delete one.
+
+Roles are `user` and `operator`, constrained in the database. A job belonging to
+another user is **404, not 403**: a 403 confirms the id exists and turns the
+endpoint into a way to discover valid job ids. 403 is only for a role check.
+
+`JWT_SECRET` has no default and must be at least 32 bytes; the API refuses to
+issue or accept a token without one.
 
 ## HTTP API
 
@@ -44,9 +69,20 @@ GET /jobs/{id}
   404 { "error": "not found" }
 
 GET /jobs?limit=<1..200>&offset=<n>
-  200 [ ...same job shape... ]
+  200 [ ...same job shape... ]   // the caller's own jobs only
+  401 { "error": "not authenticated" }
   422 { "detail": [...] }   // limit or offset out of range
+
+GET /admin/jobs?limit=<1..200>&offset=<n>
+  200 [ ...same job shape... ]   // every owner's jobs
+  403 { "error": "operator role required" }
 ```
+
+`GET /admin/jobs` is sprint 1's operator story ("see all jobs, so I can spot
+stuck jobs"), which used to be what `GET /jobs` did for everybody. It is a
+separate route rather than a role branch inside `GET /jobs`: one URL that means
+different things depending on who asks is easy to get wrong and easy to
+mis-test.
 
 The API never returns `source_key` or `output_key`. For a completed job, it converts `output_key` to a time-limited MinIO `output_url`. Null optional fields are omitted from JSON.
 
@@ -59,9 +95,9 @@ Both query parameters are optional: `limit` defaults to 50 and is capped at 200,
 The shared asynchronous repository functions are:
 
 ```python
-create_job(session, *, filename, source_key, job_id=None)
-get_job(session, job_id)
-list_jobs(session, *, limit=50, offset=0)
+create_job(session, *, owner_id, filename, source_key, job_id=None)
+get_job(session, job_id, *, owner_id=None)  # None = any owner (worker, reaper)
+list_jobs(session, *, owner_id=None, limit=50, offset=0)  # None = every owner
 mark_processing(session, job_id)
 mark_done(session, job_id, *, output_key)
 mark_failed(session, job_id, *, error)

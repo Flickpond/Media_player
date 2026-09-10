@@ -5,6 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import CurrentUser, OperatorUser
 from app.database import get_session
 from app.errors import ApiNotFoundError
 from app.models.job import Job, JobStatus
@@ -13,6 +14,10 @@ from app.schemas.job import ErrorResponse, JobResponse
 from app.services.output_urls import OutputUrlSigner, get_output_url_signer
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+# Separate route rather than a role branch inside GET /jobs. One URL that
+# means different things depending on who asks is the kind of thing that
+# passes its author's tests and surprises everyone else.
+admin_router = APIRouter(prefix="/admin/jobs", tags=["admin"])
 SessionDependency = Annotated[AsyncSession, Depends(get_session)]
 SignerDependency = Annotated[OutputUrlSigner, Depends(get_output_url_signer)]
 
@@ -38,12 +43,13 @@ async def _to_response(job: Job, signer: OutputUrlSigner) -> JobResponse:
     response_model_exclude_none=True,
 )
 async def get_jobs(
+    user: CurrentUser,
     session: SessionDependency,
     signer: SignerDependency,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[JobResponse]:
-    jobs = await list_jobs(session, limit=limit, offset=offset)
+    jobs = await list_jobs(session, owner_id=user.id, limit=limit, offset=offset)
     # Signed as a batch. Each signature is a local HMAC that still costs a hop
     # to the thread pool, so awaiting them one at a time made the endpoint's
     # latency the sum of every row's hop rather than the slowest one.
@@ -58,10 +64,34 @@ async def get_jobs(
 )
 async def get_job_by_id(
     job_id: UUID,
+    user: CurrentUser,
     session: SessionDependency,
     signer: SignerDependency,
 ) -> JobResponse:
-    job = await get_job(session, job_id)
+    # Another owner's job is 404, never 403: a 403 confirms the id exists.
+    job = await get_job(session, job_id, owner_id=user.id)
     if job is None:
         raise ApiNotFoundError("not found")
     return await _to_response(job, signer)
+
+
+@admin_router.get(
+    "",
+    response_model=list[JobResponse],
+    response_model_exclude_none=True,
+)
+async def get_all_jobs(
+    _operator: OperatorUser,
+    session: SessionDependency,
+    signer: SignerDependency,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[JobResponse]:
+    """Every job, for spotting stuck ones. Operators only.
+
+    This is sprint 1's operator story, which used to be what GET /jobs did for
+    everybody. It keeps the unscoped query -- `owner_id=None` -- and puts a
+    role in front of it.
+    """
+    jobs = await list_jobs(session, owner_id=None, limit=limit, offset=offset)
+    return list(await asyncio.gather(*(_to_response(job, signer) for job in jobs)))
