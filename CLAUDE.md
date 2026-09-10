@@ -8,17 +8,21 @@ browser -> nginx -> FastAPI -> MinIO + PostgreSQL + Redis/RQ -> worker (1..N)
                                        queued -> processing -> done | failed
 ```
 
-**Sprint 1 shipped the whole pipeline except real transcoding** — the worker
-does a server-side object copy as a stand-in for FFmpeg. Replacing it is the
-first feature of sprint 2.
+Sprint 1 shipped the pipeline with a copy job standing in for transcoding.
+**Sprint 2 replaced it with FFmpeg**, added a reaper that recovers jobs left
+behind by a crashed worker, and put CI in front of `main` as a required check.
+
+The big thing still missing is **authorization** — the API has none, so the
+deployment sits behind a shared-password nginx gate. That is S2-03.
 
 ## Read before coding
 
 | File | Why |
 |---|---|
 | [`docs/sprint2-plan.md`](docs/sprint2-plan.md) | What to build, in what order, with acceptance criteria |
-| [`docs/known-traps.md`](docs/known-traps.md) | 17 traps already hit here. **Most fail silently.** |
+| [`docs/known-traps.md`](docs/known-traps.md) | 19 traps already hit here. **Most fail silently.** |
 | [`docs/contract.md`](docs/contract.md) | Shared API and schema boundary — changing it means telling the team |
+| [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md) | The next work item's decisions: JWT in an HttpOnly cookie, schema, teardown |
 
 Also: [`sprint1-report.md`](docs/sprint1-report.md) (what was built, bug log),
 [`sprint2-backlog.md`](docs/sprint2-backlog.md) (open findings P1–P9),
@@ -77,6 +81,7 @@ Sprint 1 split five ways and ownership follows the code into `main`:
 
 Alibaba ECS, `47.238.64.156`, tracks `origin/main` at `/root/Media_player`.
 nginx on :80 behind HTTP basic auth (a stopgap until authorization lands).
+Eight containers: nginx, api, 2 workers, reaper, postgres, redis, minio.
 
 ```bash
 ssh -i <key>.pem root@47.238.64.156

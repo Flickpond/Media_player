@@ -31,6 +31,8 @@ read that entry, then work. If you hit something new, add an entry.
 | [T-15](#t-15) | Repo | CRLF shell scripts fail on Linux |
 | [T-16](#t-16) | Repo | Private keys in the working directory |
 | [T-17](#t-17) | Repo | Git identity mismatch splits contribution history |
+| [T-18](#t-18) | Logging | A logger with no `basicConfig` writes nothing |
+| [T-19](#t-19) | Config | A settings field is not configurable until compose passes it through |
 
 ---
 
@@ -351,3 +353,68 @@ real fix is rotating the key on the server.
 *Avoid:* before committing on a new machine, run
 `git log --format='%an <%ae>' | sort -u` and confirm your identity matches one
 already in the history.
+
+---
+
+## Logging and configuration
+
+### T-18
+
+**A logger with no `basicConfig` writes nothing. This has now happened twice.**
+
+*Symptom:* a component runs correctly and produces no log output at all.
+
+*Cause:* `logging.getLogger(...)` creates a logger; it does not configure
+logging. Without a `basicConfig` call somewhere in the process, the root logger
+has no handler and no level, so `logger.info()` is discarded outright and
+`logger.warning()` falls through to Python's `lastResort` handler -- stderr,
+bare message, no timestamp and no logger name.
+
+*History:* this is **BUG-02 from sprint 1** ("worker silently ignored
+`--log-level`", see [`sprint1-report.md`](sprint1-report.md) §4) recurring in
+`app/worker/reaper.py`. Two sprints, two entry points, one cause. The reaper
+version was worse: it fails users' jobs and deletes their objects, and it did
+both in total silence in production before anyone noticed.
+
+*Fix (already in place):* every entry point calls `configure_logging()` from
+`app/worker/__main__.py`, which uses `force=True` -- necessary because RQ
+installs its own handlers before our code runs, and `basicConfig` is a no-op
+once handlers exist.
+
+*Avoid:* **a new `python -m` entry point needs a `configure_logging()` call in
+its `main()`.** Creating the logger is not the same as turning it on. Verify by
+running the thing and looking for output -- a component that logs nothing looks
+identical to a component that is working perfectly.
+
+### T-19
+
+**A settings field is not configurable until compose passes it through.**
+
+*Symptom:* you add a field to `Settings`, set the matching variable in `.env`,
+restart, and the container still uses the default.
+
+*Cause:* compose's `.env` supplies variables for **substitution inside
+`docker-compose.yml`**, not to the container's environment. Our services
+declare explicit `environment:` blocks, so a variable the compose file never
+mentions never reaches the process. `pydantic-settings` then falls back to the
+default, silently and correctly.
+
+*How it surfaced:* all ten settings added in sprint 2 -- the five
+`WORKER_FFMPEG_*`, `WORKER_JOB_TIMEOUT_SECONDS`, `WORKER_OUTPUT_PREFIX`, and
+the three `REAPER_*` -- were unreachable in the deployment. `REAPER_LEASE_SECONDS`
+was added specifically so the crash-recovery demo would not take 30 minutes,
+and setting it in `.env` changed nothing.
+
+*Fix (already in place):* the pass-throughs are in `docker-compose.yml`, in the
+form `REAPER_LEASE_SECONDS: ${REAPER_LEASE_SECONDS:-1800}`, which keeps the
+default in one place while making it settable.
+
+*Avoid:* adding a field to `app/config.py` is half the change. Add the
+pass-through in the same commit, and check it with:
+
+```bash
+docker compose config --format json | python3 -c "import json,sys;   print(sorted(json.load(sys.stdin)['services']['worker']['environment']))"
+```
+
+`WORKER_FFMPEG_BINARY` is deliberately excluded -- it decides *what executes*
+rather than how, and the binary is a property of the image.
