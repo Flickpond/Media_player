@@ -2,10 +2,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.auth import router as auth_router
+from app.api.jobs import admin_router
 from app.api.jobs import router as jobs_router
 from app.api.uploads import MAX_FILE_SIZE
 from app.api.uploads import router as uploads_router
-from app.errors import ApiNotFoundError
+from app.errors import ApiForbiddenError, ApiNotFoundError, ApiUnauthorizedError
 
 
 def create_app() -> FastAPI:
@@ -36,12 +38,24 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    application.include_router(auth_router)
     application.include_router(jobs_router)
+    application.include_router(admin_router)
     application.include_router(uploads_router)
 
     @application.exception_handler(ApiNotFoundError)
     async def not_found_handler(_request: Request, exception: ApiNotFoundError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"error": exception.message})
+
+    @application.exception_handler(ApiUnauthorizedError)
+    async def unauthorized_handler(
+        _request: Request, exception: ApiUnauthorizedError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=401, content={"error": exception.message})
+
+    @application.exception_handler(ApiForbiddenError)
+    async def forbidden_handler(_request: Request, exception: ApiForbiddenError) -> JSONResponse:
+        return JSONResponse(status_code=403, content={"error": exception.message})
 
     @application.get("/health", tags=["health"])
     async def health() -> dict[str, str]:

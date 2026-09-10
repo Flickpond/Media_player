@@ -48,10 +48,11 @@ async def session_factory():
     await engine.dispose()
 
 
-async def seed_job(session_factory, job_id: UUID) -> None:
+async def seed_job(session_factory, job_id: UUID, owner) -> None:
     async with session_factory() as session:
         await create_job(
             session,
+            owner_id=owner.id,
             job_id=job_id,
             filename="demo.mp4",
             source_key=f"uploads/{job_id}/demo.mp4",
@@ -64,9 +65,9 @@ async def cleanup(session_factory, job_id: UUID) -> None:
         await session.commit()
 
 
-async def test_success_path_persists_done_and_output_key(session_factory):
+async def test_success_path_persists_done_and_output_key(session_factory, owner):
     job_id = uuid4()
-    await seed_job(session_factory, job_id)
+    await seed_job(session_factory, job_id, owner)
     try:
         outcome = await process_job_async(
             job_id,
@@ -85,9 +86,9 @@ async def test_success_path_persists_done_and_output_key(session_factory):
         await cleanup(session_factory, job_id)
 
 
-async def test_failure_path_persists_failed_and_readable_error(session_factory):
+async def test_failure_path_persists_failed_and_readable_error(session_factory, owner):
     job_id = uuid4()
-    await seed_job(session_factory, job_id)
+    await seed_job(session_factory, job_id, owner)
     try:
         outcome = await process_job_async(
             job_id,
@@ -105,9 +106,9 @@ async def test_failure_path_persists_failed_and_readable_error(session_factory):
         await cleanup(session_factory, job_id)
 
 
-async def test_second_delivery_of_a_finished_job_changes_nothing(session_factory):
+async def test_second_delivery_of_a_finished_job_changes_nothing(session_factory, owner):
     job_id = uuid4()
-    await seed_job(session_factory, job_id)
+    await seed_job(session_factory, job_id, owner)
     try:
         await process_job_async(
             job_id, session_factory=session_factory, step=FakeStep(output_key="outputs/first.mp4")
