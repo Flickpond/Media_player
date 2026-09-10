@@ -165,7 +165,7 @@ the sprint record.
 | [S2-01](#s2-01--ffmpeg-transcoding) | FFmpeg transcoding | 2–3 days | **DONE** — deployed, verified transcoding 1920×1080 → 1280×720 in production |
 | [S2-02](#s2-02--reaper-and-sweeper) | Reaper + sweeper (covers P2) | 2 days | **DONE** — deployed; crash recovery demonstrated with `docker kill` |
 | [S2-04](#s2-04--cicd-pipeline) | CI/CD pipeline | 0.5 day | **DONE** — 5 jobs, required status checks on `main` |
-| [S2-03](#s2-03--authorization-p1) | Authorization (P1) | 2–3 days | **Must** — the only thing blocking a real deployment. Mostly C's files |
+| [S2-03](#s2-03--authorization-p1) | Authorization (P1) | 2–3 days | **Must** — the only thing blocking a real deployment. Mostly C's files. Mechanism decided: [design note](s2-03-auth-design.md) |
 | [S2-05](#s2-05--tls) | TLS on 443 | 0.5 day | Should — **blocked**, Let's Encrypt will not issue for a bare IP |
 | [S2-06](#s2-06--consolidate-the-minio-clients) | Consolidate MinIO clients | 0.5 day | Should — **do NOT fold into S2-01**, it spans three tracks |
 | [S2-07](#s2-07--ensure_bucket-per-upload-p6) | `ensure_bucket` per upload (P6) | 1 hour | Could |
@@ -388,6 +388,12 @@ directly. No lookup table, no scan, no correlation logic.
 ---
 
 ## S2-03 — Authorization (P1)
+
+> **The mechanism is decided:** signed JWTs in an `HttpOnly` cookie. Schema,
+> endpoints, cookie attributes, the open operator-view question and the
+> teardown checklist are in
+> [`s2-03-auth-design.md`](s2-03-auth-design.md). **Read that first** — it
+> exists so nobody re-derives decisions already made.
 
 **Goal:** a user sees their own jobs, and only their own.
 
