@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     worker_ffmpeg_max_height: int = 720
     worker_ffmpeg_timeout_seconds: int = 870
     reaper_interval_seconds: int = 60
+    reaper_lease_seconds: int = 1800
     reaper_orphan_grace_seconds: int = 3600
 
     @property
