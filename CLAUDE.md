@@ -22,6 +22,7 @@ deployment sits behind a shared-password nginx gate. That is S2-03.
 | [`docs/sprint2-plan.md`](docs/sprint2-plan.md) | What to build, in what order, with acceptance criteria |
 | [`docs/known-traps.md`](docs/known-traps.md) | 19 traps already hit here. **Most fail silently.** |
 | [`docs/contract.md`](docs/contract.md) | Shared API and schema boundary — changing it means telling the team |
+| [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md) | The next work item's decisions: JWT in an HttpOnly cookie, schema, teardown |
 
 Also: [`sprint1-report.md`](docs/sprint1-report.md) (what was built, bug log),
 [`sprint2-backlog.md`](docs/sprint2-backlog.md) (open findings P1–P9),
