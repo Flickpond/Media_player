@@ -20,25 +20,31 @@ uninvited got in, not who did what.
 
 ## Setting it up on a host
 
+Use the script. Do not write `htpasswd` by hand -- see the trap below.
+
 ```bash
-# 1. Create the password file (htpasswd comes from apache2-utils).
-docker run --rm httpd:2.4-alpine htpasswd -nbB flickpond '<a-real-password>' \
-  > deploy/auth/htpasswd
-
-# 2. Turn the gate on.
-cat > deploy/auth/auth.conf <<'CONF'
-auth_basic "Flickpond";
-auth_basic_user_file /etc/nginx/app-auth/htpasswd;
-CONF
-
-# 3. Reload.
-docker compose up -d frontend
+./deploy/auth/set-password.sh                    # random password, user "flickpond"
+./deploy/auth/set-password.sh alice              # random password, user "alice"
+./deploy/auth/set-password.sh alice 'a-secret'   # explicit password
 ```
 
-Both files are ignored by git (see the repository `.gitignore`). `/healthz`
-stays exempt so the container healthcheck keeps working.
+It writes both files with the right mode, reloads nginx if the stack is up, and
+then verifies the gate actually gates. Rotating a password is the same command.
 
-## The htpasswd file must be readable by the nginx *worker*
+To check a gate you did not just create:
+
+```bash
+./deploy/auth/verify.sh http://127.0.0.1 flickpond 'the-password'
+```
+
+`verify.sh` checks three things: anonymous requests get 401, `/healthz` stays
+200 so the container healthcheck keeps working, and correct credentials get 200
+rather than the 500 described below.
+
+
+## The 600 trap
+
+### The htpasswd file must be readable by the nginx *worker*
 
 Leave it world-readable (`chmod 644`). It holds a password hash, not a
 plaintext password, and the host it sits on should already be root-only.
