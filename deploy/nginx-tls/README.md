@@ -111,8 +111,23 @@ serves an *expired* certificate while a valid one sits on disk beside it. The
 Check it is working:
 
 ```bash
-docker compose run --rm certbot renew --webroot -w /var/www/certbot --dry-run
+docker compose logs certbot          # a heartbeat line every 12h
+
+# A manual dry run. --entrypoint is required: the service overrides the image's
+# entrypoint with the renewal loop, so without it `renew --dry-run` becomes
+# arguments to that loop, which ignores them and runs forever.
+docker compose run --rm --entrypoint certbot certbot   renew --webroot -w /var/www/certbot --dry-run
+
 echo | openssl s_client -connect example.com:443 -servername example.com 2>/dev/null   | openssl x509 -noout -dates
 ```
 
 The dry run exercises the real challenge path without touching the rate limit.
+
+**If it says "Another instance of Certbot is already running"**, a previous
+`docker compose run` is still going. Interrupting the command kills the docker
+*client*, not the container — it keeps running and keeps certbot's lock. Clear
+it with:
+
+```bash
+docker ps -a --filter name=certbot-run --format '{{.Names}}' | xargs -r docker rm -f
+```
