@@ -65,6 +65,19 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
       # Keep this value identical to the API value when using a cloud PostgreSQL instance.
       POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://${POSTGRES_USER:-flickpond}:${POSTGRES_PASSWORD:-flickpond_dev_password}@postgres:5432/${POSTGRES_DB:-flickpond}}
+      # Transcode tuning. These have defaults in app/config.py, but a setting is
+      # only configurable in a deployment if compose passes it through -- .env
+      # feeds substitution into this file, not the container's environment.
+      #
+      # WORKER_FFMPEG_BINARY is deliberately not here. It is the only one of
+      # these that changes *what executes* rather than how, and the binary is a
+      # property of the image, installed by the Dockerfile at a known path.
+      WORKER_FFMPEG_PRESET: ${WORKER_FFMPEG_PRESET:-veryfast}
+      WORKER_FFMPEG_CRF: ${WORKER_FFMPEG_CRF:-23}
+      WORKER_FFMPEG_MAX_HEIGHT: ${WORKER_FFMPEG_MAX_HEIGHT:-720}
+      WORKER_FFMPEG_TIMEOUT_SECONDS: ${WORKER_FFMPEG_TIMEOUT_SECONDS:-870}
+      WORKER_JOB_TIMEOUT_SECONDS: ${WORKER_JOB_TIMEOUT_SECONDS:-900}
+      WORKER_OUTPUT_PREFIX: ${WORKER_OUTPUT_PREFIX:-outputs}
     depends_on:
       redis:
         condition: service_healthy
@@ -104,6 +117,13 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
       POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://${POSTGRES_USER:-flickpond}:${POSTGRES_PASSWORD:-flickpond_dev_password}@postgres:5432/${POSTGRES_DB:-flickpond}}
+      # Same reasoning as the worker's transcode settings. The lease in
+      # particular needs lowering to demonstrate crash recovery -- 1800s is
+      # correct in production and far too long to watch.
+      REAPER_INTERVAL_SECONDS: ${REAPER_INTERVAL_SECONDS:-60}
+      REAPER_LEASE_SECONDS: ${REAPER_LEASE_SECONDS:-1800}
+      REAPER_ORPHAN_GRACE_SECONDS: ${REAPER_ORPHAN_GRACE_SECONDS:-3600}
+      WORKER_OUTPUT_PREFIX: ${WORKER_OUTPUT_PREFIX:-outputs}
     depends_on:
       worker:
         condition: service_healthy

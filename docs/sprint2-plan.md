@@ -1,6 +1,8 @@
 # Sprint 2 — Plan
 
 **Written:** 10 September 2026 · against `main` @ `559bd3e`
+**Last updated:** 10 September 2026 — S2-01, S2-02 and S2-04 are **done and
+deployed**. See §4 for what remains.
 **Sprint 1 ended:** 10 September 2026
 
 This document is written to be executed by someone — or something — with no
@@ -10,7 +12,7 @@ order, and what will bite you.
 **Read these three files before writing any code:**
 
 1. This document, at least §1–§3.
-2. [`known-traps.md`](known-traps.md) — 17 traps already hit on this project.
+2. [`known-traps.md`](known-traps.md) — 19 traps already hit on this project.
    Most of them fail *silently*.
 3. [`contract.md`](contract.md) — the shared API and schema boundary. Changing
    it requires telling the team.
@@ -35,8 +37,9 @@ browser -> nginx -> FastAPI -> MinIO (store bytes)
                             browser polls GET /api/jobs/{id}
 ```
 
-**Sprint 1 shipped all of that except real transcoding.** The "processing" step
-is a server-side object copy standing in for FFmpeg. Swapping it is S2-01.
+**Sprint 1 shipped all of that except real transcoding, and sprint 2 added it.**
+The worker now runs FFmpeg (S2-01), a reaper recovers jobs left behind by a
+crashed worker (S2-02), and CI gates every PR (S2-04).
 
 ### What is already true (do not rebuild these)
 
@@ -47,13 +50,18 @@ is a server-side object copy standing in for FFmpeg. Swapping it is S2-01.
 | Job state machine | `queued -> processing -> done \| failed`, one-way, enforced by DB CHECK constraints |
 | Worker | RQ, stateless, scales with `--scale worker=N` |
 | Frontend | Upload, 2 s polling, playback |
+| Transcoding | FFmpeg → H.264/AAC MP4, capped at 720p, `+faststart` |
+| Crash recovery | Reaper service: stale `processing` → `failed`, stale `queued` re-enqueued, orphan objects deleted |
+| CI | 5 GitHub Actions jobs, **required** status checks on `main` |
 | Deployment | Alibaba ECS at `47.238.64.156`, nginx on :80, basic auth gate |
-| Tests | 126 unit + 12 integration (Python), 20 unit + 3 live (frontend), 99% coverage |
+| Tests | 133 unit + 16 integration (Python), 20 unit + 3 live (frontend), 87% coverage |
 
 ### What is deliberately not built
 
-No authentication (S2-03), no retries, no crash recovery (S2-02), no real
-transcoding (S2-01), no CI (S2-04), no TLS (S2-05).
+No authentication (S2-03) — the biggest remaining gap, and the reason the
+deployment sits behind a shared-password gate. No retries: a failed job is
+terminal, and the reaper marks a stranded one failed rather than retrying it.
+No TLS (S2-05), which needs a domain name.
 
 ---
 
@@ -88,8 +96,10 @@ cd frontend && npm ci && npm test
 RUN_LIVE_TESTS=1 npx vitest run     # needs the stack up
 ```
 
-Coverage gate is `fail_under = 80` in `pyproject.toml`. Actual is 99%. **Do not
-let it drop.**
+Coverage gate is `fail_under = 80` in `pyproject.toml`. Actual is 87% on the
+unit path. **Do not let it drop below the gate**, and prefer not to let it
+drop at all — it was 92% before sprint 2 added code that only integration
+tests reach.
 
 ### The deployed host
 
@@ -150,28 +160,44 @@ the sprint record.
 
 ### Priority
 
-| Id | Item | Size | Priority |
+| Id | Item | Size | State |
 |---|---|---|---|
-| [S2-01](#s2-01--ffmpeg-transcoding) | FFmpeg transcoding | 2–3 days | **Must** — the headline deliverable |
-| [S2-02](#s2-02--reaper-and-sweeper) | Reaper + sweeper (covers P2) | 2 days | **Must** — closes two documented limitations |
-| [S2-03](#s2-03--authorization-p1) | Authorization (P1) | 2–3 days | **Must** — blocks any real deployment |
-| [S2-04](#s2-04--cicd-pipeline) | CI/CD pipeline | 0.5 day | **Must** — Phase 1 debt, and cheap |
-| [S2-05](#s2-05--tls) | TLS on 443 | 0.5 day | Should |
-| [S2-06](#s2-06--consolidate-the-minio-clients) | Consolidate MinIO clients | 0.5 day | Should — do it inside S2-01 |
+| [S2-01](#s2-01--ffmpeg-transcoding) | FFmpeg transcoding | 2–3 days | **DONE** — deployed, verified transcoding 1920×1080 → 1280×720 in production |
+| [S2-02](#s2-02--reaper-and-sweeper) | Reaper + sweeper (covers P2) | 2 days | **DONE** — deployed; crash recovery demonstrated with `docker kill` |
+| [S2-04](#s2-04--cicd-pipeline) | CI/CD pipeline | 0.5 day | **DONE** — 5 jobs, required status checks on `main` |
+| [S2-03](#s2-03--authorization-p1) | Authorization (P1) | 2–3 days | **Must** — the only thing blocking a real deployment. Mostly C's files. Mechanism decided: [design note](s2-03-auth-design.md) |
+| [S2-05](#s2-05--tls) | TLS on 443 | 0.5 day | Should — **blocked**, Let's Encrypt will not issue for a bare IP |
+| [S2-06](#s2-06--consolidate-the-minio-clients) | Consolidate MinIO clients | 0.5 day | Should — **do NOT fold into S2-01**, it spans three tracks |
 | [S2-07](#s2-07--ensure_bucket-per-upload-p6) | `ensure_bucket` per upload (P6) | 1 hour | Could |
 | [S2-08](#s2-08--error-message-hygiene-p9) | Error message hygiene (P9) | 2 hours | Could |
+
+### What the finished items actually left behind
+
+Read these before touching the worker or the reaper:
+
+* **The processing seam held.** `app/worker/tasks.py` was not modified for
+  FFmpeg. A future processor implements `ProcessingStep` and changes
+  `get_processing_step()`; nothing else.
+* **The reaper's orchestration is covered by fakes** (`tests/test_reaper.py`)
+  and its data-touching paths by real services
+  (`tests/integration/test_reaper_postgres.py`). The integration file
+  deliberately does not call `run_once()` — it sweeps the whole table and
+  bucket, so running it against a shared stack would destroy other people's
+  work.
+* **Four traps came out of this work**: T-14, T-15, T-18 and T-19 in
+  [`known-traps.md`](known-traps.md). T-18 is BUG-02 from sprint 1 recurring.
 
 ### Dependencies
 
 ```
-S2-04 (CI)  ────────────────────────────►  do this FIRST, it protects everything after
-S2-01 (FFmpeg) ──┬──► S2-06 (consolidate clients, same files)
-                 └──► S2-02 (reaper) benefits: real jobs take real time
-S2-03 (auth) ────────► then DELETE the basic auth gate (deploy/auth)
-S2-05 (TLS) ─────────► independent
+S2-04 (CI)     ── done
+S2-01 (FFmpeg) ── done
+S2-02 (reaper) ── done
+S2-03 (auth) ────────► then DELETE the basic auth gate (deploy/auth) and the
+                       `include /etc/nginx/app-auth/*.conf;` line in nginx.conf
+S2-06 ───────────────► separate and coordinated; spans A, B and C
+S2-05 (TLS) ─────────► independent, blocked on a domain name
 ```
-
-**Do S2-04 first.** It is half a day and every later change is safer for it.
 
 ---
 
@@ -362,6 +388,12 @@ directly. No lookup table, no scan, no correlation logic.
 ---
 
 ## S2-03 — Authorization (P1)
+
+> **The mechanism is decided:** signed JWTs in an `HttpOnly` cookie. Schema,
+> endpoints, cookie attributes, the open operator-view question and the
+> teardown checklist are in
+> [`s2-03-auth-design.md`](s2-03-auth-design.md). **Read that first** — it
+> exists so nobody re-derives decisions already made.
 
 **Goal:** a user sees their own jobs, and only their own.
 
@@ -559,12 +591,18 @@ An item is done when **all** of these hold:
 
 ## 6. Suggested order
 
-1. **S2-04 (CI)** — half a day, protects everything after it.
-2. **S2-01 (FFmpeg)** with **S2-06** folded in — the headline deliverable.
-3. **S2-02 (reaper)** — closes two limitations, and the `docker kill` demo goes
-   from "documented limitation" to "handled".
-4. **S2-03 (auth)** — then delete the basic auth gate.
-5. **S2-05 (TLS)** if a domain exists; **S2-07** and **S2-08** as filler.
+~~1. S2-04 (CI)~~ · ~~2. S2-01 (FFmpeg)~~ · ~~3. S2-02 (reaper)~~ — all done.
+
+What is actually left:
+
+1. **S2-03 (auth)** — the only remaining Must. Largely C's files
+   (`models/`, `migrations/`, `repositories/`, `api/jobs.py`), so agree the
+   owner and the operator-view decision before anyone writes code. When it
+   lands, delete `deploy/auth/` and the nginx include.
+2. **S2-06** as a separate, coordinated change — not folded into anything.
+3. **S2-07** and **S2-08** as filler.
+4. **S2-05 (TLS)** only if a domain appears. Port 443 is already open in the
+   security group; the blocker is the certificate, not the network.
 
 ## 7. If you are picking this up cold
 
