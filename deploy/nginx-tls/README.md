@@ -11,8 +11,7 @@ break `docker compose up` on every machine that has no certificate — the same
 
 ## Issuing a certificate
 
-The challenge path is already served and already exempt from the auth gate, so
-this works against a running stack:
+The challenge path is already served, so this works against a running stack:
 
 ```bash
 docker run --rm \
@@ -47,8 +46,6 @@ server {
     index index.html;
     client_max_body_size 101m;
 
-    include /etc/nginx/app-auth/*.conf;
-
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
@@ -78,7 +75,7 @@ Then:
 
 ```bash
 docker compose up -d frontend
-./deploy/auth/verify.sh https://example.com <user> '<password>'
+curl -sI https://example.com | head -1
 ```
 
 ## Two settings that must change with it
