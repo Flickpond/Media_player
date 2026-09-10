@@ -19,13 +19,6 @@ class StorageService:
         self._bucket = bucket
 
     async def ensure_bucket(self) -> None:
-        """Create the bucket if it is missing.
-
-        Called once at application startup, not per write. It used to run
-        before every upload, which cost a `bucket_exists` round trip on a path
-        the contract budgets under one second (N1) -- and the bucket does not
-        disappear between requests.
-        """
         exists = await run_in_threadpool(
             self._client.bucket_exists,
             self._bucket,
@@ -42,6 +35,8 @@ class StorageService:
         local_path: str,
         object_key: str,
     ) -> None:
+        await self.ensure_bucket()
+
         await run_in_threadpool(
             self._client.fput_object,
             self._bucket,
@@ -83,6 +78,8 @@ class StorageService:
         length: int,
         content_type: str = "application/octet-stream",
     ) -> None:
+        await self.ensure_bucket()
+
         await run_in_threadpool(
             self._client.put_object,
             self._bucket,
