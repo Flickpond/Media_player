@@ -18,7 +18,7 @@ from app.config import Settings
 from app.worker import __main__ as entrypoint
 from app.worker import db as worker_db
 from app.worker import storage, tasks
-from app.worker.storage import CopyProcessor, MinioObjectStore
+from app.worker.storage import FfmpegProcessor, MinioObjectStore
 
 
 @pytest.fixture
@@ -171,14 +171,14 @@ def test_worker_session_factory_avoids_connection_pooling():
         worker_db.get_worker_session_factory.cache_clear()
 
 
-def test_processing_step_is_a_copy_processor_over_minio():
+def test_processing_step_is_an_ffmpeg_processor_over_minio():
     storage.get_processing_step.cache_clear()
     try:
         step = storage.get_processing_step()
     finally:
         storage.get_processing_step.cache_clear()
 
-    assert isinstance(step, CopyProcessor)
+    assert isinstance(step, FfmpegProcessor)
     assert isinstance(step._store, MinioObjectStore)
     assert step.output_key_for(job_id=(j := uuid4()), source_key="uploads/a/clip.mp4") == (
         f"outputs/{j}/clip.mp4"

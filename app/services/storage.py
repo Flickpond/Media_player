@@ -1,3 +1,4 @@
+from datetime import datetime
 from functools import lru_cache
 from typing import BinaryIO
 
@@ -54,6 +55,20 @@ class StorageService:
             object_key,
             local_path,
         )
+
+    async def delete_object(self, object_key: str) -> None:
+        await run_in_threadpool(self._client.remove_object, self._bucket, object_key)
+
+    async def list_objects(self, prefix: str = "") -> list[tuple[str, datetime | None]]:
+        def collect() -> list[tuple[str, datetime | None]]:
+            return [
+                (item.object_name, item.last_modified)
+                for item in self._client.list_objects(
+                    self._bucket, prefix=prefix, recursive=True
+                )
+            ]
+
+        return await run_in_threadpool(collect)
 
     async def upload_stream(
         self,
