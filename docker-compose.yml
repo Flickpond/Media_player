@@ -243,10 +243,6 @@ services:
     volumes:
       - ./frontend:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      # Access control for a published deployment. Empty in the repo, so local
-      # development is unauthenticated; a deployment drops an auth.conf and an
-      # htpasswd file in here. See deploy/auth/README.md.
-      - ./deploy/auth:/etc/nginx/app-auth:ro
       # Let's Encrypt. The webroot is where certbot drops challenge files for
       # nginx to serve; conf holds the certificates and private keys and is
       # gitignored.
@@ -260,8 +256,8 @@ services:
       api:
         condition: service_healthy
     healthcheck:
-      # /healthz, not /index.html: the gate in deploy/auth applies to the whole
-      # server, and this check runs inside the container with no credentials.
+      # /healthz, not /index.html: a cheap endpoint that stays reachable
+      # regardless of what the app requires of real callers.
       #
       # 127.0.0.1, not localhost: mounting nginx.conf read-only stops the image's
       # 10-listen-on-ipv6-by-default.sh from adding `listen [::]:80`, so nginx is

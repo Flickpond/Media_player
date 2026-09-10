@@ -169,3 +169,36 @@ def test_the_cookie_is_httponly_and_samesite_strict():
     assert "HttpOnly" in header
     assert "SameSite=strict" in header.replace("samesite", "SameSite")
     assert "Secure" in header
+
+
+@pytest.mark.asyncio
+async def test_logout_actually_sends_a_cookie_clearing_header():
+    """Regression guard: this shipped sending no Set-Cookie at all.
+
+    The handler set the cookie on FastAPI's injected `Response` and then
+    returned a different one, which discards those headers -- so logout
+    answered 204 and left the session intact. The UI showed you signed out and
+    a refresh signed you straight back in. Caught only by checking the response
+    on the live deployment, because nothing here looked at it.
+
+    Assert on the header, not on the status code. 204 was always correct.
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import create_app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=create_app()), base_url="http://test"
+    ) as client:
+        response = await client.post("/auth/logout")
+
+    assert response.status_code == 204
+    header = response.headers.get("set-cookie")
+    assert header is not None, "logout must clear the cookie, not just answer 204"
+    assert COOKIE_NAME in header
+    assert "Max-Age=0" in header
+    # The clearing cookie has to carry the same flags as the one it replaces,
+    # or the browser treats it as a different cookie and keeps the original.
+    assert "HttpOnly" in header
+    assert "Path=/" in header
+    assert "Secure" in header

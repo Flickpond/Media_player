@@ -48,8 +48,9 @@ ssh -L 9001:127.0.0.1:9001 user@host    # MinIO console on localhost:9001
 ```
 
 A deployment anyone else can reach sets `FRONTEND_BIND=0.0.0.0` and
-`FRONTEND_PORT=80`, and **must** put an access gate in `deploy/auth` first — see
-[`deploy/auth/README.md`](deploy/auth/README.md). Note that `ufw` will not save
+`FRONTEND_PORT=80`. The app authenticates its own callers, so no separate gate
+is needed — see [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md). Note
+that `ufw` will not save
 you here: Docker publishes ports through its own iptables chain and bypasses ufw
 entirely, so a host that believes it is firewalled is not.
 

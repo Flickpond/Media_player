@@ -55,9 +55,14 @@ the `docker kill` demo.
 
 ---
 
-## 3. P1 — No authorization
+## 3. P1 — No authorization ✅ CLOSED
 
-**Severity: high. Blocks any deployment that is not loopback-only.**
+**Closed 11 September 2026.** Accounts, per-user job ownership and an operator
+role are live on <https://flickpond.com>; verified with two accounts that
+neither can see the other's jobs, and that a cross-owner read is 404 rather
+than 403. The basic-auth gate that stood in for this has been removed.
+
+The original finding, kept because the reasoning still matters:
 
 `GET /jobs` returns rows from the whole table, each with a live signed download
 URL. `GET /jobs/{id}` is equally open. There is no authentication anywhere in
@@ -73,9 +78,9 @@ someone who should not see everything.
 1. Every service except nginx is pinned to `127.0.0.1`, and that is no longer
    configurable — see the port policy in the README. nginx proxies `/api/` and
    `/videos/` over the compose network, so nothing else needs a host port.
-2. A published deployment puts HTTP basic auth in front of the whole server via
-   `deploy/auth` — the page, `/api/` and `/videos/` alike. See
-   [`../deploy/auth/README.md`](../deploy/auth/README.md).
+2. A published deployment put HTTP basic auth in front of the whole server as a
+   stopgap. That is gone now that the app authenticates its own callers — a
+   shared password says nobody uninvited got in, not who did what.
 
 Both are deployment controls. Basic auth is a *shared* password: it tells you
 nobody uninvited got in, not who did what, and it cannot express "this user may

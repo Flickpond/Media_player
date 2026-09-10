@@ -81,15 +81,22 @@ async def login(credentials: Credentials, session: SessionDependency, response: 
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-async def logout(response: Response) -> Response:
+async def logout() -> Response:
     """Clear the cookie.
 
     Worth being honest about what this does: the JWT itself stays valid until
     it expires. This removes the browser's copy, which is all a stateless token
     allows. The short lifetime in `jwt_ttl_seconds` is the real bound.
+
+    The cookie is deleted on the response object that is actually returned, not
+    on an injected one. Returning a different Response discards whatever was set
+    on the injected parameter -- FastAPI only merges those headers when the
+    handler returns a body for it to serialise, which is how this shipped
+    sending no Set-Cookie at all.
     """
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
     response.delete_cookie(COOKIE_NAME, path="/", httponly=True, samesite="strict", secure=True)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return response
 
 
 @router.get("/me", response_model=UserResponse)
