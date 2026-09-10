@@ -26,7 +26,7 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest_asyncio.fixture
-async def session_factory():
+async def session_factory(owner):
     test_engine = create_async_engine(get_settings().postgres_dsn, poolclass=NullPool)
     factory = async_sessionmaker(test_engine, expire_on_commit=False)
     yield factory
@@ -34,12 +34,13 @@ async def session_factory():
 
 
 @pytest.mark.asyncio
-async def test_job_success_state_machine(session_factory) -> None:
+async def test_job_success_state_machine(session_factory, owner) -> None:
     job_id = uuid4()
     try:
         async with session_factory() as session:
             created = await create_job(
                 session,
+                owner_id=owner.id,
                 job_id=job_id,
                 filename="demo.mp4",
                 source_key=f"uploads/{job_id}/demo.mp4",
@@ -63,12 +64,13 @@ async def test_job_success_state_machine(session_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_failed_job_requires_readable_error(session_factory) -> None:
+async def test_failed_job_requires_readable_error(session_factory, owner) -> None:
     job_id = uuid4()
     try:
         async with session_factory() as session:
             await create_job(
                 session,
+                owner_id=owner.id,
                 job_id=job_id,
                 filename="broken.mp4",
                 source_key=f"uploads/{job_id}/broken.mp4",
@@ -90,12 +92,13 @@ async def test_failed_job_requires_readable_error(session_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_empty_failure_message_is_rejected(session_factory) -> None:
+async def test_empty_failure_message_is_rejected(session_factory, owner) -> None:
     job_id = uuid4()
     try:
         async with session_factory() as session:
             await create_job(
                 session,
+                owner_id=owner.id,
                 job_id=job_id,
                 filename="broken.mp4",
                 source_key=f"uploads/{job_id}/broken.mp4",
@@ -111,7 +114,7 @@ async def test_empty_failure_message_is_rejected(session_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_jobs_pages_without_repeating_or_dropping_rows(session_factory) -> None:
+async def test_list_jobs_pages_without_repeating_or_dropping_rows(session_factory, owner) -> None:
     """Real SQL, because LIMIT/OFFSET and the tie-break are the whole point.
 
     All five rows are created in a tight loop, so `created_at` values can be
@@ -124,6 +127,7 @@ async def test_list_jobs_pages_without_repeating_or_dropping_rows(session_factor
             for index in range(5):
                 job = await create_job(
                     session,
+                    owner_id=owner.id,
                     filename=f"page-{index}.mp4",
                     source_key=f"uploads/page-{index}.mp4",
                     job_id=uuid4(),
@@ -152,13 +156,14 @@ async def test_list_jobs_pages_without_repeating_or_dropping_rows(session_factor
 
 
 @pytest.mark.asyncio
-async def test_list_jobs_returns_newest_first(session_factory) -> None:
+async def test_list_jobs_returns_newest_first(session_factory, owner) -> None:
     made = []
     try:
         async with session_factory() as session:
             for index in range(3):
                 job = await create_job(
                     session,
+                    owner_id=owner.id,
                     filename=f"order-{index}.mp4",
                     source_key=f"uploads/order-{index}.mp4",
                     job_id=uuid4(),

@@ -38,18 +38,19 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest_asyncio.fixture
-async def session_factory():
+async def session_factory(owner):
     engine = create_async_engine(get_settings().postgres_dsn, poolclass=NullPool)
     yield async_sessionmaker(engine, expire_on_commit=False)
     await engine.dispose()
 
 
-async def _stale_processing_job(session_factory, *, age_seconds: int) -> uuid.UUID:
+async def _stale_processing_job(session_factory, *, age_seconds: int, owner) -> uuid.UUID:
     """A row sitting in `processing`, last touched `age_seconds` ago."""
     job_id = uuid.uuid4()
     async with session_factory() as session:
         await create_job(
             session,
+            owner_id=owner.id,
             filename="stranded.mp4",
             source_key=f"uploads/{job_id}/stranded.mp4",
             job_id=job_id,

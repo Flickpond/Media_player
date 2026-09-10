@@ -41,17 +41,18 @@ class FakeStep:
 
 
 @pytest_asyncio.fixture
-async def session_factory():
+async def session_factory(owner):
     engine = create_async_engine(get_settings().postgres_dsn, poolclass=NullPool)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     yield factory
     await engine.dispose()
 
 
-async def seed_job(session_factory, job_id: UUID) -> None:
+async def seed_job(session_factory, job_id: UUID, owner) -> None:
     async with session_factory() as session:
         await create_job(
             session,
+            owner_id=owner.id,
             job_id=job_id,
             filename="demo.mp4",
             source_key=f"uploads/{job_id}/demo.mp4",
