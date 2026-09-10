@@ -245,10 +245,11 @@ Pin settings explicitly rather than reading the environment (T-13).
 
 ---
 
-## 9. When this lands — teardown
+## 9. Teardown — done
 
-The basic-auth gate exists only because there is no authorization. Remove it in
-the same PR:
+The basic-auth gate existed only because there was no authorization. It was
+removed once auth was verified on the deployment -- in that order, so there was
+never a window with neither. For the record, what came out:
 
 1. delete `deploy/auth/`
 2. remove `include /etc/nginx/app-auth/*.conf;` from `nginx.conf`

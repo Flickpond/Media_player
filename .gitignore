@@ -18,12 +18,6 @@ htmlcov/
 id_rsa*
 *.ppk
 
-# Deployment access gate. The directory is tracked (see deploy/auth/README.md),
-# its contents are not -- a committed password is a leaked password.
-deploy/auth/*
-!deploy/auth/README.md
-!deploy/auth/*.sh
-
 # Let's Encrypt state. conf/ holds private keys; www/ is transient challenge
 # files. The directories are created on demand -- see docs/sprint2-plan.md S2-05.
 deploy/certbot/
