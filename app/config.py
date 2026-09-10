@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     redis_ssl: bool = False
     redis_queue: str = "video_jobs"
 
+    # No default: a signing secret that falls back to something predictable is
+    # worse than one that fails loudly on startup. Must be set in the
+    # environment, and compose has to pass it through (T-19).
+    jwt_secret: str = ""
+    jwt_algorithm: str = "HS256"
+    # Short, because a JWT cannot be revoked -- logout can only clear the
+    # client's copy. This is the window a stolen token stays usable.
+    jwt_ttl_seconds: int = 1800
+
     worker_output_prefix: str = "outputs"
     worker_job_timeout_seconds: int = 900
     worker_ffmpeg_binary: str = "ffmpeg"

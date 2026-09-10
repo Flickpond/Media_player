@@ -24,11 +24,13 @@ class InvalidJobTransitionError(RuntimeError):
 async def create_job(
     session: AsyncSession,
     *,
+    owner_id: UUID,
     filename: str,
     source_key: str,
     job_id: UUID | None = None,
 ) -> Job:
     job = Job(
+        owner_id=owner_id,
         filename=filename,
         source_key=source_key,
         status=JobStatus.QUEUED.value,
@@ -40,16 +42,34 @@ async def create_job(
     return job
 
 
-async def get_job(session: AsyncSession, job_id: UUID) -> Job | None:
-    return await session.get(Job, job_id)
+async def get_job(
+    session: AsyncSession, job_id: UUID, *, owner_id: UUID | None = None
+) -> Job | None:
+    """Fetch a job, optionally requiring an owner.
+
+    `owner_id=None` means "any owner" and is for the worker and the reaper,
+    which act on jobs regardless of who uploaded them. API callers always pass
+    one, and a mismatch returns None so the endpoint can answer 404 -- a 403
+    would confirm the id exists and let someone probe for valid ids.
+    """
+    job = await session.get(Job, job_id)
+    if job is None or (owner_id is not None and job.owner_id != owner_id):
+        return None
+    return job
 
 
 async def list_jobs(
     session: AsyncSession,
     *,
+    owner_id: UUID | None = None,
     limit: int = DEFAULT_PAGE_SIZE,
     offset: int = 0,
 ) -> list[Job]:
+    """`owner_id=None` returns every owner's jobs -- the operator view.
+
+    Scoping happens in the query, not by filtering afterwards: filtering a page
+    after fetching it silently shrinks the page and breaks pagination.
+    """
     # `id` breaks ties on `created_at`. Without it two rows written in the same
     # transaction have no defined order between pages, so one can appear on
     # both sides of a boundary while another appears on neither.

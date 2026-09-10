@@ -16,17 +16,41 @@ const BODY = markup.slice(markup.indexOf("<body>") + 6, markup.indexOf("</body>"
 
 let fetchMock;
 
-/** Rebuild the page and re-run app.js against it, as a page load would. */
-async function loadApp() {
+/** Rebuild the page and re-run app.js against it, as a page load would.
+ *
+ * app.js asks GET /auth/me on load, because the session cookie is HttpOnly and
+ * the page cannot tell whether it is signed in by looking. That call is
+ * answered here and then cleared from the mock, so each test's assertions
+ * index from its own first request rather than from the identity check.
+ * `loadSignedOut` is for the tests that care about the signed-out half.
+ */
+async function loadApp({ signedIn = true } = {}) {
   document.body.innerHTML = BODY;
   vi.resetModules();
+  fetchMock.mockResolvedValueOnce(
+    signedIn
+      ? jsonResponse({ id: "u-1", email: "maya@example.test", role: "user" })
+      : jsonResponse({ error: "not authenticated" }, false, 401),
+  );
   await import("./app.js");
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/auth/me"));
+  await vi.advanceTimersByTimeAsync(0);
+  fetchMock.mockClear();
   return {
     form: document.getElementById("upload-form"),
     fileInput: document.getElementById("file-input"),
     button: document.getElementById("upload-button"),
     status: document.getElementById("status"),
     player: document.getElementById("player"),
+    auth: document.getElementById("auth"),
+    app: document.getElementById("app"),
+    authForm: document.getElementById("auth-form"),
+    authEmail: document.getElementById("auth-email"),
+    authPassword: document.getElementById("auth-password"),
+    authStatus: document.getElementById("auth-status"),
+    authToggle: document.getElementById("auth-toggle"),
+    who: document.getElementById("who"),
+    logout: document.getElementById("logout"),
   };
 }
 
@@ -297,5 +321,120 @@ describe("polling", () => {
 
     expect(fetchMock.mock.calls.length).toBe(afterSecond);
     expect(afterSecond).toBeGreaterThan(afterFirst);
+  });
+});
+
+describe("signing in", () => {
+  it("shows the sign-in form and hides the app when not signed in", async () => {
+    const el = await loadApp({ signedIn: false });
+
+    expect(el.auth.hidden).toBe(false);
+    expect(el.app.hidden).toBe(true);
+  });
+
+  it("shows the app and the signed-in address when /auth/me answers", async () => {
+    const el = await loadApp();
+
+    expect(el.auth.hidden).toBe(true);
+    expect(el.app.hidden).toBe(false);
+    expect(el.who.textContent).toBe("maya@example.test");
+  });
+
+  it("posts credentials as JSON and reveals the app on success", async () => {
+    const el = await loadApp({ signedIn: false });
+    el.authEmail.value = "maya@example.test";
+    el.authPassword.value = "hunter2hunter2";
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ id: "u-1", email: "maya@example.test", role: "user" }),
+    );
+
+    el.authForm.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/auth/login");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({
+      email: "maya@example.test",
+      password: "hunter2hunter2",
+    });
+    expect(el.app.hidden).toBe(false);
+  });
+
+  it("never attaches a token, because it cannot read one", async () => {
+    // The session cookie is HttpOnly. If a future change starts putting an
+    // Authorization header on here, the token has come from somewhere a script
+    // can read -- which is the thing this design exists to prevent.
+    const el = await loadApp({ signedIn: false });
+    el.authEmail.value = "maya@example.test";
+    el.authPassword.value = "hunter2hunter2";
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ id: "u-1", email: "maya@example.test", role: "user" }),
+    );
+
+    el.authForm.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init?.headers?.Authorization).toBeUndefined();
+    }
+  });
+
+  it("does not say which half of the credentials was wrong", async () => {
+    const el = await loadApp({ signedIn: false });
+    el.authEmail.value = "maya@example.test";
+    el.authPassword.value = "wrongwrongwrong";
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "invalid" }, false, 401));
+
+    el.authForm.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.authStatus.textContent).toBe("Incorrect email or password.");
+    expect(el.app.hidden).toBe(true);
+  });
+
+  it("reports a taken address on register", async () => {
+    const el = await loadApp({ signedIn: false });
+    el.authToggle.dispatchEvent(new Event("click"));
+    el.authEmail.value = "taken@example.test";
+    el.authPassword.value = "hunter2hunter2";
+    fetchMock.mockResolvedValueOnce(jsonResponse({}, false, 409));
+
+    el.authForm.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/auth/register");
+    expect(el.authStatus.textContent).toContain("already registered");
+  });
+
+  it("signs out through the server, because a script cannot clear the cookie", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse({}, true, 204));
+
+    el.logout.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/auth/logout");
+    expect(init.method).toBe("POST");
+    expect(el.auth.hidden).toBe(false);
+    expect(el.app.hidden).toBe(true);
+  });
+
+  it("returns to the sign-in form when a session expires mid-poll", async () => {
+    const el = await loadApp();
+    chooseFile(el.fileInput);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }))
+      .mockResolvedValue(jsonResponse({ error: "not authenticated" }, false, 401));
+
+    await submit(el);
+
+    expect(el.auth.hidden).toBe(false);
+    expect(el.authStatus.textContent).toContain("session expired");
   });
 });
