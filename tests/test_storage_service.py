@@ -10,7 +10,7 @@ import io
 import pytest
 from minio import Minio
 
-from app.services import storage as storage_module
+from app.services.minio_client import bucket
 from app.services.storage import StorageService, get_storage_service
 
 
@@ -107,4 +107,4 @@ def test_get_storage_service_builds_a_minio_backed_service():
 
     assert isinstance(built, StorageService)
     assert isinstance(built._client, Minio)
-    assert built._bucket == storage_module.get_settings().minio_bucket
+    assert built._bucket == bucket()

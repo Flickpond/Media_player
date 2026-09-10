@@ -6,6 +6,7 @@ from minio import Minio
 from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
+from app.services.minio_client import bucket, public_client
 
 
 class OutputUrlSigner(Protocol):
@@ -42,16 +43,11 @@ class MinioOutputUrlSigner:
 
 @lru_cache
 def get_output_url_signer() -> OutputUrlSigner:
-    settings = get_settings()
-    client = Minio(
-        settings.minio_public_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=settings.minio_public_use_ssl,
-        region=settings.minio_region,
-    )
+    # The *public* client, deliberately not the internal one: the host it is
+    # built with lands inside the SigV4 signature, and the URL is opened by a
+    # browser. Swapping this for internal_client() breaks playback silently.
     return MinioOutputUrlSigner(
-        client,
-        bucket=settings.minio_bucket,
-        expiry_seconds=settings.output_url_expiry_seconds,
+        public_client(),
+        bucket=bucket(),
+        expiry_seconds=get_settings().output_url_expiry_seconds,
     )
