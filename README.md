@@ -15,7 +15,7 @@ browser -> FastAPI -> MinIO + PostgreSQL + Redis queue
                          browser polls the status API
 ```
 
-The Sprint 1 source of truth is [`docs/sprint1-plan.md`](docs/sprint1-plan.md). The shared schema and API boundary are in [`docs/contract.md`](docs/contract.md). For what has actually been built, by whom, and what broke along the way, see [`docs/sprint1-report.md`](docs/sprint1-report.md) - keep it updated as the sprint runs. [`docs/scaling-notes.md`](docs/scaling-notes.md) covers what would have to change to serve 50 concurrent users, and [`docs/sprint2-backlog.md`](docs/sprint2-backlog.md) records what the sprint 1 security and code review left open.
+The Sprint 1 source of truth is [`docs/sprint1-plan.md`](docs/sprint1-plan.md). The shared schema and API boundary are in [`docs/contract.md`](docs/contract.md). For what has actually been built, by whom, and what broke along the way, see [`docs/sprint1-report.md`](docs/sprint1-report.md) - keep it updated as the sprint runs. [`docs/scaling-notes.md`](docs/scaling-notes.md) covers what would have to change to serve 50 concurrent users, and [`docs/sprint2-backlog.md`](docs/sprint2-backlog.md) records what the sprint 1 security and code review left open, and [`docs/sprint2-plan.md`](docs/sprint2-plan.md) is the sprint 2 work plan. Before changing anything, read [`docs/known-traps.md`](docs/known-traps.md) -- seventeen traps already hit on this project, most of which fail silently.
 
 ## Architecture
 
@@ -82,6 +82,8 @@ Media_player/
 |   |-- sprint1-report.md         # Living record: contributions, bugs, evidence
 |   |-- scaling-notes.md          # Capacity analysis and sprint 2 proposal
 |   |-- sprint2-backlog.md        # Open findings from the sprint 1 review
+|   |-- sprint2-plan.md           # Sprint 2: what to build, in what order
+|   |-- known-traps.md            # Traps already hit here -- read before coding
 |   |-- a-worker.md               # Worker and state machine notes
 |   |-- c-status-db.md            # Detailed C-track commands
 |   |-- proposal.md               # Full module proposal
