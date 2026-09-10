@@ -63,7 +63,10 @@ server {
     listen 80;
     server_name example.com www.example.com;
 
-    include /etc/nginx/app-locations/locations.conf;
+    # Only the challenge path, not locations.conf -- that file defines
+    # `location /` and so does the redirect below, and nginx refuses to start
+    # on a duplicate location.
+    include /etc/nginx/app-locations/acme.conf;
 
     location / {
         return 301 https://$host$request_uri;
