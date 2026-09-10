@@ -33,6 +33,8 @@ read that entry, then work. If you hit something new, add an entry.
 | [T-17](#t-17) | Repo | Git identity mismatch splits contribution history |
 | [T-18](#t-18) | Logging | A logger with no `basicConfig` writes nothing |
 | [T-19](#t-19) | Config | A settings field is not configurable until compose passes it through |
+| [T-20](#t-20) | Deploy | `git reset --hard origin/main` without fetching deploys stale code |
+| [T-21](#t-21) | Deploy | `docker compose up -d` applies env changes but not code changes |
 
 ---
 
@@ -418,3 +420,51 @@ docker compose config --format json | python3 -c "import json,sys;   print(sorte
 
 `WORKER_FFMPEG_BINARY` is deliberately excluded -- it decides *what executes*
 rather than how, and the binary is a property of the image.
+
+### T-20
+
+**`git reset --hard origin/main` without fetching first deploys stale code.**
+
+*Symptom:* a deploy reports success and runs a commit from an hour ago.
+
+*Cause:* `origin/main` is a **remote-tracking ref** — a local cache of what this
+machine last heard from GitHub. Without `git fetch`, resetting to it resets to
+whatever it saw last, and git does exactly what you asked with no warning.
+
+*Avoid:* always fetch first, and **print the commit after deploying**:
+
+```bash
+git fetch origin && git reset --hard origin/main
+git log --oneline -1        # confirm it is what you expected
+```
+
+This was caught only because the deploy printed the commit. Without that line
+it would have looked like a successful deploy of code that was never there.
+
+### T-21
+
+**`docker compose up -d` applies environment changes but not code changes.**
+
+*Symptom:* a new setting is present in the container's environment, `docker
+compose config` shows it, and the application still behaves as though it does
+not exist.
+
+*Cause:* compose recreates a container when its *configuration* changes, but it
+does not rebuild the **image**. Source code lives in the image. So an `.env`
+edit takes effect immediately while the code that reads it is still the version
+baked in at the last build.
+
+*How it surfaced:* `MINIO_PUBLIC_USE_SSL=true` was correct in `.env`, correct in
+`docker compose config`, and correct in `env` inside the running container --
+but `Settings` raised `AttributeError: no attribute 'minio_public_use_ssl'`,
+because the image predated the field. Presigned URLs kept coming out as `http://`.
+
+*Avoid:* **`docker compose up -d --build`** whenever the deployed commit changed.
+Verify by asking the application, not the environment:
+
+```bash
+docker compose exec api python -c "from app.config import get_settings; print(get_settings().some_new_field)"
+```
+
+Reading `env` inside the container proves the variable arrived. It does not
+prove the code that consumes it exists.
