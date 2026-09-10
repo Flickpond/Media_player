@@ -236,6 +236,10 @@ services:
       # gitignored.
       - ./deploy/certbot/www:/var/www/certbot
       - ./deploy/certbot/conf:/etc/letsencrypt:ro
+      # The app's routes, shared by the HTTP and HTTPS servers so they cannot
+      # drift, plus the deployment-only TLS server block (empty in a checkout).
+      - ./deploy/nginx/locations.conf:/etc/nginx/app-locations/locations.conf:ro
+      - ./deploy/nginx-tls:/etc/nginx/app-tls:ro
     depends_on:
       api:
         condition: service_healthy
