@@ -44,12 +44,13 @@ async def session_factory():
     await engine.dispose()
 
 
-async def _stale_processing_job(session_factory, *, age_seconds: int) -> uuid.UUID:
+async def _stale_processing_job(session_factory, *, age_seconds: int, owner) -> uuid.UUID:
     """A row sitting in `processing`, last touched `age_seconds` ago."""
     job_id = uuid.uuid4()
     async with session_factory() as session:
         await create_job(
             session,
+            owner_id=owner.id,
             filename="stranded.mp4",
             source_key=f"uploads/{job_id}/stranded.mp4",
             job_id=job_id,
@@ -75,8 +76,8 @@ async def _drop(session_factory, job_id: uuid.UUID) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_stranded_processing_row_is_failed_with_a_readable_error(session_factory):
-    job_id = await _stale_processing_job(session_factory, age_seconds=7200)
+async def test_a_stranded_processing_row_is_failed_with_a_readable_error(session_factory, owner):
+    job_id = await _stale_processing_job(session_factory, age_seconds=7200, owner=owner)
     try:
         async with session_factory() as session:
             reaped = await mark_stale_failed(session, job_id)
@@ -94,9 +95,9 @@ async def test_a_stranded_processing_row_is_failed_with_a_readable_error(session
 
 
 @pytest.mark.asyncio
-async def test_two_reapers_racing_cannot_both_claim_the_same_row(session_factory):
+async def test_two_reapers_racing_cannot_both_claim_the_same_row(session_factory, owner):
     """The conditional update is the only thing preventing a double transition."""
-    job_id = await _stale_processing_job(session_factory, age_seconds=7200)
+    job_id = await _stale_processing_job(session_factory, age_seconds=7200, owner=owner)
     try:
         async with session_factory() as session:
             first = await mark_stale_failed(session, job_id)
@@ -110,10 +111,10 @@ async def test_two_reapers_racing_cannot_both_claim_the_same_row(session_factory
 
 
 @pytest.mark.asyncio
-async def test_list_stale_respects_the_cutoff(session_factory):
+async def test_list_stale_respects_the_cutoff(session_factory, owner):
     """A row inside its lease must not be offered up for reaping."""
-    old = await _stale_processing_job(session_factory, age_seconds=7200)
-    fresh = await _stale_processing_job(session_factory, age_seconds=5)
+    old = await _stale_processing_job(session_factory, age_seconds=7200, owner=owner)
+    fresh = await _stale_processing_job(session_factory, age_seconds=5, owner=owner)
     try:
         cutoff = datetime.now(UTC) - timedelta(seconds=3600)
         async with session_factory() as session:

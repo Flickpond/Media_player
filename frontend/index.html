@@ -11,14 +11,39 @@
       <h1>Flickpond</h1>
       <p class="subtitle">Upload a video and play the result once it's ready.</p>
 
-      <form id="upload-form" class="upload">
-        <input type="file" id="file-input" accept="video/*" />
-        <button type="submit" id="upload-button">Upload</button>
-      </form>
+      <!-- Shown until /auth/me says who we are. The session cookie is HttpOnly,
+           so this page cannot read it and has to ask the server instead. -->
+      <section id="auth" hidden>
+        <form id="auth-form" class="upload">
+          <input type="email" id="auth-email" placeholder="you@example.com" required />
+          <input
+            type="password"
+            id="auth-password"
+            placeholder="password"
+            minlength="8"
+            required
+          />
+          <button type="submit" id="auth-submit">Sign in</button>
+        </form>
+        <button type="button" id="auth-toggle" class="linkish">Create an account instead</button>
+        <p id="auth-status" class="status" hidden></p>
+      </section>
 
-      <p id="status" class="status" hidden></p>
+      <section id="app" hidden>
+        <p class="subtitle">
+          Signed in as <span id="who"></span>
+          <button type="button" id="logout" class="linkish">Sign out</button>
+        </p>
 
-      <video id="player" controls hidden></video>
+        <form id="upload-form" class="upload">
+          <input type="file" id="file-input" accept="video/*" />
+          <button type="submit" id="upload-button">Upload</button>
+        </form>
+
+        <p id="status" class="status" hidden></p>
+
+        <video id="player" controls hidden></video>
+      </section>
     </main>
 
     <script src="app.js"></script>

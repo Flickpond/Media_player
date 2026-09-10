@@ -42,6 +42,11 @@ async function loadPage() {
     button: document.getElementById("upload-button"),
     status: document.getElementById("status"),
     player: document.getElementById("player"),
+    app: document.getElementById("app"),
+    authForm: document.getElementById("auth-form"),
+    authEmail: document.getElementById("auth-email"),
+    authPassword: document.getElementById("auth-password"),
+    authToggle: document.getElementById("auth-toggle"),
   };
 }
 
@@ -60,6 +65,18 @@ describe.skipIf(!live)("frontend against the live stack", () => {
     const health = await fetch(`${API}/health`);
     if (!health.ok) throw new Error("stack is not up; run docker compose up -d --wait");
     await loadPage();
+
+    // Every job endpoint needs a caller now, so this registers a throwaway
+    // account and signs in through the page's own form -- the same path a
+    // person takes. The session cookie is HttpOnly, so nothing here holds a
+    // token; jsdom's cookie jar carries it exactly as a browser would.
+    el.authEmail.value = `live-${Date.now()}@example.test`;
+    el.authPassword.value = "live-test-password";
+    el.authToggle.dispatchEvent(new dom.window.Event("click"));
+    el.authForm.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
+    await until(() => el.app.hidden === false, {
+      label: "the app to appear after registering",
+    });
   });
 
   afterAll(() => dom?.window?.close());
