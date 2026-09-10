@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     minio_bucket: str = "videos"
     minio_region: str = "us-east-1"
     minio_use_ssl: bool = False
+    # Separate from minio_use_ssl on purpose. The internal client talks to
+    # minio:9000 over plain HTTP inside the compose network and always will;
+    # the presigned URLs handed to a browser must be https once the site is,
+    # or the page blocks them as mixed content. One flag cannot be both.
+    minio_public_use_ssl: bool = False
     output_url_expiry_seconds: int = 3600
 
     redis_host: str = "127.0.0.1"
