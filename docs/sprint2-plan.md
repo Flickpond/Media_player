@@ -1,8 +1,8 @@
 # Sprint 2 — Plan
 
 **Written:** 10 September 2026 · against `main` @ `559bd3e`
-**Last updated:** 10 September 2026 — S2-01, S2-02 and S2-04 are **done and
-deployed**. See §4 for what remains.
+**Last updated:** 10 September 2026 — S2-01, S2-02, S2-04 and S2-05 are **done
+and deployed**. Only S2-03 remains a Must. See §4.
 **Sprint 1 ended:** 10 September 2026
 
 This document is written to be executed by someone — or something — with no
@@ -12,7 +12,7 @@ order, and what will bite you.
 **Read these three files before writing any code:**
 
 1. This document, at least §1–§3.
-2. [`known-traps.md`](known-traps.md) — 19 traps already hit on this project.
+2. [`known-traps.md`](known-traps.md) — 21 traps already hit on this project.
    Most of them fail *silently*.
 3. [`contract.md`](contract.md) — the shared API and schema boundary. Changing
    it requires telling the team.
@@ -53,7 +53,7 @@ crashed worker (S2-02), and CI gates every PR (S2-04).
 | Transcoding | FFmpeg → H.264/AAC MP4, capped at 720p, `+faststart` |
 | Crash recovery | Reaper service: stale `processing` → `failed`, stale `queued` re-enqueued, orphan objects deleted |
 | CI | 5 GitHub Actions jobs, **required** status checks on `main` |
-| Deployment | Alibaba ECS at `47.238.64.156`, nginx on :80, basic auth gate |
+| Deployment | <https://flickpond.com> (Alibaba ECS, cn-hongkong), Let's Encrypt TLS, basic auth gate |
 | Tests | 133 unit + 16 integration (Python), 20 unit + 3 live (frontend), 87% coverage |
 
 ### What is deliberately not built
@@ -61,7 +61,7 @@ crashed worker (S2-02), and CI gates every PR (S2-04).
 No authentication (S2-03) — the biggest remaining gap, and the reason the
 deployment sits behind a shared-password gate. No retries: a failed job is
 terminal, and the reaper marks a stranded one failed rather than retrying it.
-No TLS (S2-05), which needs a domain name.
+TLS is now in place (S2-05) — the site is at <https://flickpond.com>.
 
 ---
 
@@ -166,7 +166,7 @@ the sprint record.
 | [S2-02](#s2-02--reaper-and-sweeper) | Reaper + sweeper (covers P2) | 2 days | **DONE** — deployed; crash recovery demonstrated with `docker kill` |
 | [S2-04](#s2-04--cicd-pipeline) | CI/CD pipeline | 0.5 day | **DONE** — 5 jobs, required status checks on `main` |
 | [S2-03](#s2-03--authorization-p1) | Authorization (P1) | 2–3 days | **Must** — the only thing blocking a real deployment. Mostly C's files. Mechanism decided: [design note](s2-03-auth-design.md) |
-| [S2-05](#s2-05--tls) | TLS on 443 | 0.5 day | Should — **blocked**, Let's Encrypt will not issue for a bare IP |
+| [S2-05](#s2-05--tls) | TLS on 443 | 0.5 day | **DONE** — <https://flickpond.com>, cert expires 2026-12-09, 80 redirects to 443 |
 | [S2-06](#s2-06--consolidate-the-minio-clients) | Consolidate MinIO clients | 0.5 day | Should — **do NOT fold into S2-01**, it spans three tracks |
 | [S2-07](#s2-07--ensure_bucket-per-upload-p6) | `ensure_bucket` per upload (P6) | 1 hour | Could |
 | [S2-08](#s2-08--error-message-hygiene-p9) | Error message hygiene (P9) | 2 hours | Could |

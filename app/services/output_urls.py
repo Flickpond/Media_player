@@ -47,7 +47,7 @@ def get_output_url_signer() -> OutputUrlSigner:
         settings.minio_public_endpoint,
         access_key=settings.minio_access_key,
         secret_key=settings.minio_secret_key,
-        secure=settings.minio_use_ssl,
+        secure=settings.minio_public_use_ssl,
         region=settings.minio_region,
     )
     return MinioOutputUrlSigner(
