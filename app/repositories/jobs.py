@@ -70,10 +70,13 @@ async def list_jobs(
     Scoping happens in the query, not by filtering afterwards: filtering a page
     after fetching it silently shrinks the page and breaks pagination.
     """
+    statement = select(Job)
+    if owner_id is not None:
+        statement = statement.where(Job.owner_id == owner_id)
     # `id` breaks ties on `created_at`. Without it two rows written in the same
     # transaction have no defined order between pages, so one can appear on
     # both sides of a boundary while another appears on neither.
-    statement = select(Job).order_by(Job.created_at.desc(), Job.id).limit(limit).offset(offset)
+    statement = statement.order_by(Job.created_at.desc(), Job.id).limit(limit).offset(offset)
     result = await session.execute(statement)
     return list(result.scalars().all())
 
