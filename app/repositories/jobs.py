@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import func, select, update
@@ -124,3 +125,43 @@ async def mark_failed(session: AsyncSession, job_id: UUID, *, error: str) -> Job
         next_status=JobStatus.FAILED,
         error=error.strip(),
     )
+
+
+async def list_source_keys(session: AsyncSession) -> set[str]:
+    result = await session.execute(select(Job.source_key))
+    return set(result.scalars().all())
+
+
+async def list_stale(
+    session: AsyncSession,
+    *,
+    status: JobStatus,
+    before: datetime,
+) -> list[Job]:
+    statement = (
+        select(Job)
+        .where(Job.status == status.value, Job.updated_at < before)
+        .order_by(Job.updated_at)
+    )
+    result = await session.execute(statement)
+    return list(result.scalars().all())
+
+
+async def mark_stale_failed(session: AsyncSession, job_id: UUID) -> Job | None:
+    statement = (
+        update(Job)
+        .where(Job.id == job_id, Job.status == JobStatus.PROCESSING.value)
+        .values(
+            status=JobStatus.FAILED.value,
+            error="worker stopped responding; job was not completed",
+            updated_at=func.now(),
+        )
+        .returning(Job)
+    )
+    result = await session.execute(statement)
+    job = result.scalar_one_or_none()
+    if job is None:
+        await session.rollback()
+        return None
+    await session.commit()
+    return job
