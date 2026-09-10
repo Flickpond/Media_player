@@ -22,3 +22,4 @@ id_rsa*
 # its contents are not -- a committed password is a leaked password.
 deploy/auth/*
 !deploy/auth/README.md
+!deploy/auth/*.sh
