@@ -12,8 +12,8 @@ Sprint 1 shipped the pipeline with a copy job standing in for transcoding.
 **Sprint 2 replaced it with FFmpeg**, added a reaper that recovers jobs left
 behind by a crashed worker, and put CI in front of `main` as a required check.
 
-The big thing still missing is **authorization** — the API has none, so the
-deployment sits behind a shared-password nginx gate. That is S2-03.
+**Authorization landed too** (S2-03): accounts, per-user job ownership, and an
+operator role. The shared-password nginx gate that stood in for it is gone.
 
 ## Read before coding
 
@@ -22,7 +22,7 @@ deployment sits behind a shared-password nginx gate. That is S2-03.
 | [`docs/sprint2-plan.md`](docs/sprint2-plan.md) | What to build, in what order, with acceptance criteria |
 | [`docs/known-traps.md`](docs/known-traps.md) | 21 traps already hit here. **Most fail silently.** |
 | [`docs/contract.md`](docs/contract.md) | Shared API and schema boundary — changing it means telling the team |
-| [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md) | The next work item's decisions: JWT in an HttpOnly cookie, schema, teardown |
+| [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md) | Why auth is shaped the way it is: JWT in an HttpOnly cookie, schema, roles |
 
 Also: [`sprint1-report.md`](docs/sprint1-report.md) (what was built, bug log),
 [`sprint2-backlog.md`](docs/sprint2-backlog.md) (open findings P1–P9),
@@ -50,7 +50,7 @@ exactly — those are the only two CORS origins.
 
 ## Rules
 
-1. **Never commit credentials or keys.** `*.pem`, `*.key`, `deploy/auth/htpasswd`
+1. **Never commit credentials or keys.** `*.pem`, `*.key` and `deploy/certbot/`
    are gitignored; check `git diff --cached --name-only` before committing.
 2. **Only nginx is published beyond loopback.** PostgreSQL, Redis, MinIO and the
    API are pinned to `127.0.0.1` in `docker-compose.yml` and that is not
@@ -83,14 +83,12 @@ Sprint 1 split five ways and ownership follows the code into `main`:
 ICP filing needed), tracking `origin/main` at `/root/Media_player`. Eight
 containers: nginx, api, 2 workers, reaper, postgres, redis, minio.
 
-TLS via Let's Encrypt; 80 redirects to 443. Behind HTTP basic auth as a
-stopgap until authorization lands. **Redeploy with `--build`** or a code
-change silently will not ship (T-21).
+TLS via Let's Encrypt, renewed automatically; 80 redirects to 443. Sign-in is
+the app's own. **Redeploy with `--build`** or a code change silently will not
+ship (T-21).
 
 ```bash
 ssh -i <key>.pem root@47.238.64.156
-./deploy/auth/set-password.sh                    # rotate the gate password
-./deploy/auth/verify.sh http://127.0.0.1 flickpond '<password>'
 ```
 
 ## Conventions
