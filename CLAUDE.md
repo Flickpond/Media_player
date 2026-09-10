@@ -20,7 +20,7 @@ deployment sits behind a shared-password nginx gate. That is S2-03.
 | File | Why |
 |---|---|
 | [`docs/sprint2-plan.md`](docs/sprint2-plan.md) | What to build, in what order, with acceptance criteria |
-| [`docs/known-traps.md`](docs/known-traps.md) | 19 traps already hit here. **Most fail silently.** |
+| [`docs/known-traps.md`](docs/known-traps.md) | 21 traps already hit here. **Most fail silently.** |
 | [`docs/contract.md`](docs/contract.md) | Shared API and schema boundary — changing it means telling the team |
 | [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md) | The next work item's decisions: JWT in an HttpOnly cookie, schema, teardown |
 
@@ -79,9 +79,13 @@ Sprint 1 split five ways and ownership follows the code into `main`:
 
 ## Deployment
 
-Alibaba ECS, `47.238.64.156`, tracks `origin/main` at `/root/Media_player`.
-nginx on :80 behind HTTP basic auth (a stopgap until authorization lands).
-Eight containers: nginx, api, 2 workers, reaper, postgres, redis, minio.
+**<https://flickpond.com>** — Alibaba ECS `47.238.64.156` (cn-hongkong, so no
+ICP filing needed), tracking `origin/main` at `/root/Media_player`. Eight
+containers: nginx, api, 2 workers, reaper, postgres, redis, minio.
+
+TLS via Let's Encrypt; 80 redirects to 443. Behind HTTP basic auth as a
+stopgap until authorization lands. **Redeploy with `--build`** or a code
+change silently will not ship (T-21).
 
 ```bash
 ssh -i <key>.pem root@47.238.64.156
@@ -93,7 +97,7 @@ ssh -i <key>.pem root@47.238.64.156
 
 - Python 3.12, FastAPI, SQLAlchemy 2 async, Alembic, RQ, MinIO.
 - Line length 100. Ruff lint rules: `E, F, I, UP, B, ASYNC`.
-- Coverage gate `fail_under = 80` in `pyproject.toml`; actual is 99%.
+- Coverage gate `fail_under = 80` in `pyproject.toml`; actual is 87%.
 - Comments explain *why*, not *what*. The existing code is written that way —
   match it.
 - Tests are named as sentences describing the behaviour being protected.
