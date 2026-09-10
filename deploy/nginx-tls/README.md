@@ -91,6 +91,43 @@ silently. `MINIO_USE_SSL` stays `false` — the internal client talks to
 
 ## Renewal
 
-`certbot renew` is a no-op until roughly 30 days before expiry, so it is safe to
-run often. It needs the same volumes, and nginx has to reload afterwards to pick
-up the new file.
+Automated, but it needs turning on. Put this in the deployment's `.env`:
+
+```
+COMPOSE_PROFILES=tls
+```
+
+That starts the `certbot` service, which runs `certbot renew` every 12 hours.
+`renew` is a no-op until roughly 30 days before expiry, so running it often
+costs nothing and gives a transient failure many chances before the certificate
+actually lapses.
+
+**Reloading nginx is the half people forget.** nginx reads the certificate once
+at startup and holds it in memory. Certbot rewriting the file on disk changes
+nothing until the master process re-reads it — so without a reload the site
+serves an *expired* certificate while a valid one sits on disk beside it. The
+`frontend` service reloads itself every 12 hours for exactly this reason.
+
+Check it is working:
+
+```bash
+docker compose logs certbot          # a heartbeat line every 12h
+
+# A manual dry run. --entrypoint is required: the service overrides the image's
+# entrypoint with the renewal loop, so without it `renew --dry-run` becomes
+# arguments to that loop, which ignores them and runs forever.
+docker compose run --rm --entrypoint certbot certbot   renew --webroot -w /var/www/certbot --dry-run
+
+echo | openssl s_client -connect example.com:443 -servername example.com 2>/dev/null   | openssl x509 -noout -dates
+```
+
+The dry run exercises the real challenge path without touching the rate limit.
+
+**If it says "Another instance of Certbot is already running"**, a previous
+`docker compose run` is still going. Interrupting the command kills the docker
+*client*, not the container — it keeps running and keeps certbot's lock. Clear
+it with:
+
+```bash
+docker ps -a --filter name=certbot-run --format '{{.Names}}' | xargs -r docker rm -f
+```
