@@ -34,6 +34,13 @@ class Settings(BaseSettings):
 
     worker_output_prefix: str = "outputs"
     worker_job_timeout_seconds: int = 900
+    worker_ffmpeg_binary: str = "ffmpeg"
+    worker_ffmpeg_preset: str = "veryfast"
+    worker_ffmpeg_crf: int = 23
+    worker_ffmpeg_max_height: int = 720
+    worker_ffmpeg_timeout_seconds: int = 870
+    reaper_interval_seconds: int = 60
+    reaper_orphan_grace_seconds: int = 3600
 
     @property
     def redis_url(self) -> str:

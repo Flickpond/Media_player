@@ -10,6 +10,10 @@ COPY app ./app
 COPY alembic.ini ./
 COPY migrations ./migrations
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN python -m pip install --no-cache-dir .
 
 # Drop root for the runtime. The install above needs it to write into the
