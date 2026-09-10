@@ -38,7 +38,7 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest_asyncio.fixture
-async def session_factory(owner):
+async def session_factory():
     engine = create_async_engine(get_settings().postgres_dsn, poolclass=NullPool)
     yield async_sessionmaker(engine, expire_on_commit=False)
     await engine.dispose()
@@ -76,8 +76,8 @@ async def _drop(session_factory, job_id: uuid.UUID) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_stranded_processing_row_is_failed_with_a_readable_error(session_factory):
-    job_id = await _stale_processing_job(session_factory, age_seconds=7200)
+async def test_a_stranded_processing_row_is_failed_with_a_readable_error(session_factory, owner):
+    job_id = await _stale_processing_job(session_factory, age_seconds=7200, owner=owner)
     try:
         async with session_factory() as session:
             reaped = await mark_stale_failed(session, job_id)
@@ -95,9 +95,9 @@ async def test_a_stranded_processing_row_is_failed_with_a_readable_error(session
 
 
 @pytest.mark.asyncio
-async def test_two_reapers_racing_cannot_both_claim_the_same_row(session_factory):
+async def test_two_reapers_racing_cannot_both_claim_the_same_row(session_factory, owner):
     """The conditional update is the only thing preventing a double transition."""
-    job_id = await _stale_processing_job(session_factory, age_seconds=7200)
+    job_id = await _stale_processing_job(session_factory, age_seconds=7200, owner=owner)
     try:
         async with session_factory() as session:
             first = await mark_stale_failed(session, job_id)
@@ -111,10 +111,10 @@ async def test_two_reapers_racing_cannot_both_claim_the_same_row(session_factory
 
 
 @pytest.mark.asyncio
-async def test_list_stale_respects_the_cutoff(session_factory):
+async def test_list_stale_respects_the_cutoff(session_factory, owner):
     """A row inside its lease must not be offered up for reaping."""
-    old = await _stale_processing_job(session_factory, age_seconds=7200)
-    fresh = await _stale_processing_job(session_factory, age_seconds=5)
+    old = await _stale_processing_job(session_factory, age_seconds=7200, owner=owner)
+    fresh = await _stale_processing_job(session_factory, age_seconds=5, owner=owner)
     try:
         cutoff = datetime.now(UTC) - timedelta(seconds=3600)
         async with session_factory() as session:

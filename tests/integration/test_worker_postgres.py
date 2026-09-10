@@ -41,7 +41,7 @@ class FakeStep:
 
 
 @pytest_asyncio.fixture
-async def session_factory(owner):
+async def session_factory():
     engine = create_async_engine(get_settings().postgres_dsn, poolclass=NullPool)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     yield factory
@@ -65,9 +65,9 @@ async def cleanup(session_factory, job_id: UUID) -> None:
         await session.commit()
 
 
-async def test_success_path_persists_done_and_output_key(session_factory):
+async def test_success_path_persists_done_and_output_key(session_factory, owner):
     job_id = uuid4()
-    await seed_job(session_factory, job_id)
+    await seed_job(session_factory, job_id, owner)
     try:
         outcome = await process_job_async(
             job_id,
@@ -86,9 +86,9 @@ async def test_success_path_persists_done_and_output_key(session_factory):
         await cleanup(session_factory, job_id)
 
 
-async def test_failure_path_persists_failed_and_readable_error(session_factory):
+async def test_failure_path_persists_failed_and_readable_error(session_factory, owner):
     job_id = uuid4()
-    await seed_job(session_factory, job_id)
+    await seed_job(session_factory, job_id, owner)
     try:
         outcome = await process_job_async(
             job_id,
@@ -106,9 +106,9 @@ async def test_failure_path_persists_failed_and_readable_error(session_factory):
         await cleanup(session_factory, job_id)
 
 
-async def test_second_delivery_of_a_finished_job_changes_nothing(session_factory):
+async def test_second_delivery_of_a_finished_job_changes_nothing(session_factory, owner):
     job_id = uuid4()
-    await seed_job(session_factory, job_id)
+    await seed_job(session_factory, job_id, owner)
     try:
         await process_job_async(
             job_id, session_factory=session_factory, step=FakeStep(output_key="outputs/first.mp4")

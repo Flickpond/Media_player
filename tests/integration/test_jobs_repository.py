@@ -26,7 +26,7 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest_asyncio.fixture
-async def session_factory(owner):
+async def session_factory():
     test_engine = create_async_engine(get_settings().postgres_dsn, poolclass=NullPool)
     factory = async_sessionmaker(test_engine, expire_on_commit=False)
     yield factory
