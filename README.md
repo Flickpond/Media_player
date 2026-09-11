@@ -25,6 +25,7 @@ browser -> nginx -> FastAPI -> MinIO + PostgreSQL + Redis queue
 | --- | --- |
 | [`docs/known-traps.md`](docs/known-traps.md) | **Read this before changing anything.** 23 traps already hit here, most of which fail silently. |
 | [`docs/contract.md`](docs/contract.md) | The shared schema and API boundary. Changing it means telling the team. |
+| [`docs/sprint2-report.md`](docs/sprint2-report.md) | **What sprint 2 delivered**: contributions, evidence, BUG-04 to BUG-12. |
 | [`docs/sprint2-plan.md`](docs/sprint2-plan.md) | Sprint 2: all eight items, what each decided, and why. |
 | [`docs/sprint2-backlog.md`](docs/sprint2-backlog.md) | The sprint 1 review's findings, P1-P9. All closed; kept for the reasoning. |
 | [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md) | Why authentication is shaped the way it is. |
@@ -107,6 +108,7 @@ Media_player/
 |   |-- scaling-notes.md          # Capacity analysis
 |   |-- sprint2-backlog.md        # The sprint 1 review's findings, P1-P9
 |   |-- sprint2-plan.md           # Sprint 2: what was built, in what order
+|   |-- sprint2-report.md         # Sprint 2 record: contributions, bugs, evidence
 |   |-- s2-03-auth-design.md      # Why auth is shaped the way it is
 |   |-- known-traps.md            # Traps already hit here -- read before coding
 |   |-- a-worker.md               # Worker and state machine notes
