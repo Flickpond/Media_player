@@ -12,7 +12,7 @@ order, and what will bite you.
 **Read these three files before writing any code:**
 
 1. This document, at least §1–§3.
-2. [`known-traps.md`](known-traps.md) — 22 traps already hit on this project.
+2. [`known-traps.md`](known-traps.md) — 23 traps already hit on this project.
    Most of them fail *silently*.
 3. [`contract.md`](contract.md) — the shared API and schema boundary. Changing
    it requires telling the team.

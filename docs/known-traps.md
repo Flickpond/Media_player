@@ -36,6 +36,7 @@ read that entry, then work. If you hit something new, add an entry.
 | [T-20](#t-20) | Deploy | `git reset --hard origin/main` without fetching deploys stale code |
 | [T-21](#t-21) | Deploy | `docker compose up -d` applies env changes but not code changes |
 | [T-22](#t-22) | Errors | An exception message is not a user message |
+| [T-23](#t-23) | Deploy | `docker compose up` silently resets a `--scale` replica count |
 
 ---
 
@@ -512,3 +513,49 @@ sweeps every raise site in `MinioObjectStore` and asserts **both** halves -- the
 key present in `str(exc)`, absent from `user_message`. Asserting only the second
 would pass for a "fix" that deleted the key entirely and left operators with
 nothing to debug from.
+
+---
+
+### T-23
+
+**`docker compose up` silently resets a replica count that was set with
+`--scale`.**
+
+*Symptom:* the deployment has run two workers for weeks. A routine
+`docker compose up -d --build` reports success, every container is healthy, and
+there is now **one** worker. Nothing warns you, and throughput halves.
+
+*Cause:* `--scale worker=2` is an argument to a single `up` invocation, not
+persisted state. Compose reconciles the running stack against the compose file
+plus *this* command's flags; with no replica count in either, the default of 1
+wins and the extra container is removed as surplus.
+
+*Why it hides:* the missing replica is not an error, a warning, or an unhealthy
+container — it is an *absence*. `docker compose ps` looks entirely normal unless
+you are counting rows, and the queue still drains, just half as fast. The
+setting existed only in shell history on one machine, so it was invisible to
+code review and to CI.
+
+*How it surfaced:* the sprint 2 deployment. Comparing `docker compose ps` before
+and after showed two `worker` rows become one; `grep "docker compose up"
+/root/.bash_history` found the original `--scale worker=2` that nothing in the
+repository recorded.
+
+*Avoid:* until the count lives in `docker-compose.yml`, pass it every time:
+
+```bash
+docker compose up -d --build --scale worker=2
+```
+
+The durable fix is to put it in the compose file, so a plain `up -d --build`
+reproduces the intended topology:
+
+```yaml
+worker:
+  deploy:
+    replicas: 2
+```
+
+That file is track D's. **Any deployment topology that lives only in a command
+someone once typed will be lost** — this is the same family as T-20 and T-21:
+the running system quietly differs from the one everybody describes.
