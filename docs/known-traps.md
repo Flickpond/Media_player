@@ -35,6 +35,7 @@ read that entry, then work. If you hit something new, add an entry.
 | [T-19](#t-19) | Config | A settings field is not configurable until compose passes it through |
 | [T-20](#t-20) | Deploy | `git reset --hard origin/main` without fetching deploys stale code |
 | [T-21](#t-21) | Deploy | `docker compose up -d` applies env changes but not code changes |
+| [T-22](#t-22) | Errors | An exception message is not a user message |
 
 ---
 
@@ -468,3 +469,46 @@ docker compose exec api python -c "from app.config import get_settings; print(ge
 
 Reading `env` inside the container proves the variable arrived. It does not
 prove the code that consumes it exists.
+
+---
+
+### T-22
+
+**An exception message is not a user message, and one string cannot be both.**
+
+*Symptom:* a user whose upload failed is shown
+`ObjectStoreError: download failed for uploads/9f3a/annas-wedding-speech.mov:
+AccessDenied`, or four hundred characters of FFmpeg stderr naming a `/tmp` path
+inside a container they have never heard of.
+
+*Cause:* `readable_error()` built the `error` column from `str(exception)`,
+prefixed with the class name for anything that was not an `ObjectStoreError`.
+That column is returned verbatim by `GET /jobs/{id}`. The messages were written
+by whoever raised them, for whoever would read the log -- a completely different
+audience, with completely different needs, and nothing in the type system said
+so.
+
+*Why it survived review for a sprint:* every message was genuinely useful. Each
+one was written carefully, by someone imagining an operator reading it. The
+defect was not a bad message, it was a missing distinction, and a missing
+distinction has nothing to point at in a diff.
+
+*Avoid:* carry both, and make both mandatory.
+
+```python
+raise ObjectStoreError(
+    f"download failed for {key}: {exc.code}",                  # log
+    user_message="the uploaded file could not be read back",   # screen
+) from exc
+```
+
+`user_message` is a **required** keyword argument, not an optional one with a
+safe default. A default would mean a forgetful raise site silently degrades to a
+vague message; required means it fails in CI. On a codebase where most traps in
+this file fail silently, prefer the one that shouts.
+
+*The test that holds it:* `test_no_storage_failure_puts_an_object_key_in_the_users_half`
+sweeps every raise site in `MinioObjectStore` and asserts **both** halves -- the
+key present in `str(exc)`, absent from `user_message`. Asserting only the second
+would pass for a "fix" that deleted the key entirely and left operators with
+nothing to debug from.
