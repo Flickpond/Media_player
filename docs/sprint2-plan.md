@@ -165,11 +165,11 @@ the sprint record.
 | [S2-01](#s2-01--ffmpeg-transcoding) | FFmpeg transcoding | 2–3 days | **DONE** — deployed, verified transcoding 1920×1080 → 1280×720 in production |
 | [S2-02](#s2-02--reaper-and-sweeper) | Reaper + sweeper (covers P2) | 2 days | **DONE** — deployed; crash recovery demonstrated with `docker kill` |
 | [S2-04](#s2-04--cicd-pipeline) | CI/CD pipeline | 0.5 day | **DONE** — 5 jobs, required status checks on `main` |
-| [S2-03](#s2-03--authorization-p1) | Authorization (P1) | 2–3 days | **Must** — the only thing blocking a real deployment. Mostly C's files. Mechanism decided: [design note](s2-03-auth-design.md) |
+| [S2-03](#s2-03--authorization-p1) | Authorization (P1) | 2–3 days | **DONE** — deployed and verified: two users see only their own jobs, cross-owner read is 404, `/admin/jobs` is operator-only. [Design note](s2-03-auth-design.md) |
 | [S2-05](#s2-05--tls) | TLS on 443 | 0.5 day | **DONE** — <https://flickpond.com>, cert expires 2026-12-09, 80 redirects to 443 |
-| [S2-06](#s2-06--consolidate-the-minio-clients) | Consolidate MinIO clients | 0.5 day | Should — **do NOT fold into S2-01**, it spans three tracks |
-| [S2-07](#s2-07--ensure_bucket-per-upload-p6) | `ensure_bucket` per upload (P6) | 1 hour | Could |
-| [S2-08](#s2-08--error-message-hygiene-p9) | Error message hygiene (P9) | 2 hours | Could — done |
+| [S2-06](#s2-06--consolidate-the-minio-clients) | Consolidate MinIO clients | 0.5 day | **DONE** — `app/services/minio_client.py` is the only place `Minio(` is called; the internal and public clients stay deliberately separate |
+| [S2-07](#s2-07--ensure_bucket-per-upload-p6) | `ensure_bucket` per upload (P6) | 1 hour | **DONE** — moved to a lifespan hook; uploads perform no bucket check |
+| [S2-08](#s2-08--error-message-hygiene-p9) | Error message hygiene (P9) | 2 hours | **DONE** — `ObjectStoreError` carries a log half and a user half; both required |
 
 ### What the finished items actually left behind
 
