@@ -1,7 +1,8 @@
 # Sprint 2 Backlog — what the sprint 1 review left open
 
 **Written:** 7 September 2026 · against `main` @ `40d5e6b` plus the review's fixes
-**Status:** P1, P2, P6 and P9 are open. Everything else here is done.
+**Status:** every problem in this document is closed. P1 became S2-03, P2 the
+reaper's orphan sweep, P6 became S2-07, and P9 became S2-08.
 
 Companion to [`sprint1-report.md`](sprint1-report.md), which records what exists,
 and [`scaling-notes.md`](scaling-notes.md), which records what serving 50 users
@@ -214,8 +215,8 @@ silently. The row is still stranded — that is P2, and it is still the finding.
 
 | Id | Problem | Where | Note |
 |---|---|---|---|
-| **P6** | `ensure_bucket()` runs on every upload | `app/services/storage.py` | An extra round-trip on a path budgeted under 1 s (N1). Belongs in a startup hook. Flat cost — no urgency. |
-| **P9** | Exception class names and object keys reach the user-facing `error` column | `app/worker/tasks.py`, `app/worker/storage.py` | Fine for a demo. Split the user-facing message from the logged diagnostic before real users see it. |
+| **P6** | `ensure_bucket()` runs on every upload | `app/services/storage.py` | **Closed by S2-07.** Moved to a FastAPI lifespan hook; uploads perform no bucket check at all. |
+| **P9** | Exception class names and object keys reach the user-facing `error` column | `app/worker/tasks.py`, `app/worker/storage.py` | **Closed by S2-08.** `ObjectStoreError` now carries two messages: `str(exc)` for the log, `user_message` for the `error` column. Both are required at every raise site. |
 
 ---
 
@@ -253,3 +254,5 @@ other people's files for no functional gain.
 2. **P2 via the sweeper**, built together with the already-planned `processing`
    reaper. Two limitations, one component.
 3. **P6 and P9** as hygiene, whenever those files are open anyway.
+
+All four landed in sprint 2, in that order.

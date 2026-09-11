@@ -5,6 +5,10 @@ from minio.error import S3Error
 
 from app.worker.storage import CopyProcessor, MinioObjectStore, ObjectStoreError
 
+# A key that carries the two things a user must never be shown back: the
+# internal layout, and the name of somebody else's file.
+LEAKY_KEY = "uploads/9f3a/holiday-in-crete.mp4"
+
 
 def s3_error(code: str) -> S3Error:
     return S3Error(
@@ -30,10 +34,20 @@ class FakeStore:
 
 
 class FakeMinio:
-    def __init__(self, *, stat_error=None, copy_error=None) -> None:
+    def __init__(self, *, stat_error=None, copy_error=None, fget_error=None, fput_error=None):
         self.stat_error = stat_error
         self.copy_error = copy_error
+        self.fget_error = fget_error
+        self.fput_error = fput_error
         self.copy_calls: list[tuple[str, str]] = []
+
+    def fget_object(self, bucket, key, destination):
+        if self.fget_error:
+            raise self.fget_error
+
+    def fput_object(self, bucket, key, source, content_type=None):
+        if self.fput_error:
+            raise self.fput_error
 
     def stat_object(self, bucket, key):
         if self.stat_error:
@@ -106,3 +120,46 @@ def test_copy_object_uses_server_side_copy():
     store.copy_object(source_key="uploads/a.mp4", output_key="outputs/a.mp4")
 
     assert client.copy_calls == [("uploads/a.mp4", "outputs/a.mp4")]
+
+
+# --- P9: the key belongs in the log, never on the user's screen ------------
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(lambda store: store.object_exists(LEAKY_KEY), id="object_exists"),
+        pytest.param(
+            lambda store: store.copy_object(source_key=LEAKY_KEY, output_key="outputs/x.mp4"),
+            id="copy_object",
+        ),
+        pytest.param(
+            lambda store: store.download_file(key=LEAKY_KEY, destination="/tmp/x"),
+            id="download_file",
+        ),
+        pytest.param(
+            lambda store: store.upload_file(key=LEAKY_KEY, source="/tmp/x"),
+            id="upload_file",
+        ),
+    ],
+)
+def test_no_storage_failure_puts_an_object_key_in_the_users_half(call):
+    """Every raise site in MinioObjectStore, swept rather than sampled.
+
+    Asserting on both halves in one test is deliberate: a fix that scrubbed the
+    user message by dropping the key entirely would pass a one-sided check and
+    leave an operator with nothing to debug from.
+    """
+    fault = s3_error("AccessDenied")
+    store = MinioObjectStore(
+        FakeMinio(stat_error=fault, copy_error=fault, fget_error=fault, fput_error=fault),
+        bucket="videos",
+    )
+
+    with pytest.raises(ObjectStoreError) as caught:
+        call(store)
+
+    assert LEAKY_KEY in str(caught.value), "the operator's half still needs the key"
+    assert LEAKY_KEY not in caught.value.user_message
+    assert "holiday-in-crete" not in caught.value.user_message
+    assert "AccessDenied" not in caught.value.user_message

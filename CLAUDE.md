@@ -20,7 +20,7 @@ operator role. The shared-password nginx gate that stood in for it is gone.
 | File | Why |
 |---|---|
 | [`docs/sprint2-plan.md`](docs/sprint2-plan.md) | What to build, in what order, with acceptance criteria |
-| [`docs/known-traps.md`](docs/known-traps.md) | 21 traps already hit here. **Most fail silently.** |
+| [`docs/known-traps.md`](docs/known-traps.md) | 22 traps already hit here. **Most fail silently.** |
 | [`docs/contract.md`](docs/contract.md) | Shared API and schema boundary — changing it means telling the team |
 | [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md) | Why auth is shaped the way it is: JWT in an HttpOnly cookie, schema, roles |
 
@@ -54,8 +54,9 @@ exactly — those are the only two CORS origins.
    are gitignored; check `git diff --cached --name-only` before committing.
 2. **Only nginx is published beyond loopback.** PostgreSQL, Redis, MinIO and the
    API are pinned to `127.0.0.1` in `docker-compose.yml` and that is not
-   configurable. Use an SSH tunnel to reach them. The API has no authorization
-   yet, so anything that reaches it can read every upload.
+   configurable. Use an SSH tunnel to reach them. The API enforces per-user
+   ownership since S2-03; the datastores behind it do not, so anything that
+   reaches one of them directly still reads every user's data.
 3. **Every file under `tests/integration/` needs the `RUN_POSTGRES_TESTS`
    skip guard.** An ungated one breaks CI and every teammate's test run.
 4. **The worker is the sole writer** to `status`, `output_key`, `error`,
