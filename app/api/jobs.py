@@ -1,17 +1,27 @@
 import asyncio
+import logging
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, OperatorUser
 from app.database import get_session
 from app.errors import ApiNotFoundError
 from app.models.job import Job, JobStatus
-from app.repositories.jobs import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, get_job, list_jobs
+from app.repositories.jobs import (
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    delete_job,
+    get_job,
+    list_jobs,
+)
 from app.schemas.job import ErrorResponse, JobResponse
 from app.services.output_urls import OutputUrlSigner, get_output_url_signer
+from app.services.storage import StorageService, get_storage_service
+
+logger = logging.getLogger("app.api.jobs")
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 # Separate route rather than a role branch inside GET /jobs. One URL that
@@ -20,6 +30,7 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 admin_router = APIRouter(prefix="/admin/jobs", tags=["admin"])
 SessionDependency = Annotated[AsyncSession, Depends(get_session)]
 SignerDependency = Annotated[OutputUrlSigner, Depends(get_output_url_signer)]
+StorageDependency = Annotated[StorageService, Depends(get_storage_service)]
 
 
 async def _to_response(job: Job, signer: OutputUrlSigner) -> JobResponse:
@@ -73,6 +84,43 @@ async def get_job_by_id(
     if job is None:
         raise ApiNotFoundError("not found")
     return await _to_response(job, signer)
+
+
+@router.delete(
+    "/{job_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={404: {"model": ErrorResponse}},
+)
+async def delete_job_by_id(
+    job_id: UUID,
+    user: CurrentUser,
+    session: SessionDependency,
+    storage: StorageDependency,
+) -> Response:
+    """Delete an upload -- for an accidental upload or general cleanup.
+
+    Works regardless of status: queued, processing, done or failed can all be
+    deleted. A job mid-processing is not a special case -- see the note on
+    `delete_job` for why the worker already tolerates the row disappearing
+    underneath it.
+    """
+    job = await delete_job(session, job_id, owner_id=user.id)
+    if job is None:
+        raise ApiNotFoundError("not found")
+
+    # Best-effort, and deliberately after the row is already gone: what the
+    # user sees (the job vanishing from their library) does not depend on
+    # this succeeding. A storage failure here leaves an orphaned object,
+    # exactly the case the reaper's sweep already exists to catch -- so this
+    # is a latency optimisation over waiting for that sweep, not a
+    # correctness requirement.
+    for key in filter(None, (job.source_key, job.output_key)):
+        try:
+            await storage.delete_object(key)
+        except Exception:
+            logger.warning("job %s: could not delete storage object %s", job_id, key)
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @admin_router.get(

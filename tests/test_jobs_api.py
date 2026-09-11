@@ -11,6 +11,7 @@ from app.main import create_app
 from app.models.job import Job, JobStatus
 from app.repositories.jobs import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.services.output_urls import get_output_url_signer
+from app.services.storage import get_storage_service
 from tests.conftest import authenticate_as
 
 
@@ -19,8 +20,24 @@ class FakeSigner:
         return f"https://media.example.test/{output_key}?signed=true"
 
 
+class FakeStorage:
+    def __init__(self, *, fail_on: set[str] | None = None) -> None:
+        self.deleted: list[str] = []
+        self._fail_on = fail_on or set()
+
+    async def delete_object(self, object_key: str) -> None:
+        if object_key in self._fail_on:
+            raise RuntimeError(f"storage unreachable for {object_key}")
+        self.deleted.append(object_key)
+
+
 @pytest_asyncio.fixture
-async def client(test_user):
+async def storage():
+    return FakeStorage()
+
+
+@pytest_asyncio.fixture
+async def client(test_user, storage: FakeStorage):
     application = create_app()
 
     async def fake_session():
@@ -28,6 +45,7 @@ async def client(test_user):
 
     application.dependency_overrides[get_session] = fake_session
     application.dependency_overrides[get_output_url_signer] = FakeSigner
+    application.dependency_overrides[get_storage_service] = lambda: storage
     authenticate_as(application, test_user)
     transport = ASGITransport(app=application)
     async with AsyncClient(transport=transport, base_url="http://test") as test_client:
@@ -231,3 +249,91 @@ async def test_the_maximum_page_size_is_allowed(client: AsyncClient, captured_pa
 
     assert response.status_code == 200
     assert captured_page["limit"] == MAX_PAGE_SIZE
+
+
+# --- DELETE /jobs/{id}: an accidental upload, or general library cleanup ---
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_done_job_removes_both_storage_objects(
+    client: AsyncClient, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = make_job(status=JobStatus.DONE, output_key="outputs/demo.mp4")
+
+    async def fake_delete_job(_session, job_id: UUID, *, owner_id):
+        assert job_id == job.id
+        return job
+
+    monkeypatch.setattr(jobs_api, "delete_job", fake_delete_job)
+    response = await client.delete(f"/jobs/{job.id}")
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert sorted(storage.deleted) == ["outputs/demo.mp4", "uploads/demo.mp4"]
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_queued_job_only_touches_the_source_key(
+    client: AsyncClient, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A queued job has no output yet -- nothing to delete that does not exist."""
+    job = make_job(status=JobStatus.QUEUED)
+
+    async def fake_delete_job(_session, _job_id, *, owner_id):
+        return job
+
+    monkeypatch.setattr(jobs_api, "delete_job", fake_delete_job)
+    response = await client.delete(f"/jobs/{job.id}")
+
+    assert response.status_code == 204
+    assert storage.deleted == ["uploads/demo.mp4"]
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_unknown_or_unowned_job_returns_contract_error(
+    client: AsyncClient, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """404, never 403 -- same reasoning as GET: do not confirm the id exists."""
+
+    async def fake_delete_job(_session, _job_id, *, owner_id):
+        return None
+
+    monkeypatch.setattr(jobs_api, "delete_job", fake_delete_job)
+    response = await client.delete(f"/jobs/{uuid4()}")
+
+    assert response.status_code == 404
+    assert response.json() == {"error": "not found"}
+    assert storage.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_a_storage_failure_does_not_undo_the_delete(
+    test_user, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The row is already gone by the time storage cleanup runs (best-effort:
+    an orphaned object is exactly what the reaper's sweep exists to catch),
+    so a failure here must not turn into a failure response.
+    """
+    job = make_job(status=JobStatus.DONE, output_key="outputs/demo.mp4")
+    failing_storage = FakeStorage(fail_on={"uploads/demo.mp4", "outputs/demo.mp4"})
+
+    async def fake_delete_job(_session, _job_id, *, owner_id):
+        return job
+
+    monkeypatch.setattr(jobs_api, "delete_job", fake_delete_job)
+
+    application = create_app()
+
+    async def fake_session():
+        yield object()
+
+    application.dependency_overrides[get_session] = fake_session
+    application.dependency_overrides[get_output_url_signer] = FakeSigner
+    application.dependency_overrides[get_storage_service] = lambda: failing_storage
+    authenticate_as(application, test_user)
+    transport = ASGITransport(app=application)
+    async with AsyncClient(transport=transport, base_url="http://test") as failing_client:
+        response = await failing_client.delete(f"/jobs/{job.id}")
+
+    assert response.status_code == 204
+    assert failing_storage.deleted == []

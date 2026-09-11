@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job import Job, JobStatus
@@ -148,6 +148,33 @@ async def mark_failed(session: AsyncSession, job_id: UUID, *, error: str) -> Job
         next_status=JobStatus.FAILED,
         error=error.strip(),
     )
+
+
+async def delete_job(session: AsyncSession, job_id: UUID, *, owner_id: UUID) -> Job | None:
+    """Delete a job the caller owns, returning the deleted row -- or `None`
+    if there was nothing to delete: an unknown id, or someone else's job.
+
+    Those two cases are deliberately indistinguishable, the same as
+    `get_job`: the API turns both into 404, never 403, so a delete attempt
+    cannot be used to probe which ids exist.
+
+    Returning the row rather than a bare bool is what lets the caller clean
+    up `source_key` and `output_key` in object storage without a second
+    query. Safe regardless of the job's current status: the worker's own
+    writes (`mark_processing`/`mark_done`/`mark_failed`) are already
+    conditional updates that treat a missing row as `JobNotFoundError` --
+    the same tolerance the reaper depends on -- so a job mid-flight simply
+    loses its race for a row that is no longer there, rather than
+    corrupting one that is.
+    """
+    statement = delete(Job).where(Job.id == job_id, Job.owner_id == owner_id).returning(Job)
+    result = await session.execute(statement)
+    job = result.scalar_one_or_none()
+    if job is None:
+        await session.rollback()
+        return None
+    await session.commit()
+    return job
 
 
 async def list_source_keys(session: AsyncSession) -> set[str]:

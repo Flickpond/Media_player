@@ -9,15 +9,19 @@ from sqlalchemy.pool import NullPool
 
 from app.config import get_settings
 from app.models.job import Job, JobStatus
+from app.models.user import User
 from app.repositories.jobs import (
     InvalidJobTransitionError,
+    JobNotFoundError,
     create_job,
+    delete_job,
     get_job,
     list_jobs,
     mark_done,
     mark_failed,
     mark_processing,
 )
+from app.repositories.users import create_user
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_POSTGRES_TESTS") != "1",
@@ -179,3 +183,99 @@ async def test_list_jobs_returns_newest_first(session_factory, owner) -> None:
         async with session_factory() as cleanup:
             await cleanup.execute(delete(Job).where(Job.id.in_([job.id for job in made])))
             await cleanup.commit()
+
+
+# --- DELETE /jobs/{id}: an accidental upload, or general library cleanup ---
+
+
+@pytest.mark.asyncio
+async def test_delete_job_removes_the_row_and_returns_both_storage_keys(
+    session_factory, owner
+) -> None:
+    """The API cleans up storage from what this returns -- both keys have to
+    travel back, not just enough to prove the row is gone.
+    """
+    job_id = uuid4()
+    async with session_factory() as session:
+        await create_job(
+            session,
+            owner_id=owner.id,
+            job_id=job_id,
+            filename="demo.mp4",
+            source_key=f"uploads/{job_id}/demo.mp4",
+        )
+        await mark_processing(session, job_id)
+        await mark_done(session, job_id, output_key=f"outputs/{job_id}/demo.mp4")
+
+    async with session_factory() as session:
+        deleted = await delete_job(session, job_id, owner_id=owner.id)
+
+    assert deleted is not None
+    assert deleted.source_key == f"uploads/{job_id}/demo.mp4"
+    assert deleted.output_key == f"outputs/{job_id}/demo.mp4"
+
+    async with session_factory() as session:
+        assert await get_job(session, job_id) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_job_is_scoped_to_the_owner(session_factory, owner) -> None:
+    """Someone else's id must not be able to delete this job -- and, same as
+    get_job, the row must still be there afterward, not just "not deleted by
+    that caller".
+    """
+    job_id = uuid4()
+    async with session_factory() as session:
+        stranger = await create_user(
+            session, email=f"stranger-{uuid4().hex[:10]}@example.test", password_hash="x"
+        )
+    try:
+        async with session_factory() as session:
+            await create_job(
+                session,
+                owner_id=owner.id,
+                job_id=job_id,
+                filename="demo.mp4",
+                source_key=f"uploads/{job_id}/demo.mp4",
+            )
+
+        async with session_factory() as session:
+            result = await delete_job(session, job_id, owner_id=stranger.id)
+        assert result is None
+
+        async with session_factory() as session:
+            assert await get_job(session, job_id, owner_id=owner.id) is not None
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.execute(delete(User).where(User.id == stranger.id))
+            await cleanup.commit()
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_processing_job_leaves_the_worker_to_find_it_gone(
+    session_factory, owner
+) -> None:
+    """The safety argument `delete_job`'s docstring makes, proven: a worker
+    mid-flight on a job that gets deleted loses its conditional update to a
+    row that is no longer there, the same as any other race this state
+    machine already tolerates -- it does not corrupt one that is.
+    """
+    job_id = uuid4()
+    async with session_factory() as session:
+        await create_job(
+            session,
+            owner_id=owner.id,
+            job_id=job_id,
+            filename="demo.mp4",
+            source_key=f"uploads/{job_id}/demo.mp4",
+        )
+        await mark_processing(session, job_id)
+
+    async with session_factory() as session:
+        deleted = await delete_job(session, job_id, owner_id=owner.id)
+    assert deleted is not None
+
+    async with session_factory() as session:
+        with pytest.raises(JobNotFoundError):
+            await mark_done(session, job_id, output_key=f"outputs/{job_id}/demo.mp4")

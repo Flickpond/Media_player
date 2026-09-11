@@ -75,6 +75,7 @@ const el = {
 
   viewLibrary: document.getElementById("view-library"),
   libraryFilters: document.getElementById("library-filters"),
+  libraryStatus: document.getElementById("library-status"),
   libraryGrid: document.getElementById("library-grid"),
   libraryEmpty: document.getElementById("library-empty"),
   libraryPrev: document.getElementById("library-prev"),
@@ -451,10 +452,14 @@ function renderLibrary() {
 
     const body = document.createElement("div");
     body.className = "video-card-body";
+
+    const head = document.createElement("div");
+    head.className = "video-card-head";
     const name = document.createElement("div");
     name.className = "video-filename";
     name.textContent = job.filename;
-    body.appendChild(name);
+    head.append(name, makeDeleteButton(job));
+    body.appendChild(head);
 
     if (job.status === "failed" && job.error) {
       const err = document.createElement("div");
@@ -470,6 +475,81 @@ function renderLibrary() {
   el.libraryPrev.disabled = libraryOffset === 0;
   el.libraryNext.disabled = libraryJobs.length < PAGE_SIZE;
   el.libraryPageLabel.textContent = `Page ${Math.floor(libraryOffset / PAGE_SIZE) + 1}`;
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const TRASH_ICON_PATHS = [
+  "M4 7h16",
+  "M10 11v6",
+  "M14 11v6",
+  "M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12",
+  "M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3",
+];
+
+function trashIcon() {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.75");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  for (const d of TRASH_ICON_PATHS) {
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", d);
+    svg.appendChild(path);
+  }
+  return svg;
+}
+
+function makeDeleteButton(job) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "card-delete";
+  button.title = "Delete this video";
+  button.setAttribute("aria-label", `Delete ${job.filename}`);
+  button.appendChild(trashIcon());
+  // Clicking the card also opens the inline player for a done video -- the
+  // delete button sits inside that same click target, so it has to stop the
+  // event or every delete would also toggle playback underneath it.
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    deleteJob(job);
+  });
+  return button;
+}
+
+async function deleteJob(job) {
+  if (!window.confirm(`Delete "${job.filename}"? This cannot be undone.`)) return;
+
+  try {
+    const res = await fetch(`${API}/jobs/${job.id}`, { method: "DELETE" });
+
+    if (res.status === 401) {
+      showSignedOut();
+      setAuthStatus("Your session expired. Sign in again.");
+      return;
+    }
+
+    if (!res.ok && res.status !== 204) {
+      const data = await res.json().catch(() => ({}));
+      setLibraryStatus(`Could not delete "${job.filename}": ${data.error ?? res.status}`);
+      return;
+    }
+
+    libraryJobs = libraryJobs.filter((j) => j.id !== job.id);
+    renderLibrary();
+  } catch (err) {
+    setLibraryStatus(`Request failed: ${err.message}`);
+  }
+}
+
+function setLibraryStatus(message) {
+  el.libraryStatus.textContent = message;
+  el.libraryStatus.hidden = false;
 }
 
 /** Swap a done card's thumbnail for an inline player, in place, on click. */

@@ -740,12 +740,39 @@ video {
 .video-card-body {
   padding: 14px 16px 16px;
 }
+.video-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .video-filename {
+  flex: 1;
+  min-width: 0;
   font-size: 13.5px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.card-delete {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+.card-delete:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 .video-error {
   margin-top: 4px;
