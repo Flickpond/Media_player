@@ -7,6 +7,11 @@ job. §8 explains why — in short, none of these five operations need a real
 server-rendered result to preview, so the cost of a chain (undo, redo, one
 extra generation of lossy re-encoding per step) was buying a guarantee
 nothing here actually needed.
+**Revision 3:** operation order within a batch job is no longer
+user-controlled. §4 explains why a fixed pipeline (clip, crop, scale,
+convert — the size-reducing steps always ahead of the expensive ones) is
+both the correct reading of what the crop UI captures and the faster order,
+so there was nothing left for a user-chosen order to actually decide.
 
 This is not part of the original proposal — crop/clip/scale/convert tools
 aren't in `proposal.md`'s scope at all. Where it lands (sprint 3, replacing
@@ -51,9 +56,8 @@ distinction, no parent/origin chain. One column:
 ALTER TABLE jobs ADD COLUMN operations JSONB;
 ```
 
-`NULL` on a plain upload. On an edit job, an **ordered** array — order
-matters and is exactly what the user configured, not sorted or reinterpreted
-server-side:
+`NULL` on a plain upload. On an edit job, the set of requested operations
+and their params:
 
 ```json
 [
@@ -62,6 +66,15 @@ server-side:
   { "operation": "convert", "params": { "format": "mkv" } }
 ]
 ```
+
+Stored as a JSON array for convenience, but **the array's order is not
+execution order** — the client sends whichever operations the user checked,
+in whatever order they happened to check them, and the worker always runs
+them in one fixed sequence regardless (§4). None of these five operations
+actually have a meaningful *user* intent tied to relative order — crop and
+clip are both always anchored to the *original* video, not to whatever an
+earlier step in the chain produced — so there's nothing for the user to
+control here, and no reason to make them think there is.
 
 `source_key` already exists and works unchanged — an edit job's source is
 whatever existing job the user started from (the original, or another
@@ -79,8 +92,9 @@ POST /jobs/{id}/edit
   202 { "job_id": "<uuid>" }
   404 { "error": "not found" }        -- unknown id, or not this caller's
   422 { "detail": [...] }             -- empty list, unknown operation name,
-                                          or params fail that operation's
-                                          validation
+                                          params fail that operation's
+                                          validation, or downscale and
+                                          upscale both present (§4)
 
   `id` is the source: the original, or any existing library entry. Creates a
   new job with source_key = id's output (or source, if id has none yet --
@@ -96,38 +110,61 @@ full stop.
 
 ---
 
-## 4. Worker: applying an ordered list in one pass
+## 4. Worker: one fixed pipeline order, not a user-configurable one
 
 Still needs the same per-operation FFmpeg shapes as before, and still needs
 `ffprobe` first for crop (source dimensions) and clip (source duration) —
 that part of the earlier design didn't change:
 
-| `operation` | `params` | FFmpeg filter | Needs `ffprobe` first? |
+| `operation` | `params` | FFmpeg shape | Needs `ffprobe` first? |
 |---|---|---|---|
+| `clip` | `{"start": 5.0, "end": 12.5}` | `-ss {start} -to {end}` (input-side flags, not a filter) | Yes — validate against source duration |
 | `crop` | `{"x", "y", "w", "h"}` | `crop={w}:{h}:{x}:{y}` | Yes — validate rect fits inside source dimensions |
 | `downscale` | `{"height": 480}` | `scale=-2:{height}` | No |
 | `upscale` | `{"height": 1080}` | `scale=-2:{height}:flags=lanczos` | No |
-| `clip` | `{"start": 5.0, "end": 12.5}` | `-ss {start} -to {end}` | Yes — validate against source duration |
 | `convert` | `{"format": "mkv"}` / `{"format": "mp3"}` | remux (`-c copy`) or `-vn -c:a libmp3lame` | No |
 
-**What's genuinely new versus the single-operation design**: building one
-filter graph from an ordered list instead of picking one filter. `crop` and
-the two scale operations compose directly as a comma-joined `-vf` chain, in
-the order given — crop-then-downscale and downscale-then-crop are different
-operations and the list's order is what decides which one the user gets.
-`clip`'s `-ss`/`-to` are top-level flags, not part of the filter graph, and
-apply regardless of where `clip` sits in the list — trimming has no
-"position" relative to a filter chain, it bounds the whole input. `convert`
-has to run last: it's the only operation that changes the container/codec
-rather than the frame content, so it can only sensibly be the final step
-regardless of where the user placed it in the list. Worth validating and
-rejecting (422) a `convert` that isn't last, rather than silently
-reordering it.
+The table is ordered the way the worker always builds the command, whichever
+of these the client actually requested: **clip, then crop, then scale
+(downscale or upscale), then convert.** Not user-configurable, and not
+arbitrary — every step of it is either a correctness requirement or a
+genuine performance win, usually both:
+
+- **Clip first, structurally.** `-ss`/`-to` are input-side flags, not
+  entries in the `-vf` filter graph, so they already bound how many frames
+  reach *every* other step — crop, scale, and the encoder all only ever see
+  the trimmed range, however the request lists its operations. This was
+  already true in the previous revision; it's worth stating as policy now
+  rather than an incidental property.
+- **Crop before scale, always — this is a correctness requirement, not a
+  preference.** The crop box in the UI is drawn against the *original*
+  frame, so `x`/`y`/`w`/`h` are only meaningful in the original's coordinate
+  space. Running scale first and crop second would need the rect rescaled to
+  match, for no benefit. Anchoring crop to the original and always running
+  it before any scale is simultaneously the only correct reading of what the
+  user drew and the cheaper order: crop shrinks the pixel count *before* the
+  more expensive scale-and-encode work runs, not after.
+- **`downscale` and `upscale` are mutually exclusive in one job** — reject
+  both present with a 422. There's no coherent reading of "shrink and
+  enlarge in the same pass," and not deciding this up front is what would
+  force an arbitrary tie-break later.
+- **Convert last, unchanged from the previous revision** — it changes the
+  container/codec, not the frame content, so it's the only step for which
+  "before or after the others" was never a real question.
+
+This is the concrete answer to "prioritise the operations that shrink the
+video": crop and clip — the two operations that reduce pixel count and frame
+count — always run before scale and encode, the two most expensive steps,
+rather than after. It's not a heuristic bolted on top of a user-ordered
+list; it falls out of making clip and crop's coordinate spaces correct in
+the first place. The one place a genuine ambiguity could exist (`downscale`
+vs. `upscale`) is removed by making the combination invalid rather than
+guessed at.
 
 A registry — the same `{"crop": build_crop_args, ...}` shape the earlier
 design already planned — still replaces `get_processing_step()`'s single
-hardcoded command. What changes is that the worker now folds the whole list
-into one command instead of dispatching to exactly one entry.
+hardcoded command, now assembling the fixed sequence above from whichever
+entries the request actually included.
 
 **Deliberately excluded: real (AI/super-resolution) upscaling.** Unchanged
 from the earlier version of this document — a separate initiative with its
@@ -146,12 +183,15 @@ Save/poll-a-draft loop repeated per operation, and the Undo/Redo buttons.
   ones you want, leave the rest alone. Crop shows the draggable box over a
   paused frame; Clip shows the trim range on a scrubber; both update purely
   client-side as the user drags, no request sent.
-- Downscale/Upscale/Convert are plain dropdowns.
+- Downscale/Upscale/Convert are plain dropdowns. Downscale and Upscale are
+  mutually exclusive — selecting one disables the other, rather than
+  letting the user configure a combination the worker will just reject.
 - **Process** — enabled once at least one operation is configured. Calls
-  `POST /jobs/{id}/edit` with the ordered list (list order follows the order
-  the user checked the boxes in, shown back to them so it's not a hidden
-  rule), then polls exactly like the upload flow already does — same
-  badge/progress-bar pattern, nothing new to build there.
+  `POST /jobs/{id}/edit` with whichever operations are checked; execution
+  order is the worker's fixed sequence (§4), not something the UI needs to
+  expose or let the user control. Polls exactly like the upload flow
+  already does — same badge/progress-bar pattern, nothing new to build
+  there.
 - On success, the result is just a library entry — no separate "Save to
   Library" confirmation step, because nothing was ever in a provisional
   state to confirm out of. If the team wants a review moment before
@@ -187,19 +227,20 @@ hand-rolling drag math.
 | Piece | Estimate |
 |---|---|
 | Schema: `operations` column | 0.25 day |
-| `POST /jobs/{id}/edit`, validation (unknown op, bad params, `convert` not last) | 1 day |
-| Worker: registry, filter-graph composition in list order, `ffprobe` step | 1.5 days |
+| `POST /jobs/{id}/edit`, validation (unknown op, bad params, downscale+upscale both present) | 1 day |
+| Worker: registry, the fixed clip/crop/scale/convert pipeline, `ffprobe` step | 1.25 days |
 | Frontend: shared edit view, operation panel, Process + polling | 1.25 days |
-| **Foundation subtotal** | **~4 days** |
+| **Foundation subtotal** | **~3.75 days** |
 | Downscale / Upscale / Convert (each: dropdown + registry entry) | 0.5 day each, ~1.5 days combined |
 | Clip (client-side scrubber preview + duration validation) | 1–1.5 days |
 | Crop (client-side crop box + rect validation) | 2.5–3.5 days |
-| **All five operations** | **~9.5–11 days total** |
+| **All five operations** | **~8.75–10.25 days total** |
 
-Cheaper than the sequential design's ~12.5–14 days, and for a concrete
-reason beyond less code: no undo/redo endpoints, no draft/library
-distinction, no chain to keep consistent — the removed scope is real
-mechanism, not just fewer lines.
+Cheaper than the sequential design's ~12.5–14 days, for two stacking
+reasons: no undo/redo endpoints, no draft/library distinction, no chain to
+keep consistent (real removed mechanism, not just fewer lines) — and now
+also no order-selection UI or reordering logic to build, since there was
+never a meaningful order for a user to choose in the first place.
 
 **Recommended build order:** foundation, then **downscale first**, same
 reasoning as before — proves the one new endpoint and the worker's list
