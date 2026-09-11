@@ -46,6 +46,56 @@
               Flickpond queues, transcodes to a web-ready 720p MP4, and hosts the result —
               automatically, with nothing to configure.
             </p>
+
+            <ol class="pipeline-timeline">
+              <li class="pipeline-step pipeline-step-upload">
+                <span class="pipeline-node">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M7 18a4.6 4.4 0 0 1 0-9 5 4.5 0 0 1 9.9-1A4.5 4.5 0 0 1 17.5 18H7Z" />
+                    <path d="M12 12v7" />
+                    <path d="M9 15l3-3 3 3" />
+                  </svg>
+                </span>
+                <span class="pipeline-text">
+                  <strong>Upload</strong>
+                  <span>Drop a file — it lands in storage instantly.</span>
+                </span>
+              </li>
+              <li class="pipeline-step pipeline-step-queue">
+                <span class="pipeline-node">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M12 7v5l3.5 2" />
+                  </svg>
+                </span>
+                <span class="pipeline-text">
+                  <strong>Queue</strong>
+                  <span>Held safely until a worker is free.</span>
+                </span>
+              </li>
+              <li class="pipeline-step pipeline-step-transcode">
+                <span class="pipeline-node">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                    <path d="M12 3a9 9 0 1 1-6.36 2.64" />
+                  </svg>
+                </span>
+                <span class="pipeline-text">
+                  <strong>Transcode</strong>
+                  <span>FFmpeg re-encodes to 720p H.264 + AAC.</span>
+                </span>
+              </li>
+              <li class="pipeline-step pipeline-step-play">
+                <span class="pipeline-node">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M8 5.5v13l11-6.5-11-6.5Z" />
+                  </svg>
+                </span>
+                <span class="pipeline-text">
+                  <strong>Play</strong>
+                  <span>Ready to watch, streamed straight from storage.</span>
+                </span>
+              </li>
+            </ol>
           </div>
         </div>
 

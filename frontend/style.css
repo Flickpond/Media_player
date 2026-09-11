@@ -110,6 +110,73 @@ a:hover {
   max-width: 400px;
 }
 
+.pipeline-timeline {
+  list-style: none;
+  margin: 44px 0 0;
+  padding: 0 0 0 4px;
+  position: relative;
+}
+.pipeline-timeline::before {
+  content: "";
+  position: absolute;
+  left: 23px;
+  top: 20px;
+  bottom: 20px;
+  width: 2px;
+  background: var(--border-subtle);
+}
+.pipeline-step {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 28px;
+  position: relative;
+}
+.pipeline-step:last-child {
+  margin-bottom: 0;
+}
+.pipeline-node {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  background: var(--bg-raised);
+  border: 2px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  position: relative;
+  z-index: 1;
+}
+.pipeline-step-upload .pipeline-node {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.pipeline-step-transcode .pipeline-node {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+.pipeline-step-play .pipeline-node {
+  border-color: var(--success);
+  color: var(--success);
+}
+.pipeline-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.pipeline-text strong {
+  font-size: 14px;
+  color: var(--text);
+  font-weight: 600;
+}
+
 .form-panel {
   flex: 0 0 480px;
   display: flex;
@@ -219,6 +286,9 @@ input:focus {
   }
   .brand-copy h1 {
     font-size: 28px;
+  }
+  .pipeline-timeline {
+    display: none;
   }
   .form-panel {
     flex: 1 1 auto;
@@ -541,6 +611,9 @@ main {
 
 video {
   width: 100%;
+  /* A real uploaded video's own aspect ratio is unknown until it plays, and
+     an unusually tall source would otherwise blow out the job card's height. */
+  max-height: 360px;
   margin-top: 4px;
   border-radius: 8px;
   background: #000;
