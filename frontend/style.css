@@ -525,11 +525,12 @@ main {
 .job-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   margin-bottom: 12px;
 }
 .job-filename {
+  flex: 1;
+  min-width: 0;
   font-size: 15px;
   font-weight: 600;
   overflow: hidden;
@@ -859,12 +860,24 @@ video {
 .admin-table td {
   padding: 13px 20px;
   border-bottom: 1px solid var(--border-subtle);
+  /* A row's preview cell grows tall once its video is playing; without this
+     every other cell in that row would centre against the new height. */
+  vertical-align: top;
 }
 .admin-table tbody tr:hover {
   background: var(--bg-overlay);
 }
 .admin-table tbody tr:last-child td {
   border-bottom: none;
+}
+.admin-watch {
+  padding: 5px 12px;
+  font-size: 12px;
+}
+.admin-table td video {
+  display: block;
+  width: 220px;
+  margin-top: 8px;
 }
 
 @media (max-width: 700px) {

@@ -43,6 +43,7 @@ async function loadApp({ signedIn = true, role = "user" } = {}) {
     activeJob: document.getElementById("active-job"),
     jobFilename: document.getElementById("job-filename"),
     jobBadge: document.getElementById("job-badge"),
+    jobDelete: document.getElementById("job-delete"),
     jobProgress: document.getElementById("job-progress"),
     jobActions: document.getElementById("job-actions"),
     jobRetry: document.getElementById("job-retry"),
@@ -72,6 +73,7 @@ async function loadApp({ signedIn = true, role = "user" } = {}) {
     adminTbody: document.getElementById("admin-tbody"),
     adminEmpty: document.getElementById("admin-empty"),
     adminFilters: document.getElementById("admin-filters"),
+    adminStatus: document.getElementById("admin-status"),
   };
 }
 
@@ -227,6 +229,77 @@ describe("upload", () => {
 
     expect(el.status.textContent).toContain("not a video format");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // --- deleting the active job straight off the upload page ---------------
+
+  it("asks for confirmation before deleting the active job, and does nothing if declined", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-1", status: "queued" }));
+    await uploadFile(el);
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    fetchMock.mockClear();
+
+    el.jobDelete.dispatchEvent(new Event("click"));
+
+    expect(window.confirm).toHaveBeenCalledOnce();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(el.activeJob.hidden).toBe(false);
+  });
+
+  it("deletes the active job and resets the card once confirmed", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-1", status: "queued" }));
+    await uploadFile(el);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 204, json: async () => ({}) });
+
+    el.jobDelete.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/jobs/job-1");
+    expect(init.method).toBe("DELETE");
+    expect(el.activeJob.hidden).toBe(true);
+    expect(el.status.textContent).toBe("Video deleted.");
+  });
+
+  it("stops polling once the active job is deleted", async () => {
+    const el = await loadApp();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }))
+      .mockResolvedValue(jsonResponse({ status: "processing" }));
+    await uploadFile(el);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 204, json: async () => ({}) });
+
+    el.jobDelete.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+    fetchMock.mockClear();
+
+    await vi.advanceTimersByTimeAsync(10000);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns to the sign-in form if the session expired mid-delete", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-1", status: "queued" }));
+    await uploadFile(el);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not authenticated" }, false, 401));
+
+    el.jobDelete.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.auth.hidden).toBe(false);
+    expect(el.authStatus.textContent).toContain("session expired");
   });
 });
 
@@ -683,5 +756,104 @@ describe("admin", () => {
 
     expect(el.viewUpload.hidden).toBe(false);
     expect(el.viewAdmin.hidden).toBe(true);
+  });
+
+  // --- previewing without downloading, and deleting any user's upload ----
+
+  async function openAdminWith(el, rows) {
+    fetchMock.mockResolvedValueOnce(jsonResponse(rows));
+    el.navAdmin.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+    fetchMock.mockClear();
+  }
+
+  function rowFor(el, filename) {
+    return [...el.adminTbody.querySelectorAll("tr")].find(
+      (r) => r.firstElementChild.textContent === filename,
+    );
+  }
+
+  it("plays a done job inline rather than linking to a downloadable URL", async () => {
+    const el = await loadApp({ role: "operator" });
+    await openAdminWith(el, ROWS);
+
+    const row = rowFor(el, "a.mp4");
+    expect(row.querySelector("a")).toBeNull();
+    const watchButton = row.querySelector(".admin-watch");
+    expect(watchButton.textContent).toBe("Watch");
+
+    watchButton.dispatchEvent(new Event("click"));
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    const video = row.querySelector("video");
+    expect(video.getAttribute("src")).toBe("http://minio/a.mp4");
+    expect(watchButton.textContent).toBe("Hide");
+  });
+
+  it("hides the player again on a second click", async () => {
+    const el = await loadApp({ role: "operator" });
+    await openAdminWith(el, ROWS);
+    const row = rowFor(el, "a.mp4");
+    const watchButton = row.querySelector(".admin-watch");
+
+    watchButton.dispatchEvent(new Event("click"));
+    watchButton.dispatchEvent(new Event("click"));
+
+    expect(row.querySelector("video")).toBeNull();
+    expect(watchButton.textContent).toBe("Watch");
+  });
+
+  it("shows no preview control for a job with no output yet", async () => {
+    const el = await loadApp({ role: "operator" });
+    await openAdminWith(el, ROWS);
+
+    const row = rowFor(el, "b.mp4");
+
+    expect(row.querySelector(".admin-watch")).toBeNull();
+    expect(row.querySelector("a")).toBeNull();
+  });
+
+  it("asks for confirmation before deleting, and does nothing if declined", async () => {
+    const el = await loadApp({ role: "operator" });
+    await openAdminWith(el, ROWS);
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    rowFor(el, "a.mp4").querySelector(".card-delete").dispatchEvent(new Event("click"));
+
+    expect(window.confirm).toHaveBeenCalledOnce();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(rowFor(el, "a.mp4")).toBeTruthy();
+  });
+
+  it("deletes any user's job through the unscoped admin route", async () => {
+    const el = await loadApp({ role: "operator" });
+    await openAdminWith(el, ROWS);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 204, json: async () => ({}) });
+
+    rowFor(el, "a.mp4").querySelector(".card-delete").dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/admin/jobs/1");
+    expect(init.method).toBe("DELETE");
+    expect(el.adminTbody.querySelectorAll("tr").length).toBe(1);
+    expect(rowFor(el, "a.mp4")).toBeUndefined();
+  });
+
+  it("shows an error and keeps the row if the admin delete fails", async () => {
+    const el = await loadApp({ role: "operator" });
+    await openAdminWith(el, ROWS);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not found" }, false, 404));
+
+    rowFor(el, "a.mp4").querySelector(".card-delete").dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.adminStatus.textContent).toContain("not found");
+    expect(rowFor(el, "a.mp4")).toBeTruthy();
   });
 });

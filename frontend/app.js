@@ -67,6 +67,7 @@ const el = {
   activeJob: document.getElementById("active-job"),
   jobFilename: document.getElementById("job-filename"),
   jobBadge: document.getElementById("job-badge"),
+  jobDelete: document.getElementById("job-delete"),
   jobProgress: document.getElementById("job-progress"),
   player: document.getElementById("player"),
   jobActions: document.getElementById("job-actions"),
@@ -84,6 +85,7 @@ const el = {
 
   viewAdmin: document.getElementById("view-admin"),
   adminFilters: document.getElementById("admin-filters"),
+  adminStatus: document.getElementById("admin-status"),
   adminTbody: document.getElementById("admin-tbody"),
   adminEmpty: document.getElementById("admin-empty"),
   adminPrev: document.getElementById("admin-prev"),
@@ -237,6 +239,7 @@ el.navAdmin.addEventListener("click", () => switchView("admin"));
 let pollTimer = null;
 let lastFile = null;
 let uploading = false;
+let activeJobId = null;
 
 const POLL_INTERVAL_MS = 2000;
 // 30 polls is a minute. The transcode step finishes well inside that under
@@ -303,6 +306,40 @@ el.jobRetry.addEventListener("click", () => {
   if (lastFile) handleFile(lastFile);
 });
 el.jobChooseDifferent.addEventListener("click", () => el.fileInput.click());
+el.jobDelete.addEventListener("click", deleteActiveJob);
+
+async function deleteActiveJob() {
+  if (!activeJobId) return;
+  const filename = el.jobFilename.textContent || "this video";
+  if (!window.confirm(`Delete "${filename}"? This cannot be undone.`)) return;
+
+  const jobId = activeJobId;
+  try {
+    const res = await fetch(`${API}/jobs/${jobId}`, { method: "DELETE" });
+
+    if (res.status === 401) {
+      showSignedOut();
+      setAuthStatus("Your session expired. Sign in again.");
+      return;
+    }
+
+    if (!res.ok && res.status !== 204) {
+      const data = await res.json().catch(() => ({}));
+      setStatus(`Could not delete "${filename}": ${data.error ?? res.status}`);
+      return;
+    }
+
+    // Deleting is safe at any status, including mid-poll (DELETE /jobs/{id}
+    // works regardless) -- stop polling for a job that no longer exists.
+    stopPolling();
+    resetJobCard();
+    activeJobId = null;
+    lastFile = null;
+    setStatus("Video deleted.");
+  } catch (err) {
+    setStatus(`Request failed: ${err.message}`);
+  }
+}
 
 async function handleFile(file) {
   if (uploading) return; // A rapid second drop cannot double-post the first.
@@ -319,6 +356,7 @@ async function handleFile(file) {
   // A new upload always wins over whatever the previous job was doing.
   stopPolling();
   resetJobCard();
+  activeJobId = null;
   lastFile = file;
   setBusy(true);
   setStatus("Uploading...");
@@ -347,6 +385,7 @@ async function handleFile(file) {
     el.activeJob.hidden = false;
     el.jobFilename.textContent = file.name;
     setBadge("queued");
+    activeJobId = data.job_id;
     setBusy(false);
     poll(data.job_id);
   } catch (err) {
@@ -627,25 +666,85 @@ function renderAdmin() {
     const statusCell = document.createElement("td");
     statusCell.appendChild(makeBadge(job.status));
 
-    const linkCell = document.createElement("td");
+    // A plain link here would navigate to the presigned URL, which the
+    // object store deliberately serves as a forced download (see
+    // app/services/output_urls.py) -- exactly what made "checking which
+    // video is which" mean downloading every one of them. A <video> element
+    // ignores that header by design, the same way the Library grid's
+    // click-to-play already does, so this plays the file in place instead.
+    const previewCell = document.createElement("td");
     if (job.status === "done" && job.output_url) {
-      const link = document.createElement("a");
-      link.href = job.output_url;
-      link.target = "_blank";
-      link.rel = "noopener";
-      link.textContent = "View";
-      linkCell.appendChild(link);
+      const watchButton = document.createElement("button");
+      watchButton.type = "button";
+      watchButton.className = "btn-ghost admin-watch";
+      watchButton.textContent = "Watch";
+      watchButton.addEventListener("click", () => {
+        toggleInlinePlayer(previewCell, job);
+        const playing = previewCell.querySelector("video") !== null;
+        watchButton.textContent = playing ? "Hide" : "Watch";
+      });
+      previewCell.appendChild(watchButton);
     } else {
-      linkCell.textContent = "—";
+      previewCell.textContent = "—";
     }
 
-    row.append(filenameCell, statusCell, linkCell);
+    const actionsCell = document.createElement("td");
+    actionsCell.appendChild(makeAdminDeleteButton(job));
+
+    row.append(filenameCell, statusCell, previewCell, actionsCell);
     el.adminTbody.appendChild(row);
   }
 
   el.adminPrev.disabled = adminOffset === 0;
   el.adminNext.disabled = adminJobs.length < PAGE_SIZE;
   el.adminPageLabel.textContent = `Page ${Math.floor(adminOffset / PAGE_SIZE) + 1}`;
+}
+
+function makeAdminDeleteButton(job) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "card-delete";
+  button.title = "Delete this video";
+  button.setAttribute("aria-label", `Delete ${job.filename}`);
+  button.appendChild(trashIcon());
+  button.addEventListener("click", () => deleteJobAsAdmin(job));
+  return button;
+}
+
+async function deleteJobAsAdmin(job) {
+  if (!window.confirm(`Delete "${job.filename}"? This cannot be undone.`)) return;
+
+  try {
+    // Unscoped: an operator can delete any user's job, not just their own --
+    // the same "identify what this upload is" story the inline preview
+    // above exists for.
+    const res = await fetch(`${API}/admin/jobs/${job.id}`, { method: "DELETE" });
+
+    if (res.status === 401) {
+      showSignedOut();
+      setAuthStatus("Your session expired. Sign in again.");
+      return;
+    }
+    if (res.status === 403) {
+      switchView("upload");
+      return;
+    }
+    if (!res.ok && res.status !== 204) {
+      const data = await res.json().catch(() => ({}));
+      setAdminStatus(`Could not delete "${job.filename}": ${data.error ?? res.status}`);
+      return;
+    }
+
+    adminJobs = adminJobs.filter((j) => j.id !== job.id);
+    renderAdmin();
+  } catch (err) {
+    setAdminStatus(`Request failed: ${err.message}`);
+  }
+}
+
+function setAdminStatus(message) {
+  el.adminStatus.textContent = message;
+  el.adminStatus.hidden = false;
 }
 
 async function loadAdmin() {

@@ -91,6 +91,11 @@ GET /jobs?limit=<1..200>&offset=<n>
 GET /admin/jobs?limit=<1..200>&offset=<n>
   200 [ ...same job shape... ]   // every owner's jobs
   403 { "error": "operator role required" }
+
+DELETE /admin/jobs/{id}
+  204                          // unscoped -- deletes any user's job
+  403 { "error": "operator role required" }
+  404 { "error": "not found" } // unknown id only; ownership is never checked
 ```
 
 `GET /admin/jobs` is sprint 1's operator story ("see all jobs, so I can spot
