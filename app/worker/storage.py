@@ -19,13 +19,35 @@ from minio.commonconfig import CopySource
 from app.config import get_settings
 from app.services.minio_client import bucket, internal_client
 
+# One message for every "the file itself is the problem" case. FFmpeg's own
+# stderr names the temp path it was working on and assumes the reader knows what
+# a codec is; neither belongs on the screen of someone who uploaded a holiday
+# video.
+UNPROCESSABLE_VIDEO = (
+    "the video could not be processed; it may be corrupt or in a format we cannot read"
+)
+
 
 class ObjectStoreError(RuntimeError):
-    """Raised when the object store cannot serve a request.
+    """A storage or processing failure, carrying two messages deliberately.
 
-    The message is written verbatim into the job's `error` column, so it has to
-    read like something a user can act on.
+    `str(exc)` is the **diagnostic**: object keys, S3 codes, FFmpeg stderr. It
+    goes to the log, where an operator can act on it.
+
+    `user_message` is what reaches the job's `error` column, and from there
+    `GET /jobs/{id}` and the uploader's screen. It names a cause they can do
+    something about without naming anything internal -- not a key, not a temp
+    path, not an exception class.
+
+    Both are required. This class used to carry one message that served both
+    audiences, which is how object keys and raw FFmpeg output ended up in a
+    user-facing column (P9). Making the split a TypeError means the next raise
+    site that forgets fails in CI rather than in production.
     """
+
+    def __init__(self, diagnostic: str, *, user_message: str) -> None:
+        super().__init__(diagnostic)
+        self.user_message = user_message
 
 
 class ObjectStore(Protocol):
@@ -51,7 +73,10 @@ class MinioObjectStore:
         except S3Error as exc:
             if exc.code in {"NoSuchKey", "NoSuchObject", "NotFound"}:
                 return False
-            raise ObjectStoreError(f"object store error checking {key}: {exc.code}") from exc
+            raise ObjectStoreError(
+                f"object store error checking {key}: {exc.code}",
+                user_message="storage could not be reached; please try again",
+            ) from exc
         return True
 
     def copy_object(self, *, source_key: str, output_key: str) -> None:
@@ -65,7 +90,8 @@ class MinioObjectStore:
             )
         except S3Error as exc:
             raise ObjectStoreError(
-                f"copy failed from {source_key} to {output_key}: {exc.code}"
+                f"copy failed from {source_key} to {output_key}: {exc.code}",
+                user_message="the processed video could not be saved; please try again",
             ) from exc
 
     def download_file(self, *, key: str, destination: str) -> None:
@@ -74,7 +100,10 @@ class MinioObjectStore:
         try:
             self._client.fget_object(self._bucket, key, destination)
         except S3Error as exc:
-            raise ObjectStoreError(f"download failed for {key}: {exc.code}") from exc
+            raise ObjectStoreError(
+                f"download failed for {key}: {exc.code}",
+                user_message="the uploaded file could not be read back; please try again",
+            ) from exc
 
     def upload_file(self, *, key: str, source: str) -> None:
         from minio.error import S3Error
@@ -82,7 +111,10 @@ class MinioObjectStore:
         try:
             self._client.fput_object(self._bucket, key, source, content_type="video/mp4")
         except S3Error as exc:
-            raise ObjectStoreError(f"upload failed for {key}: {exc.code}") from exc
+            raise ObjectStoreError(
+                f"upload failed for {key}: {exc.code}",
+                user_message="the processed video could not be saved; please try again",
+            ) from exc
 
 
 class ProcessingStep(Protocol):
@@ -120,7 +152,10 @@ class FfmpegProcessor:
 
     def run(self, *, job_id: UUID, source_key: str) -> str:
         if not self._store.object_exists(source_key):
-            raise ObjectStoreError(f"source object missing from storage: {source_key}")
+            raise ObjectStoreError(
+                f"source object missing from storage: {source_key}",
+                user_message="the uploaded file is no longer in storage; please upload it again",
+            )
 
         output_key = self.output_key_for(job_id=job_id, source_key=source_key)
         temp_dir = Path(tempfile.mkdtemp(prefix="flickpond-transcode-"))
@@ -160,14 +195,24 @@ class FfmpegProcessor:
                 )
             except subprocess.TimeoutExpired as exc:
                 raise ObjectStoreError(
-                    f"transcoding timed out after {self._timeout_seconds} seconds"
+                    f"transcoding timed out after {self._timeout_seconds} seconds",
+                    user_message=(
+                        "processing took too long and was stopped after about "
+                        f"{self._timeout_seconds // 60} minutes; "
+                        "try a shorter or smaller video"
+                    ),
                 ) from exc
             if result.returncode != 0:
                 stderr_lines = (result.stderr or "").strip().splitlines()
                 detail = "\n".join(stderr_lines[-5:])[:1000] or "no FFmpeg error output"
-                raise ObjectStoreError(f"FFmpeg failed: {detail}")
+                # `detail` is up to 1000 characters of FFmpeg stderr, naming the
+                # temp path it was working on. Diagnostic only.
+                raise ObjectStoreError(f"FFmpeg failed: {detail}", user_message=UNPROCESSABLE_VIDEO)
             if not output_path.is_file():
-                raise ObjectStoreError("FFmpeg completed without producing an output file")
+                raise ObjectStoreError(
+                    "FFmpeg completed without producing an output file",
+                    user_message=UNPROCESSABLE_VIDEO,
+                )
             self._store.upload_file(key=output_key, source=str(output_path))
             return output_key
         finally:
@@ -187,7 +232,10 @@ class CopyProcessor:
 
     def run(self, *, job_id: UUID, source_key: str) -> str:
         if not self._store.object_exists(source_key):
-            raise ObjectStoreError(f"source object missing from storage: {source_key}")
+            raise ObjectStoreError(
+                f"source object missing from storage: {source_key}",
+                user_message="the uploaded file is no longer in storage; please upload it again",
+            )
 
         output_key = self.output_key_for(job_id=job_id, source_key=source_key)
         self._store.copy_object(source_key=source_key, output_key=output_key)

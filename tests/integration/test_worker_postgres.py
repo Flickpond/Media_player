@@ -93,14 +93,23 @@ async def test_failure_path_persists_failed_and_readable_error(session_factory, 
         outcome = await process_job_async(
             job_id,
             session_factory=session_factory,
-            step=FakeStep(raises=ObjectStoreError("source object missing from storage")),
+            step=FakeStep(
+                raises=ObjectStoreError(
+                    "source object missing from storage: uploads/x.mp4",
+                    user_message="the uploaded file is no longer in storage; "
+                    "please upload it again",
+                )
+            ),
         )
 
         assert outcome is JobOutcome.FAILED
         async with session_factory() as session:
             job = await get_job(session, job_id)
         assert job.status == JobStatus.FAILED.value
-        assert job.error == "source object missing from storage"
+        assert job.error == (
+            "the uploaded file is no longer in storage; please upload it again"
+        )
+        assert "uploads/x.mp4" not in job.error, "the key must not survive the round trip"
         assert job.output_key is None
     finally:
         await cleanup(session_factory, job_id)
