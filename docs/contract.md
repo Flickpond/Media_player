@@ -77,6 +77,12 @@ GET /jobs/{id}
   200 { "id", "filename", "status", "output_url"?, "error"? }
   404 { "error": "not found" }
 
+DELETE /jobs/{id}
+  204                          // no body. Deletes regardless of status.
+  404 { "error": "not found" } // unknown id, or not this caller's job -- same
+                                // as GET, never 403: a 403 confirms the id
+                                // exists and lets someone probe for valid ids.
+
 GET /jobs?limit=<1..200>&offset=<n>
   200 [ ...same job shape... ]   // the caller's own jobs only
   401 { "error": "not authenticated" }

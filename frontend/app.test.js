@@ -64,6 +64,7 @@ async function loadApp({ signedIn = true, role = "user" } = {}) {
     viewAdmin: document.getElementById("view-admin"),
     libraryGrid: document.getElementById("library-grid"),
     libraryEmpty: document.getElementById("library-empty"),
+    libraryStatus: document.getElementById("library-status"),
     libraryFilters: document.getElementById("library-filters"),
     libraryPrev: document.getElementById("library-prev"),
     libraryNext: document.getElementById("library-next"),
@@ -551,6 +552,95 @@ describe("library", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/jobs?limit=12&offset=12");
+  });
+
+  // --- deleting a video: an accidental upload, or general cleanup --------
+
+  async function openLibraryWith(el, jobs) {
+    fetchMock.mockResolvedValueOnce(jsonResponse(jobs));
+    el.navLibrary.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+    fetchMock.mockClear();
+  }
+
+  function deleteButtonFor(el, filename) {
+    const card = [...el.libraryGrid.querySelectorAll(".video-card")].find((c) =>
+      c.querySelector(".video-filename").textContent === filename,
+    );
+    return card.querySelector(".card-delete");
+  }
+
+  it("asks for confirmation before deleting, and does nothing if declined", async () => {
+    const el = await loadApp();
+    await openLibraryWith(el, JOBS);
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    deleteButtonFor(el, "holiday.mp4").dispatchEvent(new Event("click", { bubbles: true }));
+
+    expect(window.confirm).toHaveBeenCalledOnce();
+    expect(fetchMock).not.toHaveBeenCalled();
+    const names = [...el.libraryGrid.querySelectorAll(".video-filename")].map((n) => n.textContent);
+    expect(names).toContain("holiday.mp4");
+  });
+
+  it("deletes the video and removes its card once confirmed", async () => {
+    const el = await loadApp();
+    await openLibraryWith(el, JOBS);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 204, json: async () => ({}) });
+
+    deleteButtonFor(el, "holiday.mp4").dispatchEvent(new Event("click", { bubbles: true }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/jobs/1");
+    expect(init.method).toBe("DELETE");
+    const names = [...el.libraryGrid.querySelectorAll(".video-filename")].map((n) => n.textContent);
+    expect(names).toEqual(["recap.mov", "broken.mkv"]);
+  });
+
+  it("does not also open the inline player when the delete button is clicked", async () => {
+    const el = await loadApp();
+    await openLibraryWith(el, JOBS);
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    const card = [...el.libraryGrid.querySelectorAll(".video-card")].find((c) =>
+      c.querySelector(".video-filename").textContent === "holiday.mp4",
+    );
+    deleteButtonFor(el, "holiday.mp4").dispatchEvent(new Event("click", { bubbles: true }));
+
+    expect(card.querySelector("video")).toBeNull();
+  });
+
+  it("shows an error and keeps the card if the delete fails", async () => {
+    const el = await loadApp();
+    await openLibraryWith(el, JOBS);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not found" }, false, 404));
+
+    deleteButtonFor(el, "holiday.mp4").dispatchEvent(new Event("click", { bubbles: true }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.libraryStatus.textContent).toContain("not found");
+    const names = [...el.libraryGrid.querySelectorAll(".video-filename")].map((n) => n.textContent);
+    expect(names).toContain("holiday.mp4");
+  });
+
+  it("returns to the sign-in form if the session expired mid-delete", async () => {
+    const el = await loadApp();
+    await openLibraryWith(el, JOBS);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not authenticated" }, false, 401));
+
+    deleteButtonFor(el, "holiday.mp4").dispatchEvent(new Event("click", { bubbles: true }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.auth.hidden).toBe(false);
+    expect(el.authStatus.textContent).toContain("session expired");
   });
 });
 
