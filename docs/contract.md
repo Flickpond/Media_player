@@ -69,7 +69,9 @@ issue or accept a token without one.
 ```text
 POST /upload
   202 { "job_id": "<uuid>" }
-  400 { "error": "file too large" }
+  413 { "error": "file too large" }
+  415 { "error": "unsupported media type" }                          // declared Content-Type not allowed
+  415 { "error": "file content is not a recognized video format" }   // sniffed bytes disagree
 
 GET /jobs/{id}
   200 { "id", "filename", "status", "output_url"?, "error"? }
