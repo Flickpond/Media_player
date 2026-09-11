@@ -26,3 +26,11 @@ deploy/certbot/
 # hostnames and certificate paths are deployment-specific. See the README.
 deploy/nginx-tls/*
 !deploy/nginx-tls/README.md
+
+# Local-only orchestration notes -- not part of the team's shared repo.
+multitasking.md
+
+# Design-canvas mockup source (Claude Design .dc.html components) used to
+# draft the frontend redesign. Reference material, not code the app ships --
+# the real implementation lives in frontend/.
+frontend-redesign/
