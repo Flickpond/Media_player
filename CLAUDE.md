@@ -1,11 +1,12 @@
 # Flickpond — working notes
 
-Asynchronous video upload and processing platform. SWE5001 team project, 5
-people, sprint 2 in progress.
+Asynchronous video upload and processing platform. Five-person team project;
+sprint 2 is complete and deployed.
 
 ```
 browser -> nginx -> FastAPI -> MinIO + PostgreSQL + Redis/RQ -> worker (1..N)
                                        queued -> processing -> done | failed
+                    reaper -> recovers rows a dead worker abandoned
 ```
 
 Sprint 1 shipped the pipeline with a copy job standing in for transcoding.
@@ -20,7 +21,7 @@ operator role. The shared-password nginx gate that stood in for it is gone.
 | File | Why |
 |---|---|
 | [`docs/sprint2-plan.md`](docs/sprint2-plan.md) | What to build, in what order, with acceptance criteria |
-| [`docs/known-traps.md`](docs/known-traps.md) | 22 traps already hit here. **Most fail silently.** |
+| [`docs/known-traps.md`](docs/known-traps.md) | 23 traps already hit here. **Most fail silently.** |
 | [`docs/contract.md`](docs/contract.md) | Shared API and schema boundary — changing it means telling the team |
 | [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md) | Why auth is shaped the way it is: JWT in an HttpOnly cookie, schema, roles |
 
@@ -85,11 +86,23 @@ ICP filing needed), tracking `origin/main` at `/root/Media_player`. Eight
 containers: nginx, api, 2 workers, reaper, postgres, redis, minio.
 
 TLS via Let's Encrypt, renewed automatically; 80 redirects to 443. Sign-in is
-the app's own. **Redeploy with `--build`** or a code change silently will not
-ship (T-21).
+the app's own.
 
 ```bash
 ssh -i <key>.pem root@47.238.64.156
+cd /root/Media_player
+git fetch origin && git reset --hard origin/main      # fetch first (T-20)
+docker compose up -d --build --scale worker=2         # both flags matter
+```
+
+**`--build`** or a code change silently will not ship (T-21). **`--scale
+worker=2`** or the second worker silently disappears (T-23) — the replica count
+is not in `docker-compose.yml`.
+
+Verify by asking the application, not the environment:
+
+```bash
+docker compose exec api python -c "from app.config import get_settings; print(get_settings().minio_public_endpoint)"
 ```
 
 ## Conventions

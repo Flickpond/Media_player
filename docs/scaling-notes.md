@@ -1,7 +1,10 @@
 # Scaling Notes — what it takes to serve 50 concurrent users
 
 **Written:** 5 September 2026 · against `main` @ `0e85e5c`
-**Status:** analysis and sprint 2 proposal. Nothing here is implemented.
+**Status:** capacity analysis. Written before sprint 2; parts of it have since
+been built — FFmpeg transcoding, the reaper, and two worker replicas sharing one
+queue. The bottleneck analysis and the 50-user sizing are still the current
+assessment and nothing in them has been invalidated.
 
 Companion to [`sprint1-report.md`](sprint1-report.md), which records what exists
 today. This one records what would have to change, why, and in what order.
