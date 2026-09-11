@@ -2,8 +2,8 @@
 //
 // Tests for app.js. It is a plain browser script with no exports, so it is
 // exercised the way the browser drives it: build the DOM it expects, import
-// it, then interact through the form and the clock. Nothing in app.js is
-// modified to make it testable.
+// it, then interact through the dropzone, the nav, and the clock. Nothing in
+// app.js is modified to make it testable.
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -24,12 +24,12 @@ let fetchMock;
  * index from its own first request rather than from the identity check.
  * `loadSignedOut` is for the tests that care about the signed-out half.
  */
-async function loadApp({ signedIn = true } = {}) {
+async function loadApp({ signedIn = true, role = "user" } = {}) {
   document.body.innerHTML = BODY;
   vi.resetModules();
   fetchMock.mockResolvedValueOnce(
     signedIn
-      ? jsonResponse({ id: "u-1", email: "maya@example.test", role: "user" })
+      ? jsonResponse({ id: "u-1", email: "maya@example.test", role })
       : jsonResponse({ error: "not authenticated" }, false, 401),
   );
   await import("./app.js");
@@ -37,10 +37,15 @@ async function loadApp({ signedIn = true } = {}) {
   await vi.advanceTimersByTimeAsync(0);
   fetchMock.mockClear();
   return {
-    form: document.getElementById("upload-form"),
+    dropzone: document.getElementById("dropzone"),
     fileInput: document.getElementById("file-input"),
-    button: document.getElementById("upload-button"),
     status: document.getElementById("status"),
+    activeJob: document.getElementById("active-job"),
+    jobFilename: document.getElementById("job-filename"),
+    jobBadge: document.getElementById("job-badge"),
+    jobProgress: document.getElementById("job-progress"),
+    jobActions: document.getElementById("job-actions"),
+    jobRetry: document.getElementById("job-retry"),
     player: document.getElementById("player"),
     auth: document.getElementById("auth"),
     app: document.getElementById("app"),
@@ -51,11 +56,29 @@ async function loadApp({ signedIn = true } = {}) {
     authToggle: document.getElementById("auth-toggle"),
     who: document.getElementById("who"),
     logout: document.getElementById("logout"),
+    navUpload: document.getElementById("nav-upload"),
+    navLibrary: document.getElementById("nav-library"),
+    navAdmin: document.getElementById("nav-admin"),
+    viewUpload: document.getElementById("view-upload"),
+    viewLibrary: document.getElementById("view-library"),
+    viewAdmin: document.getElementById("view-admin"),
+    libraryGrid: document.getElementById("library-grid"),
+    libraryEmpty: document.getElementById("library-empty"),
+    libraryFilters: document.getElementById("library-filters"),
+    libraryPrev: document.getElementById("library-prev"),
+    libraryNext: document.getElementById("library-next"),
+    libraryPageLabel: document.getElementById("library-page-label"),
+    adminTbody: document.getElementById("admin-tbody"),
+    adminEmpty: document.getElementById("admin-empty"),
+    adminFilters: document.getElementById("admin-filters"),
   };
 }
 
-function chooseFile(input) {
-  const file = new File(["data"], "holiday.mp4", { type: "video/mp4" });
+function fileNamed(name = "holiday.mp4", type = "video/mp4") {
+  return new File(["data"], name, { type });
+}
+
+function chooseFile(input, file = fileNamed()) {
   Object.defineProperty(input, "files", { value: [file], configurable: true });
 }
 
@@ -65,9 +88,11 @@ const jsonResponse = (body, ok = true, status = 200) => ({
   json: async () => body,
 });
 
-/** Submit the form and let the upload plus first poll settle. */
-async function submit(el) {
-  el.form.dispatchEvent(new Event("submit", { cancelable: true }));
+/** Select a file (via the hidden input's change event) and let the upload
+ * plus first poll settle -- the dropzone's real trigger, not a form submit. */
+async function uploadFile(el, file = fileNamed()) {
+  chooseFile(el.fileInput, file);
+  el.fileInput.dispatchEvent(new Event("change"));
   await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
   await vi.advanceTimersByTimeAsync(0);
 }
@@ -84,22 +109,11 @@ afterEach(() => {
 });
 
 describe("upload", () => {
-  it("refuses to submit with no file chosen, and calls nothing", async () => {
-    const el = await loadApp();
-
-    el.form.dispatchEvent(new Event("submit", { cancelable: true }));
-    await vi.waitFor(() => expect(el.status.textContent).toMatch(/choose a video file/i));
-
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(el.status.hidden).toBe(false);
-  });
-
   it("posts the chosen file to /upload as multipart", async () => {
     const el = await loadApp();
-    chooseFile(el.fileInput);
     fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-1", status: "queued" }));
 
-    await submit(el);
+    await uploadFile(el);
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/upload");
@@ -109,19 +123,28 @@ describe("upload", () => {
 
   it("polls the job id the API returned", async () => {
     const el = await loadApp();
-    chooseFile(el.fileInput);
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ job_id: "abc-123" }))
       .mockResolvedValueOnce(jsonResponse({ status: "queued" }));
 
-    await submit(el);
+    await uploadFile(el);
 
     expect(fetchMock.mock.calls[1][0]).toBe("/api/jobs/abc-123");
   });
 
-  it("disables the button while uploading so a double click cannot double post", async () => {
+  it("shows the filename and a queued badge as soon as the job is accepted", async () => {
     const el = await loadApp();
-    chooseFile(el.fileInput);
+    fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-1", status: "queued" }));
+
+    await uploadFile(el, fileNamed("holiday.mp4"));
+
+    expect(el.activeJob.hidden).toBe(false);
+    expect(el.jobFilename.textContent).toBe("holiday.mp4");
+    expect(el.jobBadge.textContent).toBe("Queued");
+  });
+
+  it("ignores a second file dropped while the first upload is still in flight", async () => {
+    const el = await loadApp();
     let release;
     fetchMock.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -129,27 +152,33 @@ describe("upload", () => {
       }),
     );
 
-    el.form.dispatchEvent(new Event("submit", { cancelable: true }));
-    await vi.waitFor(() => expect(el.button.disabled).toBe(true));
+    chooseFile(el.fileInput, fileNamed("first.mp4"));
+    el.fileInput.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(el.dropzone.classList.contains("busy")).toBe(true);
+
+    // A second selection while the POST is still pending must not double-post.
+    chooseFile(el.fileInput, fileNamed("second.mp4"));
+    el.fileInput.dispatchEvent(new Event("change"));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
 
     release(jsonResponse({ job_id: "job-1" }));
+    await vi.waitFor(() => expect(el.dropzone.classList.contains("busy")).toBe(false));
   });
 
-  it("surfaces the API error message and re-enables the button", async () => {
+  it("surfaces the API error message and clears the busy state", async () => {
     const el = await loadApp();
-    chooseFile(el.fileInput);
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: "file too large" }, false, 400));
 
-    await submit(el);
+    await uploadFile(el);
 
     expect(el.status.textContent).toContain("file too large");
-    expect(el.button.disabled).toBe(false);
+    expect(el.dropzone.classList.contains("busy")).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to the status code when the error body is unreadable", async () => {
     const el = await loadApp();
-    chooseFile(el.fileInput);
     fetchMock.mockResolvedValueOnce({
       ok: false,
       status: 500,
@@ -158,36 +187,45 @@ describe("upload", () => {
       },
     });
 
-    await submit(el);
+    await uploadFile(el);
 
     expect(el.status.textContent).toContain("500");
   });
 
   it("reports a network failure rather than hanging", async () => {
     const el = await loadApp();
-    chooseFile(el.fileInput);
     fetchMock.mockRejectedValueOnce(new Error("connection refused"));
 
-    await submit(el);
+    await uploadFile(el);
 
     expect(el.status.textContent).toContain("connection refused");
-    expect(el.button.disabled).toBe(false);
+    expect(el.dropzone.classList.contains("busy")).toBe(false);
   });
 
-  it("clears a previous result when a second upload starts", async () => {
+  it("clears the previous job's player when a second upload starts", async () => {
     const el = await loadApp();
-    chooseFile(el.fileInput);
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }))
       .mockResolvedValueOnce(jsonResponse({ status: "done", output_url: "http://minio/a.mp4" }));
-    await submit(el);
+    await uploadFile(el);
     expect(el.player.hidden).toBe(false);
 
     fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-2", status: "queued" }));
-    await submit(el);
+    await uploadFile(el);
 
     expect(el.player.hidden).toBe(true);
     expect(el.player.hasAttribute("src")).toBe(false);
+    expect(el.jobBadge.textContent).toBe("Queued");
+  });
+
+  it("rejects an unsupported type before ever calling the API", async () => {
+    const el = await loadApp();
+
+    chooseFile(el.fileInput, fileNamed("notes.pdf", "application/pdf"));
+    el.fileInput.dispatchEvent(new Event("change"));
+
+    expect(el.status.textContent).toContain("not a video format");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
@@ -195,11 +233,10 @@ describe("polling", () => {
   /** Upload, then have every poll return the given job document. */
   async function pollReturning(job) {
     const el = await loadApp();
-    chooseFile(el.fileInput);
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }))
       .mockResolvedValue(jsonResponse(job));
-    await submit(el);
+    await uploadFile(el);
     return el;
   }
 
@@ -208,16 +245,17 @@ describe("polling", () => {
 
     expect(el.player.getAttribute("src")).toBe("http://minio/out.mp4");
     expect(el.player.hidden).toBe(false);
-    expect(el.button.disabled).toBe(false);
+    expect(el.jobBadge.textContent).toBe("Done");
     await vi.advanceTimersByTimeAsync(10000);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("shows the error and stops polling once the job has failed", async () => {
+  it("shows the error, offers a retry, and stops polling once the job has failed", async () => {
     const el = await pollReturning({ status: "failed", error: "source missing" });
 
     expect(el.status.textContent).toContain("source missing");
     expect(el.player.hidden).toBe(true);
+    expect(el.jobActions.hidden).toBe(false);
     await vi.advanceTimersByTimeAsync(10000);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -234,27 +272,17 @@ describe("polling", () => {
     ["processing", "Processing..."],
   ])("keeps polling every 2s while the job is %s", async (status, label) => {
     const el = await pollReturning({ status });
+
     expect(el.status.textContent).toBe(label);
-    const before = fetchMock.mock.calls.length;
-
-    await vi.advanceTimersByTimeAsync(2000);
-
-    expect(fetchMock.mock.calls.length).toBe(before + 1);
+    await vi.advanceTimersByTimeAsync(10000);
+    // 1 upload + 1 immediate poll + 5 more at 2s intervals over the next 10s.
+    expect(fetchMock).toHaveBeenCalledTimes(7);
   });
 
-  it("stops on a network error instead of spinning in a tight loop", async () => {
-    const el = await loadApp();
-    chooseFile(el.fileInput);
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }))
-      .mockRejectedValue(new Error("offline"));
+  it("shows the progress sweep only while the job is processing", async () => {
+    const el = await pollReturning({ status: "processing" });
 
-    await submit(el);
-
-    expect(el.status.textContent).toContain("offline");
-    expect(el.button.disabled).toBe(false);
-    await vi.advanceTimersByTimeAsync(10000);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(el.jobProgress.hidden).toBe(false);
   });
 
   // --- a job that never finishes (P4) -------------------------------------
@@ -274,11 +302,11 @@ describe("polling", () => {
 
   it("hands the form back so a stuck job does not lock the page", async () => {
     const el = await pollReturning({ status: "processing" });
-    expect(el.button.disabled).toBe(true);
+    expect(el.jobActions.hidden).toBe(true);
 
     await vi.advanceTimersByTimeAsync(SLOW_AFTER_MS);
 
-    expect(el.button.disabled).toBe(false);
+    expect(el.jobActions.hidden).toBe(false);
   });
 
   it("keeps polling after saying it is slow, because slow is not failed", async () => {
@@ -315,7 +343,7 @@ describe("polling", () => {
     const afterFirst = fetchMock.mock.calls.length;
 
     fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-2", status: "done" }));
-    await submit(el);
+    await uploadFile(el);
     const afterSecond = fetchMock.mock.calls.length;
     await vi.advanceTimersByTimeAsync(10000);
 
@@ -427,14 +455,143 @@ describe("signing in", () => {
 
   it("returns to the sign-in form when a session expires mid-poll", async () => {
     const el = await loadApp();
-    chooseFile(el.fileInput);
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }))
       .mockResolvedValue(jsonResponse({ error: "not authenticated" }, false, 401));
 
-    await submit(el);
+    await uploadFile(el);
 
     expect(el.auth.hidden).toBe(false);
     expect(el.authStatus.textContent).toContain("session expired");
+  });
+
+  it("hides the admin tab for an ordinary user", async () => {
+    const el = await loadApp({ role: "user" });
+
+    expect(el.navAdmin.hidden).toBe(true);
+  });
+
+  it("shows the admin tab for an operator", async () => {
+    const el = await loadApp({ role: "operator" });
+
+    expect(el.navAdmin.hidden).toBe(false);
+  });
+});
+
+describe("library", () => {
+  const JOBS = [
+    { id: "1", filename: "holiday.mp4", status: "done", output_url: "http://minio/holiday.mp4" },
+    { id: "2", filename: "recap.mov", status: "processing" },
+    { id: "3", filename: "broken.mkv", status: "failed", error: "corrupt file" },
+  ];
+
+  it("fetches the caller's own jobs when the tab is opened", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse(JOBS));
+
+    el.navLibrary.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/jobs?limit=12&offset=0");
+    expect(el.viewLibrary.hidden).toBe(false);
+    expect(el.viewUpload.hidden).toBe(true);
+  });
+
+  it("renders one card per job, named by filename", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse(JOBS));
+
+    el.navLibrary.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    const names = [...el.libraryGrid.querySelectorAll(".video-filename")].map((n) => n.textContent);
+    expect(names).toEqual(["holiday.mp4", "recap.mov", "broken.mkv"]);
+  });
+
+  it("shows the empty state when there are no jobs at all", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+
+    el.navLibrary.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.libraryEmpty.hidden).toBe(false);
+    expect(el.libraryGrid.hidden).toBe(true);
+  });
+
+  it("filters client-side, with no extra request", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse(JOBS));
+    el.navLibrary.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+    fetchMock.mockClear();
+
+    el.libraryFilters.querySelector('[data-status="failed"]').dispatchEvent(new Event("click"));
+
+    const names = [...el.libraryGrid.querySelectorAll(".video-filename")].map((n) => n.textContent);
+    expect(names).toEqual(["broken.mkv"]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("pages forward by re-fetching with the next offset", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse(JOBS));
+    el.navLibrary.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+
+    el.libraryNext.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/jobs?limit=12&offset=12");
+  });
+});
+
+describe("admin", () => {
+  const ROWS = [
+    { id: "1", filename: "a.mp4", status: "done", output_url: "http://minio/a.mp4" },
+    { id: "2", filename: "b.mp4", status: "queued" },
+  ];
+
+  it("fetches every job when an operator opens the tab", async () => {
+    const el = await loadApp({ role: "operator" });
+    fetchMock.mockResolvedValueOnce(jsonResponse(ROWS));
+
+    el.navAdmin.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/admin/jobs?limit=12&offset=0");
+    expect(el.viewAdmin.hidden).toBe(false);
+  });
+
+  it("renders one row per job", async () => {
+    const el = await loadApp({ role: "operator" });
+    fetchMock.mockResolvedValueOnce(jsonResponse(ROWS));
+
+    el.navAdmin.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.adminTbody.querySelectorAll("tr").length).toBe(2);
+  });
+
+  it("falls back to the upload view if the API refuses with 403", async () => {
+    const el = await loadApp({ role: "operator" });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "operator role required" }, false, 403));
+
+    el.navAdmin.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.viewUpload.hidden).toBe(false);
+    expect(el.viewAdmin.hidden).toBe(true);
   });
 });

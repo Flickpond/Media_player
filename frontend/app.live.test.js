@@ -37,9 +37,8 @@ async function loadPage() {
   await import("./app.js");
 
   el = {
-    form: document.getElementById("upload-form"),
+    dropzone: document.getElementById("dropzone"),
     fileInput: document.getElementById("file-input"),
-    button: document.getElementById("upload-button"),
     status: document.getElementById("status"),
     player: document.getElementById("player"),
     app: document.getElementById("app"),
@@ -97,7 +96,9 @@ describe.skipIf(!live)("frontend against the live stack", () => {
     const file = new File([bytes], "live-clip.mp4", { type: "video/mp4" });
     Object.defineProperty(el.fileInput, "files", { value: [file], configurable: true });
 
-    el.form.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
+    // The dropzone's real trigger is the file input's change event, not a
+    // form submit -- there is no separate "Upload" button to click.
+    el.fileInput.dispatchEvent(new dom.window.Event("change"));
 
     // Do not assert the transient "waiting for processing" text: a copy job on
     // a warm stack can finish inside one poll interval, so that state is not
@@ -107,7 +108,7 @@ describe.skipIf(!live)("frontend against the live stack", () => {
     });
 
     expect(el.status.textContent).toBe("Processing complete.");
-    expect(el.button.disabled).toBe(false);
+    expect(el.dropzone.classList.contains("busy")).toBe(false);
 
     // The player must have a URL a browser can actually fetch.
     const src = el.player.getAttribute("src");

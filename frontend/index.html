@@ -4,47 +4,255 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Flickpond</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap"
+    />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <main class="container">
-      <h1>Flickpond</h1>
-      <p class="subtitle">Upload a video and play the result once it's ready.</p>
+    <!-- Shown until /auth/me says who we are. The session cookie is HttpOnly,
+         so this page cannot read it and has to ask the server instead. -->
+    <section id="auth" class="auth-screen" hidden>
+      <div class="auth-split">
+        <div class="brand-panel">
+          <div class="brand-mark">
+            <svg width="26" height="26" viewBox="0 0 26 26" fill="none" aria-hidden="true">
+              <path d="M10 8l8 5-8 5V8Z" fill="var(--accent)" />
+              <path
+                d="M4 19c1.6 1.4 3.6 2.2 5.8 2.2"
+                stroke="var(--accent)"
+                stroke-width="1.4"
+                stroke-linecap="round"
+                opacity="0.55"
+              />
+              <path
+                d="M2.5 22.3c2.3 2 5.3 3.2 8.6 3.2"
+                stroke="var(--accent)"
+                stroke-width="1.4"
+                stroke-linecap="round"
+                opacity="0.3"
+              />
+            </svg>
+            <span class="brand-word">Flickpond</span>
+          </div>
 
-      <!-- Shown until /auth/me says who we are. The session cookie is HttpOnly,
-           so this page cannot read it and has to ask the server instead. -->
-      <section id="auth" hidden>
-        <form id="auth-form" class="upload">
-          <input type="email" id="auth-email" placeholder="you@example.com" required />
-          <input
-            type="password"
-            id="auth-password"
-            placeholder="password"
-            minlength="8"
-            required
-          />
-          <button type="submit" id="auth-submit">Sign in</button>
-        </form>
-        <button type="button" id="auth-toggle" class="linkish">Create an account instead</button>
-        <p id="auth-status" class="status" hidden></p>
-      </section>
+          <div class="brand-copy">
+            <div class="eyebrow">Async video pipeline</div>
+            <h1>From raw upload to a playable video.</h1>
+            <p>
+              Flickpond queues, transcodes to a web-ready 720p MP4, and hosts the result —
+              automatically, with nothing to configure.
+            </p>
+          </div>
+        </div>
 
-      <section id="app" hidden>
-        <p class="subtitle">
-          Signed in as <span id="who"></span>
-          <button type="button" id="logout" class="linkish">Sign out</button>
-        </p>
+        <div class="form-panel">
+          <div class="form-panel-inner">
+            <h2 id="auth-heading">Welcome back</h2>
+            <p id="auth-subtext" class="muted">Sign in to your account.</p>
 
-        <form id="upload-form" class="upload">
-          <input type="file" id="file-input" accept="video/*" />
-          <button type="submit" id="upload-button">Upload</button>
-        </form>
+            <p id="auth-status" class="banner banner-error" hidden></p>
 
-        <p id="status" class="status" hidden></p>
+            <form id="auth-form">
+              <label class="field">
+                <span class="field-label">Email</span>
+                <input type="email" id="auth-email" placeholder="you@example.com" required />
+              </label>
+              <label class="field">
+                <span class="field-label">Password</span>
+                <input
+                  type="password"
+                  id="auth-password"
+                  placeholder="••••••••"
+                  minlength="8"
+                  required
+                />
+              </label>
+              <p id="auth-password-hint" class="hint" hidden>At least 8 characters.</p>
+              <button type="submit" id="auth-submit" class="btn-primary btn-full">Sign in</button>
+            </form>
 
-        <video id="player" controls hidden></video>
-      </section>
-    </main>
+            <p class="toggle-row">
+              <span id="auth-toggle-text">New to Flickpond?</span>
+              <button type="button" id="auth-toggle" class="link-accent">
+                Create an account
+              </button>
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div id="app" hidden>
+      <nav id="topnav">
+        <div class="nav-left">
+          <div class="brand-mark">
+            <svg width="22" height="22" viewBox="0 0 26 26" fill="none" aria-hidden="true">
+              <path d="M10 8l8 5-8 5V8Z" fill="var(--accent)" />
+              <path
+                d="M4 19c1.6 1.4 3.6 2.2 5.8 2.2"
+                stroke="var(--accent)"
+                stroke-width="1.4"
+                stroke-linecap="round"
+                opacity="0.55"
+              />
+              <path
+                d="M2.5 22.3c2.3 2 5.3 3.2 8.6 3.2"
+                stroke="var(--accent)"
+                stroke-width="1.4"
+                stroke-linecap="round"
+                opacity="0.3"
+              />
+            </svg>
+            <span class="brand-word">Flickpond</span>
+          </div>
+          <div class="nav-links">
+            <button type="button" id="nav-upload" class="nav-link active">Upload</button>
+            <button type="button" id="nav-library" class="nav-link">Library</button>
+            <button type="button" id="nav-admin" class="nav-link" hidden>Admin</button>
+          </div>
+        </div>
+        <div class="nav-right">
+          <span id="operator-tag" class="operator-tag" hidden>Operator</span>
+          <span id="who" class="who"></span>
+          <button type="button" id="logout" class="icon-btn" title="Sign out" aria-label="Sign out">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <path d="M16 17l5-5-5-5" />
+              <path d="M21 12H9" />
+            </svg>
+          </button>
+        </div>
+      </nav>
+
+      <main>
+        <section id="view-upload" class="view">
+          <div class="view-header">
+            <h1>Upload a video</h1>
+            <p class="muted">Drop a file below — we'll transcode it to 720p MP4 automatically.</p>
+          </div>
+
+          <div id="dropzone" class="dropzone">
+            <input
+              type="file"
+              id="file-input"
+              accept="video/mp4,video/mpeg,video/quicktime,video/webm,video/x-matroska,video/x-msvideo"
+              hidden
+            />
+            <div class="dropzone-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M7 18a4.6 4.4 0 0 1 0-9 5 4.5 0 0 1 9.9-1A4.5 4.5 0 0 1 17.5 18H7Z" />
+                <path d="M12 12v7" />
+                <path d="M9 15l3-3 3 3" />
+              </svg>
+            </div>
+            <div class="dropzone-title">Drag and drop your video here</div>
+            <div class="dropzone-subtitle">or click to browse your files</div>
+            <button type="button" id="browse-button" class="btn-ghost">Choose file</button>
+            <div class="dropzone-hint">MP4, MOV, WebM, MKV, or AVI, up to 100MB.</div>
+          </div>
+
+          <p id="status" class="status" hidden></p>
+
+          <div id="active-job" class="job-card" hidden>
+            <div class="job-card-body">
+              <div class="job-thumb">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Z" />
+                  <path d="M14 3v6h6" />
+                </svg>
+              </div>
+              <div class="job-detail">
+                <div class="job-head">
+                  <span id="job-filename" class="job-filename"></span>
+                  <span id="job-badge" class="badge badge-queued"></span>
+                </div>
+                <div id="job-progress" class="progress-track" hidden>
+                  <div class="progress-sweep"></div>
+                </div>
+                <video id="player" controls hidden></video>
+                <div id="job-actions" class="job-actions" hidden>
+                  <button type="button" id="job-retry" class="btn-primary">Try again</button>
+                  <button type="button" id="job-choose-different" class="btn-ghost">
+                    Choose a different file
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-library" class="view" hidden>
+          <div class="view-header">
+            <h1>Your videos</h1>
+            <p class="muted">Everything you've uploaded, in one place.</p>
+          </div>
+
+          <div id="library-filters" class="filter-row">
+            <button type="button" class="chip active" data-status="all">All</button>
+            <button type="button" class="chip" data-status="done">Done</button>
+            <button type="button" class="chip" data-status="processing">Processing</button>
+            <button type="button" class="chip" data-status="queued">Queued</button>
+            <button type="button" class="chip" data-status="failed">Failed</button>
+          </div>
+
+          <div id="library-grid" class="video-grid"></div>
+          <p id="library-empty" class="empty-state" hidden>
+            No videos here yet — upload one to get started.
+          </p>
+
+          <div class="pagination">
+            <button type="button" id="library-prev" class="page-btn" aria-label="Previous page">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
+            </button>
+            <span id="library-page-label" class="page-label">Page 1</span>
+            <button type="button" id="library-next" class="page-btn" aria-label="Next page">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+            </button>
+          </div>
+        </section>
+
+        <section id="view-admin" class="view" hidden>
+          <div class="view-header">
+            <h1>All jobs</h1>
+            <p class="muted">Every upload across every account — use this to spot stuck jobs.</p>
+          </div>
+
+          <div id="admin-filters" class="filter-row">
+            <button type="button" class="chip active" data-status="all">All</button>
+            <button type="button" class="chip" data-status="queued">Queued</button>
+            <button type="button" class="chip" data-status="processing">Processing</button>
+            <button type="button" class="chip" data-status="done">Done</button>
+            <button type="button" class="chip" data-status="failed">Failed</button>
+          </div>
+
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th>Filename</th>
+                <th>Status</th>
+                <th>Output</th>
+              </tr>
+            </thead>
+            <tbody id="admin-tbody"></tbody>
+          </table>
+          <p id="admin-empty" class="empty-state" hidden>No jobs match this filter.</p>
+
+          <div class="pagination">
+            <button type="button" id="admin-prev" class="page-btn" aria-label="Previous page">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
+            </button>
+            <span id="admin-page-label" class="page-label">Page 1</span>
+            <button type="button" id="admin-next" class="page-btn" aria-label="Next page">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+            </button>
+          </div>
+        </section>
+      </main>
+    </div>
 
     <script src="app.js"></script>
   </body>
