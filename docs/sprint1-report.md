@@ -263,7 +263,8 @@ Thursday's items, none started:
 > (S2-01), and authentication by S2-03. The list is left as it stood at the end
 > of sprint 1 rather than edited, because what was open *at the time* is the
 > point of a sprint report. Current state is in
-> [`sprint2-plan.md`](sprint2-plan.md).
+> [`sprint2-plan.md`](sprint2-plan.md), and sprint 2's own record is in
+> [`sprint2-report.md`](sprint2-report.md).
 
 ### Needs a decision, not just work
 

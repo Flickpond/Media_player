@@ -25,7 +25,9 @@ operator role. The shared-password nginx gate that stood in for it is gone.
 | [`docs/contract.md`](docs/contract.md) | Shared API and schema boundary — changing it means telling the team |
 | [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md) | Why auth is shaped the way it is: JWT in an HttpOnly cookie, schema, roles |
 
-Also: [`sprint1-report.md`](docs/sprint1-report.md) (what was built, bug log),
+Also: [`sprint2-report.md`](docs/sprint2-report.md) (sprint 2 contributions, NFR
+evidence, BUG-04 to BUG-12), [`sprint1-report.md`](docs/sprint1-report.md)
+(sprint 1 equivalent),
 [`sprint2-backlog.md`](docs/sprint2-backlog.md) (open findings P1–P9),
 [`scaling-notes.md`](docs/scaling-notes.md) (capacity analysis).
 
@@ -109,7 +111,8 @@ docker compose exec api python -c "from app.config import get_settings; print(ge
 
 - Python 3.12, FastAPI, SQLAlchemy 2 async, Alembic, RQ, MinIO.
 - Line length 100. Ruff lint rules: `E, F, I, UP, B, ASYNC`.
-- Coverage gate `fail_under = 80` in `pyproject.toml`; actual is 87%.
+- Coverage gate `fail_under = 80` in `pyproject.toml`; actual is 85.88%
+  (`pytest --cov=app`, 11 Sep 2026).
 - Comments explain *why*, not *what*. The existing code is written that way —
   match it.
 - Tests are named as sentences describing the behaviour being protected.
