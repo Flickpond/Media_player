@@ -29,11 +29,24 @@ Encrypt's rate limit; a dry run does not.
 
 Create `deploy/nginx-tls/tls.conf`, substituting your hostnames:
 
+**Serve exactly one hostname, and redirect every other one to it.** Do not
+list `www.example.com` (or any other alternate name the certificate covers)
+in the app-serving block's `server_name` alongside the canonical one -- that
+was tried here first, on the theory that "the cert covers both, so let both
+work," and it silently broke every session. The cookie carries no `Domain`
+attribute, so it is scoped to whichever exact host set it; a browser that
+ever crosses between two hostnames serving the identical app -- address-bar
+autocomplete adding "www.", a bookmark, retyping the URL by hand -- sends no
+cookie at all on the other one, and every authenticated call comes back a
+401 that looks like a session timeout. The fix is one canonical origin, not
+a wider-scoped cookie: broadening `Domain` to cover subdomains is the
+opposite of what a security review asks for.
+
 ```nginx
 server {
     listen 443 ssl;
     http2 on;
-    server_name example.com www.example.com;
+    server_name example.com;
 
     ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
@@ -51,6 +64,20 @@ server {
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
     include /etc/nginx/app-locations/locations.conf;
+}
+
+# Every other hostname the certificate covers redirects to the canonical one,
+# rather than serving a second copy of the app. One block per alternate name.
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name www.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    return 301 https://example.com$request_uri;
 }
 
 # Redirect the real hostnames to HTTPS. A more specific server_name beats the

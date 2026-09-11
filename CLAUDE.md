@@ -21,7 +21,7 @@ operator role. The shared-password nginx gate that stood in for it is gone.
 | File | Why |
 |---|---|
 | [`docs/sprint2-plan.md`](docs/sprint2-plan.md) | What to build, in what order, with acceptance criteria |
-| [`docs/known-traps.md`](docs/known-traps.md) | 23 traps already hit here. **Most fail silently.** |
+| [`docs/known-traps.md`](docs/known-traps.md) | 24 traps already hit here. **Most fail silently.** |
 | [`docs/contract.md`](docs/contract.md) | Shared API and schema boundary — changing it means telling the team |
 | [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md) | Why auth is shaped the way it is: JWT in an HttpOnly cookie, schema, roles |
 
