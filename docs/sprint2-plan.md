@@ -12,7 +12,7 @@ order, and what will bite you.
 **Read these three files before writing any code:**
 
 1. This document, at least §1–§3.
-2. [`known-traps.md`](known-traps.md) — 21 traps already hit on this project.
+2. [`known-traps.md`](known-traps.md) — 22 traps already hit on this project.
    Most of them fail *silently*.
 3. [`contract.md`](contract.md) — the shared API and schema boundary. Changing
    it requires telling the team.
@@ -169,7 +169,7 @@ the sprint record.
 | [S2-05](#s2-05--tls) | TLS on 443 | 0.5 day | **DONE** — <https://flickpond.com>, cert expires 2026-12-09, 80 redirects to 443 |
 | [S2-06](#s2-06--consolidate-the-minio-clients) | Consolidate MinIO clients | 0.5 day | Should — **do NOT fold into S2-01**, it spans three tracks |
 | [S2-07](#s2-07--ensure_bucket-per-upload-p6) | `ensure_bucket` per upload (P6) | 1 hour | Could |
-| [S2-08](#s2-08--error-message-hygiene-p9) | Error message hygiene (P9) | 2 hours | Could |
+| [S2-08](#s2-08--error-message-hygiene-p9) | Error message hygiene (P9) | 2 hours | Could — done |
 
 ### What the finished items actually left behind
 
@@ -565,12 +565,27 @@ hot path. One hour. Flat cost, no urgency.
 
 ## S2-08 — Error message hygiene (P9)
 
-`readable_error()` in `app/worker/tasks.py` writes exception class names into
-the user-facing `error` column, and `ObjectStoreError` messages embed object
-keys. `GET /jobs/{id}` returns that column verbatim.
+**Done.** `readable_error()` in `app/worker/tasks.py` wrote exception class
+names into the user-facing `error` column, and `ObjectStoreError` messages
+embedded object keys, temp paths and raw FFmpeg stderr. `GET /jobs/{id}`
+returns that column verbatim.
 
-Split the user-facing message from the logged diagnostic. Two hours. Do it
-before real users see it, not before the demo.
+`ObjectStoreError` now takes two messages and **both are required**:
+
+```python
+raise ObjectStoreError(
+    f"download failed for {key}: {exc.code}",          # the log's half
+    user_message="the uploaded file could not be read back; please try again",
+) from exc
+```
+
+`readable_error()` returns `user_message` for an `ObjectStoreError` and a fixed
+`UNEXPECTED_FAILURE` for anything else — an exception nobody wrote a message
+for is, by definition, one whose repr should not be shown.
+
+Making `user_message` a required keyword rather than an optional one with a safe
+default is deliberate: a raise site that forgets fails in CI, instead of quietly
+shipping a worse message. See [T-22](known-traps.md#t-22).
 
 ---
 
