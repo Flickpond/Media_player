@@ -34,3 +34,9 @@ multitasking.md
 # draft the frontend redesign. Reference material, not code the app ships --
 # the real implementation lives in frontend/.
 frontend-redesign/
+
+# A personal, still-being-read educational writeup -- explicitly NOT for the
+# repo until the author decides it has real educational value and publishes
+# it themselves. Ignored (not merely "not yet added") so it can never be
+# swept in by an incidental `git add -A`.
+docs/flickpond-explained.md
