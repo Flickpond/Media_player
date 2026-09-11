@@ -86,6 +86,35 @@ async def get_job_by_id(
     return await _to_response(job, signer)
 
 
+async def _delete_job_and_storage(
+    session: AsyncSession,
+    storage: StorageService,
+    job_id: UUID,
+    *,
+    owner_id: UUID | None,
+) -> Job | None:
+    """Delete a job's row, then best-effort its storage objects.
+
+    Deliberately in that order: what the caller sees (the job vanishing) does
+    not depend on the storage half succeeding. A storage failure here leaves
+    an orphaned object, exactly the case the reaper's sweep already exists to
+    catch -- so this is a latency optimisation over waiting for that sweep,
+    not a correctness requirement. Shared between the owner-scoped and
+    operator routes; only how `owner_id` is passed to `delete_job` differs.
+    """
+    job = await delete_job(session, job_id, owner_id=owner_id)
+    if job is None:
+        return None
+
+    for key in filter(None, (job.source_key, job.output_key)):
+        try:
+            await storage.delete_object(key)
+        except Exception:
+            logger.warning("job %s: could not delete storage object %s", job_id, key)
+
+    return job
+
+
 @router.delete(
     "/{job_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -104,22 +133,9 @@ async def delete_job_by_id(
     `delete_job` for why the worker already tolerates the row disappearing
     underneath it.
     """
-    job = await delete_job(session, job_id, owner_id=user.id)
+    job = await _delete_job_and_storage(session, storage, job_id, owner_id=user.id)
     if job is None:
         raise ApiNotFoundError("not found")
-
-    # Best-effort, and deliberately after the row is already gone: what the
-    # user sees (the job vanishing from their library) does not depend on
-    # this succeeding. A storage failure here leaves an orphaned object,
-    # exactly the case the reaper's sweep already exists to catch -- so this
-    # is a latency optimisation over waiting for that sweep, not a
-    # correctness requirement.
-    for key in filter(None, (job.source_key, job.output_key)):
-        try:
-            await storage.delete_object(key)
-        except Exception:
-            logger.warning("job %s: could not delete storage object %s", job_id, key)
-
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -143,3 +159,27 @@ async def get_all_jobs(
     """
     jobs = await list_jobs(session, owner_id=None, limit=limit, offset=offset)
     return list(await asyncio.gather(*(_to_response(job, signer) for job in jobs)))
+
+
+@admin_router.delete(
+    "/{job_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={404: {"model": ErrorResponse}},
+)
+async def delete_job_by_id_as_operator(
+    job_id: UUID,
+    _operator: OperatorUser,
+    session: SessionDependency,
+    storage: StorageDependency,
+) -> Response:
+    """Same as `DELETE /jobs/{id}`, but unscoped -- any user's job.
+
+    Operators only, and it exists for the same reason `GET /admin/jobs`
+    does: identifying and cleaning up uploads that are not the operator's
+    own. `delete_job(owner_id=None)` is the same "any owner" convention
+    `get_all_jobs` already uses.
+    """
+    job = await _delete_job_and_storage(session, storage, job_id, owner_id=None)
+    if job is None:
+        raise ApiNotFoundError("not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

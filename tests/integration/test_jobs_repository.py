@@ -279,3 +279,29 @@ async def test_deleting_a_processing_job_leaves_the_worker_to_find_it_gone(
     async with session_factory() as session:
         with pytest.raises(JobNotFoundError):
             await mark_done(session, job_id, output_key=f"outputs/{job_id}/demo.mp4")
+
+
+@pytest.mark.asyncio
+async def test_owner_id_none_deletes_regardless_of_owner(session_factory, owner) -> None:
+    """The operator route's unscoped delete -- same `owner_id=None` convention
+    as `get_job` and `list_jobs`, proved against a job it is not testing as
+    the owner of anything in particular.
+    """
+    job_id = uuid4()
+    async with session_factory() as session:
+        await create_job(
+            session,
+            owner_id=owner.id,
+            job_id=job_id,
+            filename="demo.mp4",
+            source_key=f"uploads/{job_id}/demo.mp4",
+        )
+
+    async with session_factory() as session:
+        deleted = await delete_job(session, job_id)
+
+    assert deleted is not None
+    assert deleted.owner_id == owner.id
+
+    async with session_factory() as session:
+        assert await get_job(session, job_id) is None

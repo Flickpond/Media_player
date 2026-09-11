@@ -150,13 +150,18 @@ async def mark_failed(session: AsyncSession, job_id: UUID, *, error: str) -> Job
     )
 
 
-async def delete_job(session: AsyncSession, job_id: UUID, *, owner_id: UUID) -> Job | None:
-    """Delete a job the caller owns, returning the deleted row -- or `None`
-    if there was nothing to delete: an unknown id, or someone else's job.
+async def delete_job(
+    session: AsyncSession, job_id: UUID, *, owner_id: UUID | None = None
+) -> Job | None:
+    """Delete a job, returning the deleted row -- or `None` if there was
+    nothing to delete.
 
-    Those two cases are deliberately indistinguishable, the same as
-    `get_job`: the API turns both into 404, never 403, so a delete attempt
-    cannot be used to probe which ids exist.
+    `owner_id=None` means "any owner", the same convention as `get_job` and
+    `list_jobs`: for the operator route, which can delete a job it does not
+    own. API callers acting as a regular user always pass one, and a
+    mismatch returns `None` so the endpoint can answer 404 -- indistinguishable
+    from an unknown id, the same as `get_job`, so a delete attempt cannot be
+    used to probe which ids exist.
 
     Returning the row rather than a bare bool is what lets the caller clean
     up `source_key` and `output_key` in object storage without a second
@@ -167,7 +172,10 @@ async def delete_job(session: AsyncSession, job_id: UUID, *, owner_id: UUID) -> 
     loses its race for a row that is no longer there, rather than
     corrupting one that is.
     """
-    statement = delete(Job).where(Job.id == job_id, Job.owner_id == owner_id).returning(Job)
+    statement = delete(Job).where(Job.id == job_id)
+    if owner_id is not None:
+        statement = statement.where(Job.owner_id == owner_id)
+    statement = statement.returning(Job)
     result = await session.execute(statement)
     job = result.scalar_one_or_none()
     if job is None:
