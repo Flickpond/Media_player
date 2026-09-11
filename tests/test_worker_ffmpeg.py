@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.worker.storage import FfmpegProcessor, ObjectStoreError
+from app.worker.storage import UNPROCESSABLE_VIDEO, FfmpegProcessor, ObjectStoreError
 
 
 class FakeStore:
@@ -67,3 +67,41 @@ def test_ffmpeg_processor_reports_timeout():
 
     with pytest.raises(ObjectStoreError, match="timed out"):
         processor.run(job_id=uuid4(), source_key="uploads/demo.mp4")
+
+
+# --- P9: FFmpeg's own words are for the log --------------------------------
+
+
+def test_ffmpeg_stderr_never_reaches_the_users_half():
+    """stderr names the temp path it was working on and assumes you know codecs."""
+
+    def runner(_command, **_kwargs):
+        stderr = "/tmp/flickpond-transcode-ab12/source: Invalid data found (codec error)"
+        return SimpleNamespace(returncode=1, stderr=stderr)
+
+    processor = FfmpegProcessor(FakeStore(), output_prefix="outputs", runner=runner)
+
+    with pytest.raises(ObjectStoreError) as caught:
+        processor.run(job_id=uuid4(), source_key="uploads/demo.mkv")
+
+    assert "codec error" in str(caught.value), "the log still needs FFmpeg's own words"
+    assert caught.value.user_message == UNPROCESSABLE_VIDEO
+    assert "/tmp/" not in caught.value.user_message
+
+
+def test_the_timeout_tells_the_user_the_limit_in_minutes_and_the_log_in_seconds():
+    """Same failure, two audiences: one needs to decide what to re-upload."""
+    import subprocess
+
+    def runner(_command, **_kwargs):
+        raise subprocess.TimeoutExpired("ffmpeg", 10)
+
+    processor = FfmpegProcessor(
+        FakeStore(), output_prefix="outputs", runner=runner, timeout_seconds=870
+    )
+
+    with pytest.raises(ObjectStoreError) as caught:
+        processor.run(job_id=uuid4(), source_key="uploads/demo.mp4")
+
+    assert "14 minutes" in caught.value.user_message
+    assert "870 seconds" in str(caught.value), "the log keeps the exact configured value"

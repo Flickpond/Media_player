@@ -17,6 +17,13 @@ queued -> processing -> done
 
 Sprint 1 has no retries. A failed job must contain a readable error.
 
+**`error` is read by the person who uploaded the file**, because
+`GET /jobs/{id}` returns it verbatim. It must name a cause they can act on and
+must not carry an object key, a temp path, an S3 code or an exception class
+name. The diagnostic version of the same failure goes to the worker log. In
+code that split is `ObjectStoreError`: `str(exc)` is the operator's half,
+`user_message` the uploader's, and both are required.
+
 ## Jobs table
 
 | Column | Type | Rule |
@@ -27,7 +34,7 @@ Sprint 1 has no retries. A failed job must contain a readable error.
 | `status` | Text | One of the four states above |
 | `source_key` | Text | MinIO input object key |
 | `output_key` | Text, nullable | MinIO output object key; null until `done` |
-| `error` | Text, nullable | Present only for `failed` jobs |
+| `error` | Text, nullable | Present only for `failed` jobs. **User-facing** — see the rule above |
 | `created_at` | Timestamp with time zone | Set when the API creates the job |
 | `updated_at` | Timestamp with time zone | Updated on every worker transition |
 
