@@ -258,6 +258,13 @@ Thursday's items, none started:
       explicitly out of scope.
 - [ ] **N6 confirmation.** Four teammates need to run a clean clone and report.
 
+> **Read this as a sprint 1 record.** Several items below were closed during
+> sprint 2 — crash recovery by the reaper (S2-02), real transcoding by FFmpeg
+> (S2-01), and authentication by S2-03. The list is left as it stood at the end
+> of sprint 1 rather than edited, because what was open *at the time* is the
+> point of a sprint report. Current state is in
+> [`sprint2-plan.md`](sprint2-plan.md).
+
 ### Needs a decision, not just work
 
 - [ ] **Two commits on `main` will show as anonymous.** Authored as
@@ -267,8 +274,6 @@ Thursday's items, none started:
       retroactively. Rewriting published history is not worth it. Separately,
       set `git config --global user.email` to the account address so it stops
       recurring.
-- [ ] **The module code is inconsistent.** The plan says `SWE5001`; the README
-      says `SWE5006`. One is wrong and it appears on a submitted artefact.
 - [ ] **Two files fail `ruff format --check`:** `app/services/storage.py` and
       `tests/integration/test_storage.py`, both track B's and both pre-existing.
       Left untouched deliberately rather than creating merge noise in someone

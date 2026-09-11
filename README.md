@@ -1,21 +1,37 @@
 # Flickpond
 
-Flickpond is the SWE5006 practice-module project for an asynchronous video upload and processing platform. Sprint 1 proves the complete request path with a copy job in place of real FFmpeg transcoding:
+Flickpond is a practice-module team project: an asynchronous video upload and processing platform. Sprint 1 proved the request path end to end with a copy job standing in for transcoding; **sprint 2 replaced it with real FFmpeg**, added authentication and per-user ownership, a reaper that recovers jobs abandoned by a crashed worker, CI as a required check on `main`, and TLS.
+
+It is deployed at **<https://flickpond.com>**.
 
 ```text
-browser -> FastAPI -> MinIO + PostgreSQL + Redis queue
-                                      |
-                                      v
-                              one of N workers
-                                      |
-                                      v
-                         processing -> done/failed
-                                      |
-                                      v
-                         browser polls the status API
+browser -> nginx -> FastAPI -> MinIO + PostgreSQL + Redis queue
+                                          |
+                                          v
+                                  one of N workers (FFmpeg)
+                                          |
+                                          v
+                       queued -> processing -> done | failed
+                                          |
+                                          v
+                             browser polls the status API
+
+           reaper: recovers rows a dead worker left in `processing`
 ```
 
-The Sprint 1 source of truth is [`docs/sprint1-plan.md`](docs/sprint1-plan.md). The shared schema and API boundary are in [`docs/contract.md`](docs/contract.md). For what has actually been built, by whom, and what broke along the way, see [`docs/sprint1-report.md`](docs/sprint1-report.md) - keep it updated as the sprint runs. [`docs/scaling-notes.md`](docs/scaling-notes.md) covers what would have to change to serve 50 concurrent users, and [`docs/sprint2-backlog.md`](docs/sprint2-backlog.md) records what the sprint 1 security and code review left open, and [`docs/sprint2-plan.md`](docs/sprint2-plan.md) is the sprint 2 work plan. Before changing anything, read [`docs/known-traps.md`](docs/known-traps.md) -- seventeen traps already hit on this project, most of which fail silently.
+### Where to read next
+
+| File | What it is |
+| --- | --- |
+| [`docs/known-traps.md`](docs/known-traps.md) | **Read this before changing anything.** 23 traps already hit here, most of which fail silently. |
+| [`docs/contract.md`](docs/contract.md) | The shared schema and API boundary. Changing it means telling the team. |
+| [`docs/sprint2-plan.md`](docs/sprint2-plan.md) | Sprint 2: all eight items, what each decided, and why. |
+| [`docs/sprint2-backlog.md`](docs/sprint2-backlog.md) | The sprint 1 review's findings, P1-P9. All closed; kept for the reasoning. |
+| [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md) | Why authentication is shaped the way it is. |
+| [`docs/scaling-notes.md`](docs/scaling-notes.md) | What serving 50 concurrent users would take. |
+| [`docs/sprint1-report.md`](docs/sprint1-report.md) | What sprint 1 built, by whom, and what broke. |
+| [`docs/sprint1-plan.md`](docs/sprint1-plan.md), [`docs/proposal.md`](docs/proposal.md) | The original plan and module proposal. |
+| [`CLAUDE.md`](CLAUDE.md) | Working notes: commands, ownership, conventions. |
 
 ## Architecture
 
@@ -26,7 +42,8 @@ The Sprint 1 source of truth is [`docs/sprint1-plan.md`](docs/sprint1-plan.md). 
 | PostgreSQL | Durable job metadata and processing state | `127.0.0.1:5432` |
 | Redis + RQ | Delivery of job IDs to workers | `127.0.0.1:6379` |
 | MinIO | Original and processed video objects | API `127.0.0.1:9000`, console `127.0.0.1:9001` (both loopback only) |
-| Worker | Copy job and one-way state transitions | Internal Compose service |
+| Worker | FFmpeg transcode to 720p MP4, one-way state transitions | Internal Compose service |
+| Reaper | Fails rows a dead worker abandoned; sweeps orphaned objects | Internal Compose service |
 
 The queue coordinates work, PostgreSQL records state, and MinIO stores the video bytes. Workers remain stateless, so any worker replica can process any queued job.
 
@@ -34,10 +51,12 @@ The queue coordinates work, PostgreSQL records state, and MinIO stores the video
 
 **nginx is the only service published beyond loopback.** The API, MinIO's S3 API
 and console, PostgreSQL and Redis are pinned to `127.0.0.1` in
-`docker-compose.yml` and that is deliberately not configurable — the application
-has no authentication of its own yet (**P1** in
-[`docs/sprint2-backlog.md`](docs/sprint2-backlog.md)), so anything that can reach
-the API can read every upload on the system.
+`docker-compose.yml` and that is deliberately not configurable.
+
+The API enforces per-user ownership (S2-03), but the datastores behind it do
+not: anything that reaches PostgreSQL or MinIO directly reads every user's data.
+That is what the loopback binding is for, and why it stays even though the
+application now authenticates its own callers.
 
 Reach an internal service from another machine with a tunnel, not a published
 port:
@@ -49,10 +68,11 @@ ssh -L 9001:127.0.0.1:9001 user@host    # MinIO console on localhost:9001
 
 A deployment anyone else can reach sets `FRONTEND_BIND=0.0.0.0` and
 `FRONTEND_PORT=80`. The app authenticates its own callers, so no separate gate
-is needed — see [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md). Note
-that `ufw` will not save
-you here: Docker publishes ports through its own iptables chain and bypasses ufw
-entirely, so a host that believes it is firewalled is not.
+is needed — see [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md).
+
+Note that `ufw` will not save you here: Docker publishes ports through its own
+iptables chain and bypasses ufw entirely, so a host that believes it is
+firewalled is not ([T-06](docs/known-traps.md#t-06)).
 
 ## Repository layout
 
@@ -66,8 +86,11 @@ Media_player/
 |   |-- schemas/job.py            # Public response schemas
 |   |-- services/output_urls.py   # Browser-accessible MinIO signed URLs
 |   |-- services/media_type.py    # Container sniffing: what an upload actually is
-|   |-- services/storage.py       # MinIO client used by the upload path
-|   |-- worker/                   # RQ worker, state machine, copy step
+|   |-- services/storage.py       # Upload-path object storage
+|   |-- services/minio_client.py  # The only place a MinIO client is constructed
+|   |-- services/security.py      # Password hashing and JWT issue/verify
+|   |-- api/auth.py               # register / login / logout / me
+|   |-- worker/                   # RQ worker, state machine, FFmpeg step, reaper
 |   |-- queue.py                  # Shared enqueue/consume seam
 |   |-- config.py                 # Environment configuration
 |   |-- database.py               # Async SQLAlchemy engine and sessions
@@ -79,18 +102,19 @@ Media_player/
 |   |-- integration/              # Tests using the real Compose PostgreSQL
 |   `-- test_*.py                 # API and service unit tests
 |-- docs/
-|   |-- contract.md               # Sprint 1 integration contract
-|   |-- sprint1-report.md         # Living record: contributions, bugs, evidence
-|   |-- scaling-notes.md          # Capacity analysis and sprint 2 proposal
-|   |-- sprint2-backlog.md        # Open findings from the sprint 1 review
-|   |-- sprint2-plan.md           # Sprint 2: what to build, in what order
+|   |-- contract.md               # Shared schema and API boundary
+|   |-- sprint1-report.md         # Sprint 1 record: contributions, bugs, evidence
+|   |-- scaling-notes.md          # Capacity analysis
+|   |-- sprint2-backlog.md        # The sprint 1 review's findings, P1-P9
+|   |-- sprint2-plan.md           # Sprint 2: what was built, in what order
+|   |-- s2-03-auth-design.md      # Why auth is shaped the way it is
 |   |-- known-traps.md            # Traps already hit here -- read before coding
 |   |-- a-worker.md               # Worker and state machine notes
-|   |-- c-status-db.md            # Detailed C-track commands
 |   |-- proposal.md               # Full module proposal
-|   `-- sprint1-plan.md           # Current Sprint 1 plan
+|   `-- sprint1-plan.md           # Sprint 1 plan
 |-- Dockerfile                    # Python 3.12 API image
-|-- docker-compose.yml            # Frontend, API, worker, Redis, PostgreSQL, MinIO
+|-- docker-compose.yml            # Frontend, API, worker, reaper, Redis, PostgreSQL, MinIO
+|-- deploy/                       # nginx config, TLS, certbot renewal
 |-- alembic.ini                   # Migration configuration
 |-- pyproject.toml                # Runtime and development dependencies
 `-- .env.example                  # Safe local configuration template
@@ -284,9 +308,11 @@ The transition functions use conditional SQL updates. Repeating or skipping a tr
 Two endpoint variables are intentional:
 
 - `MINIO_ENDPOINT=minio:9000` is the internal Compose address used by API and worker code.
-- `MINIO_PUBLIC_ENDPOINT=127.0.0.1:9000` is embedded in signed URLs returned to the browser.
+- `MINIO_PUBLIC_ENDPOINT=127.0.0.1:9000` is embedded in signed URLs returned to the browser. The deployment sets it to `flickpond.com`.
 
 Do not generate browser URLs with `minio:9000`; that hostname only resolves inside the Compose network. Set `MINIO_PUBLIC_ENDPOINT` to the public storage hostname when deploying remotely.
+
+The **host is part of a SigV4 signature**, so the two endpoints cannot be swapped after a URL is signed, and `MINIO_PUBLIC_USE_SSL` must match the page's scheme or the browser blocks the result as mixed content.
 
 ## Tests and code quality
 
@@ -345,10 +371,22 @@ git push -u origin <name>/c-status-db
 
 Before committing, confirm that `git config user.email` belongs to the contributor's GitHub account so the work appears in the contribution history.
 
-## Sprint 1 boundaries
+## What is and is not built
 
-Sprint 1 uses a copy operation as the processing job. Real FFmpeg transcoding, retries, authentication, format selection, quotas, and cloud orchestration are outside this sprint. The immediate integration target is:
+Built, through sprint 2:
 
 ```text
-upload -> queued -> processing -> done/failed -> status API -> playback URL
+register/login -> upload -> queued -> processing (FFmpeg 720p) -> done | failed
+                                   -> status API -> playback URL
+                     reaper recovers rows abandoned by a dead worker
 ```
+
+Still out of scope: retries, format selection, quotas, resumable or multipart
+upload, cloud orchestration, and instant session revocation (the JWT is
+stateless and stays valid until it expires — see
+[`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md) §1).
+
+Upload is also **not atomic**: the object lands in MinIO before the job row is
+committed, so a crash between the two leaves an orphaned object. The reaper
+sweeps those; the reasoning is in
+[`docs/sprint2-backlog.md`](docs/sprint2-backlog.md).

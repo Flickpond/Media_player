@@ -1,7 +1,10 @@
 # A — Worker + state machine
 
-Everything in §4 of the sprint plan that A owes the rest of the team, plus how
-to run and test the worker.
+What track A owes the rest of the team, plus how to run and test the worker.
+
+Written for sprint 1 and kept current: the integration parameters below are
+still in force, and sprint 2 changed what "processing" means without changing
+any of them. That was the point of the `ProcessingStep` seam.
 
 ## Integration parameters (the §4 list)
 
@@ -59,14 +62,26 @@ API, never this key.
 ## What the worker does
 
 ```
-queued ──mark_processing──► processing ──copy object──► done
+queued ──mark_processing──► processing ──FFmpeg transcode──► done
                                  │
                                  └── exception ──► failed (with readable error)
 ```
 
-"Processing" is a **server-side object copy** in MinIO, standing in for FFmpeg.
-Sprint 2 replaces `CopyProcessor.run()` and nothing else — the `ProcessingStep`
-protocol is the seam.
+"Processing" is an **FFmpeg transcode to 720p H.264 + AAC** (`FfmpegProcessor`),
+as of sprint 2. It downloads the source, runs FFmpeg against a temp file, and
+uploads the result.
+
+It replaced `CopyProcessor` — a server-side object copy standing in for real
+transcoding — and **nothing else changed**: `app/worker/tasks.py` was not
+modified, because `ProcessingStep` is the seam and `get_processing_step()` is
+the only thing that names an implementation. `CopyProcessor` is still in the
+tree and still tested; it is the reference for what a processing step has to
+look like.
+
+A failure reaches the user through the job's `error` column, which is **not**
+`str(exception)`. See [T-22](known-traps.md#t-22): `ObjectStoreError` carries a
+diagnostic for the log and a `user_message` for the screen, and both are
+required at every raise site.
 
 ### The two design-note cases, already handled
 
@@ -95,10 +110,14 @@ job 6f1c... : processing -> done (output_key=outputs/6f1c.../demo.mp4)
 ## Running it
 
 ```bash
-docker compose up -d                 # worker starts with everything else
-docker compose up -d --scale worker=2   # Thursday's N2 evidence
+docker compose up -d                    # worker starts with everything else
+docker compose up -d --scale worker=2   # N2 evidence: two replicas, one queue
 docker compose logs -f worker
 ```
+
+The replica count lives on the command line, not in `docker-compose.yml`, so a
+plain `docker compose up -d` silently scales the workers back to **one**. Pass
+`--scale worker=2` on every deploy until that moves into the compose file.
 
 Locally, without containers:
 
@@ -126,13 +145,30 @@ With the stack up, the same state machine runs against real PostgreSQL:
 RUN_POSTGRES_TESTS=1 pytest tests/integration/test_worker_postgres.py
 ```
 
-That file is what proves the fake tells the truth. **Run it once C's migration
-is live on D's Postgres (Mon 7 Sep)** — until then the worker's DB path is
-unverified against anything but a fake.
+That file is what proves the fake tells the truth. CI runs it on every pull
+request, against a real PostgreSQL and a real MinIO.
+
+## The reaper
+
+A worker that is killed mid-job leaves its row in `processing` forever — the
+process that owed the transition is gone. `app/worker/reaper.py` runs as its own
+container and does two things on a loop:
+
+1. fails rows that have sat in `processing` past their lease, with
+   `"worker stopped responding; job was not completed"`
+2. deletes objects under `uploads/` that no job row refers to — the orphans
+   left when upload is interrupted between writing the object and committing
+   the row
+
+Both use a **conditional UPDATE**, so two reapers racing cannot both claim the
+same row. `tests/test_reaper.py` covers the orchestration with fakes;
+`tests/integration/test_reaper_postgres.py` covers the data paths against real
+services, and deliberately never calls `run_once()` — that sweeps the whole
+table and bucket, which against a shared stack would reap a teammate's work.
 
 ## Still open
 
-- Not yet run against a real MinIO or a real enqueue from B's endpoint. The
-  seam is covered by tests on both sides, but Tuesday 8 Sep is when this gets
-  proven for real.
-- No retry or crash recovery — deliberately out of scope (sprint 2).
+- No retries. A failed job stays failed; the user re-uploads.
+- The reaper's lease is a fixed timeout, not a heartbeat, so a genuinely slow
+  job can be reaped mid-flight. The FFmpeg timeout is set below the lease to
+  make that unlikely rather than impossible.
