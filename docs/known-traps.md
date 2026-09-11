@@ -37,6 +37,7 @@ read that entry, then work. If you hit something new, add an entry.
 | [T-21](#t-21) | Deploy | `docker compose up -d` applies env changes but not code changes |
 | [T-22](#t-22) | Errors | An exception message is not a user message |
 | [T-23](#t-23) | Deploy | `docker compose up` silently resets a `--scale` replica count |
+| [T-24](#t-24) | Deploy | Serving `www` identically to the bare domain breaks host-only session cookies |
 
 ---
 
@@ -559,3 +560,53 @@ worker:
 That file is track D's. **Any deployment topology that lives only in a command
 someone once typed will be lost** — this is the same family as T-20 and T-21:
 the running system quietly differs from the one everybody describes.
+
+---
+
+### T-24
+
+**Serving `www.example.com` identically to `example.com` breaks host-only session cookies.**
+
+*Symptom:* a signed-in user gets bounced back to the sign-in page mid-session,
+saying "session expired" -- on a page that just started polling, or on a tab
+switch, with nothing slow or long-running involved. It looks like a token
+expiry bug and is not one.
+
+*Cause:* the TLS certificate's SAN list covers both `example.com` and
+`www.example.com`, and it is tempting to let `server_name` list both in the
+app-serving block -- "the cert covers both, so let both work." That makes them
+two fully live, identical-looking origins. The session cookie carries no
+`Domain` attribute (deliberately -- see [T-19](#t-19) and the auth design
+note), so it is scoped to whichever *exact* host set it. A browser that ever
+crosses between the two -- address-bar autocomplete silently prepending
+"www.", a bookmark, retyping the URL slightly differently between visits --
+sends no cookie at all on the other host. Every authenticated call there
+returns 401, correctly, with no way for the server to know why: from its side
+a legitimate anonymous request arrived.
+
+*How it surfaced:* a user report -- upload looked like it hung for a long
+time then failed with "session expired," and clicking a plain nav tab (no
+slow operation at all) did the same thing immediately. Reproduced directly:
+logged in against the bare domain, replayed that exact cookie jar against
+`www.`, got `{"error": "not authenticated"}`.
+
+*Avoid:* serve exactly one canonical hostname from the app-serving block.
+Every other hostname the certificate covers gets its own block that only
+redirects:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name www.example.com;
+    ssl_certificate     ...;   # same cert, same paths
+    ssl_certificate_key ...;
+    return 301 https://example.com$request_uri;
+}
+```
+
+**Do not fix this by widening the cookie's `Domain` to cover subdomains
+instead.** That makes the problem go away by enlarging the cookie's blast
+radius to every subdomain that ever exists on the domain -- the opposite of
+what a security review asks for. One canonical origin is the actual fix; see
+[`deploy/nginx-tls/README.md`](../deploy/nginx-tls/README.md) for the
+corrected template.
