@@ -12,7 +12,7 @@ order, and what will bite you.
 **Read these three files before writing any code:**
 
 1. This document, at least §1–§3.
-2. [`known-traps.md`](known-traps.md) — 22 traps already hit on this project.
+2. [`known-traps.md`](known-traps.md) — 23 traps already hit on this project.
    Most of them fail *silently*.
 3. [`contract.md`](contract.md) — the shared API and schema boundary. Changing
    it requires telling the team.
@@ -54,7 +54,7 @@ crashed worker (S2-02), and CI gates every PR (S2-04).
 | Crash recovery | Reaper service: stale `processing` → `failed`, stale `queued` re-enqueued, orphan objects deleted |
 | CI | 5 GitHub Actions jobs, **required** status checks on `main` |
 | Deployment | <https://flickpond.com> (Alibaba ECS, cn-hongkong), Let's Encrypt TLS, basic auth gate |
-| Tests | 133 unit + 16 integration (Python), 20 unit + 3 live (frontend), 87% coverage |
+| Tests | 171 unit + 24 integration (Python), 28 unit + 3 live (frontend), 85.88% coverage |
 
 ### What is deliberately not built
 
@@ -96,8 +96,8 @@ cd frontend && npm ci && npm test
 RUN_LIVE_TESTS=1 npx vitest run     # needs the stack up
 ```
 
-Coverage gate is `fail_under = 80` in `pyproject.toml`. Actual is 87% on the
-unit path. **Do not let it drop below the gate**, and prefer not to let it
+Coverage gate is `fail_under = 80` in `pyproject.toml`. Actual is 85.88% on
+the unit path (11 Sep 2026). **Do not let it drop below the gate**, and prefer not to let it
 drop at all — it was 92% before sprint 2 added code that only integration
 tests reach.
 
