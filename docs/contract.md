@@ -34,6 +34,8 @@ code that split is `ObjectStoreError`: `str(exc)` is the operator's half,
 | `status` | Text | One of the four states above |
 | `source_key` | Text | MinIO input object key |
 | `output_key` | Text, nullable | MinIO output object key; null until `done` |
+| `hls_key` | Text, nullable | MinIO key of the HLS master playlist. Null when no ladder was built — including on a `done` job, since the ladder is best-effort and `output_key` is the fallback |
+| `operations` | JSONB, nullable | Null on an upload. On an edit job, the operations requested. **The array's order is not execution order** — the worker runs clip → crop → scale → convert regardless |
 | `error` | Text, nullable | Present only for `failed` jobs. **User-facing** — see the rule above |
 | `created_at` | Timestamp with time zone | Set when the API creates the job |
 | `updated_at` | Timestamp with time zone | Updated on every worker transition |
