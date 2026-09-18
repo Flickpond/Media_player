@@ -17,15 +17,14 @@ This is not part of the original proposal — crop/clip/scale/convert tools
 aren't in `proposal.md`'s scope at all. This document specifies *what* and
 *how*; `sprint3-plan.md` decides *when*.
 
-**Where it landed:** sprint 3 ships the foundation (the `operations` column,
-`POST /jobs/{id}/edit`, the worker registry and the fixed pipeline) plus
-**downscale, upscale and convert**. **Crop and clip are deferred to sprint
-4** — they are the two operations needing `ffprobe` validation on the
-backend *and* a custom interactive component on the frontend, and that pair
-does not fit a one-week sprint alongside the proposal's own Must Haves. The
-design below is unchanged and still describes all five; sprint 3 simply
-builds the cheap three first, which is the build order §7 already
-recommended.
+**Where it landed:** sprint 3, in full — all five operations. See
+`sprint3-plan.md`. The split that makes it fit a one-week sprint is that
+the two hard interactive components become their own tracks: Track A builds
+the whole backend (endpoint, registry, fixed pipeline, `ffprobe`
+validation), Track B builds the crop box, Track C builds the clip scrubber,
+and Track E builds the panel they mount into. §5 below describes that UI as
+one track's work because it was written before the split; the components and
+their contracts are unchanged.
 
 Read [`known-traps.md`](known-traps.md) and [`contract.md`](contract.md)
 before touching any of this — the same rule as every other plan in this repo.
