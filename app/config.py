@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     worker_output_prefix: str = "outputs"
     worker_job_timeout_seconds: int = 900
     worker_ffmpeg_binary: str = "ffmpeg"
+    # Ships in the same package as ffmpeg, so it is a new call rather than a
+    # new dependency. Separate setting anyway: a deployment that points
+    # `worker_ffmpeg_binary` at a custom build needs to say where the
+    # matching probe is, and silently probing with a different version's
+    # binary is the kind of mismatch that shows up as bad geometry, not as
+    # an error.
+    worker_ffprobe_binary: str = "ffprobe"
+    worker_ffprobe_timeout_seconds: int = 30
     worker_ffmpeg_preset: str = "veryfast"
     worker_ffmpeg_crf: int = 23
     worker_ffmpeg_max_height: int = 720
