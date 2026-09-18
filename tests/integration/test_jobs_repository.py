@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -182,6 +183,96 @@ async def test_list_jobs_returns_newest_first(session_factory, owner) -> None:
     finally:
         async with session_factory() as cleanup:
             await cleanup.execute(delete(Job).where(Job.id.in_([job.id for job in made])))
+            await cleanup.commit()
+
+
+# --- operations and hls_key: the editing suite's and HLS's columns ---
+
+
+@pytest.mark.asyncio
+async def test_a_plain_upload_has_no_operations_and_no_hls_key(session_factory, owner) -> None:
+    """Guards against a future default that would make every upload look like
+    an edit job, or like it already has a ladder.
+    """
+    job_id = uuid4()
+    try:
+        async with session_factory() as session:
+            created = await create_job(
+                session,
+                owner_id=owner.id,
+                job_id=job_id,
+                filename="plain.mp4",
+                source_key=f"uploads/{job_id}/plain.mp4",
+            )
+            assert created.operations is None
+            assert created.hls_key is None
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.commit()
+
+
+@pytest.mark.asyncio
+async def test_an_empty_operations_array_is_rejected_by_the_database(
+    session_factory, owner
+) -> None:
+    """`ck_jobs_operations_nonempty_array`, proven against real SQL rather
+    than trusted because the migration ran.
+
+    "This job is an edit" and "this job was asked to do nothing" are
+    different things, and only the first is storable -- a Pydantic schema
+    rejecting an empty list on the way in is not the same as the column
+    being unable to hold one. Same posture as `ck_jobs_error`.
+    """
+    job_id = uuid4()
+    try:
+        async with session_factory() as session:
+            session.add(
+                Job(
+                    id=job_id,
+                    owner_id=owner.id,
+                    filename="empty.mp4",
+                    status=JobStatus.QUEUED.value,
+                    source_key=f"uploads/{job_id}/empty.mp4",
+                    operations=[],
+                )
+            )
+            with pytest.raises(IntegrityError):
+                await session.commit()
+            await session.rollback()
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_done_job_may_have_no_hls_key(session_factory, owner) -> None:
+    """The ladder is best-effort: if FFmpeg cannot build one, the MP4 still
+    stands and the job is legitimately `done` with `hls_key IS NULL`.
+
+    Deliberately *not* constrained the way `ck_jobs_output_key` constrains
+    `output_key` -- mirroring that here would turn the intended fallback
+    into a write the database rejects, failing a job that succeeded.
+    """
+    job_id = uuid4()
+    try:
+        async with session_factory() as session:
+            await create_job(
+                session,
+                owner_id=owner.id,
+                job_id=job_id,
+                filename="noladder.mp4",
+                source_key=f"uploads/{job_id}/noladder.mp4",
+            )
+            await mark_processing(session, job_id)
+            done = await mark_done(session, job_id, output_key=f"outputs/{job_id}/noladder.mp4")
+
+        assert done.status == JobStatus.DONE.value
+        assert done.hls_key is None
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
             await cleanup.commit()
 
 
