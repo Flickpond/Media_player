@@ -14,9 +14,18 @@ both the correct reading of what the crop UI captures and the faster order,
 so there was nothing left for a user-chosen order to actually decide.
 
 This is not part of the original proposal — crop/clip/scale/convert tools
-aren't in `proposal.md`'s scope at all. Where it lands (sprint 3, replacing
-some of the proposal's original sprint 3 content, or a new sprint 5) is a
-team call; this document specifies *what* and *how*, not *when*.
+aren't in `proposal.md`'s scope at all. This document specifies *what* and
+*how*; `sprint3-plan.md` decides *when*.
+
+**Where it landed:** sprint 3 ships the foundation (the `operations` column,
+`POST /jobs/{id}/edit`, the worker registry and the fixed pipeline) plus
+**downscale, upscale and convert**. **Crop and clip are deferred to sprint
+4** — they are the two operations needing `ffprobe` validation on the
+backend *and* a custom interactive component on the frontend, and that pair
+does not fit a one-week sprint alongside the proposal's own Must Haves. The
+design below is unchanged and still describes all five; sprint 3 simply
+builds the cheap three first, which is the build order §7 already
+recommended.
 
 Read [`known-traps.md`](known-traps.md) and [`contract.md`](contract.md)
 before touching any of this — the same rule as every other plan in this repo.
