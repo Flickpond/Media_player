@@ -118,6 +118,10 @@ async def _transition(
 
 
 async def mark_processing(session: AsyncSession, job_id: UUID) -> Job:
+    # A retry publishes to Redis while holding this row, then commits. Lock
+    # by id *before* checking status: a bare UPDATE ... WHERE status='queued'
+    # can see the old failed snapshot and skip it without waiting at all.
+    await session.execute(select(Job.id).where(Job.id == job_id).with_for_update())
     return await _transition(
         session,
         job_id=job_id,
@@ -148,6 +152,45 @@ async def mark_failed(session: AsyncSession, job_id: UUID, *, error: str) -> Job
         next_status=JobStatus.FAILED,
         error=error.strip(),
     )
+
+
+async def prepare_retry(session: AsyncSession, job_id: UUID, *, owner_id: UUID) -> Job:
+    """Claim one failed job for retry, leaving the transaction to the caller.
+
+    The API enqueues, then commits. Until then this UPDATE holds the row lock:
+    another retry cannot win, and a fast worker's mark_processing waits for
+    the commit. A failed enqueue rolls back to the original failed row, so the
+    user can retry again instead of being stuck in queued without a delivery.
+    PostgreSQL and Redis are not one transaction: an enqueue accepted just
+    before a lost connection may still deliver, but the worker's conditional
+    claim cannot process a rolled-back failed row.
+    """
+    statement = (
+        update(Job)
+        .where(
+            Job.id == job_id,
+            Job.owner_id == owner_id,
+            Job.status == JobStatus.FAILED.value,
+        )
+        .values(
+            status=JobStatus.QUEUED.value,
+            error=None,
+            output_key=None,
+            hls_key=None,
+            updated_at=func.now(),
+        )
+        .returning(Job)
+    )
+    result = await session.execute(statement)
+    job = result.scalar_one_or_none()
+    if job is not None:
+        return job
+
+    await session.rollback()
+    existing = await get_job(session, job_id, owner_id=owner_id)
+    if existing is None:
+        raise JobNotFoundError(str(job_id))
+    raise InvalidJobTransitionError("only failed jobs can be retried")
 
 
 async def delete_job(

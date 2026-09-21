@@ -4,18 +4,24 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import CurrentUser, OperatorUser
 from app.database import get_session
 from app.errors import ApiNotFoundError
 from app.models.job import Job, JobStatus
+from app.queue import enqueue_job
 from app.repositories.jobs import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
+    InvalidJobTransitionError,
+    JobNotFoundError,
     delete_job,
     get_job,
     list_jobs,
+    prepare_retry,
 )
 from app.schemas.job import ErrorResponse, JobResponse
 from app.services.output_urls import OutputUrlSigner, get_output_url_signer
@@ -84,6 +90,44 @@ async def get_job_by_id(
     if job is None:
         raise ApiNotFoundError("not found")
     return await _to_response(job, signer)
+
+
+@router.post(
+    "/{job_id}/retry",
+    response_model=dict[str, str],
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+async def retry_job_by_id(
+    job_id: UUID,
+    user: CurrentUser,
+    session: SessionDependency,
+) -> dict[str, str] | Response:
+    """Retry the caller's failed job using its existing source and operations."""
+    try:
+        await prepare_retry(session, job_id, owner_id=user.id)
+    except JobNotFoundError as exc:
+        raise ApiNotFoundError("not found") from exc
+    except InvalidJobTransitionError:
+        return JSONResponse(status_code=409, content={"error": "only failed jobs can be retried"})
+
+    try:
+        await run_in_threadpool(enqueue_job, job_id)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.exception("job %s: retry could not be confirmed", job_id)
+        return JSONResponse(
+            status_code=503,
+            content={"error": "retry could not be confirmed; refresh the job and try again"},
+        )
+
+    logger.info("job %s: failed -> queued (retry requested)", job_id)
+    return {"job_id": str(job_id)}
 
 
 async def _delete_job_and_storage(
