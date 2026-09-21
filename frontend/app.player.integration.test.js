@@ -416,3 +416,24 @@ describe("the adaptive ladder", () => {
     expect(el.libraryGrid.querySelectorAll("video")).toHaveLength(0);
   });
 });
+
+describe("the editing panel's player", () => {
+  it("edits through the real Plyr, and takes it down on the way out", async () => {
+    const el = await loadPage();
+    await openLibrary(el, [PLAIN]);
+    const card = cardFor(el, "holiday.mp4");
+
+    card.querySelector(".card-edit").dispatchEvent(new Event("click"));
+
+    expect(document.getElementById("view-edit").hidden).toBe(false);
+    expect(document.getElementById("edit-source").textContent).toBe("holiday.mp4");
+    const video = document.querySelector("#edit-player video");
+    expect(document.querySelector("#edit-player .plyr")).not.toBeNull();
+    expect(video.getAttribute("src")).toBe(PLAIN.output_url);
+
+    document.getElementById("edit-back").dispatchEvent(new Event("click"));
+
+    expect(document.querySelector("#edit-player .plyr")).toBeNull();
+    expect(document.querySelector("#edit-player video")).toBeNull();
+  });
+});

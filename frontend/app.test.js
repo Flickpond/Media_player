@@ -65,6 +65,8 @@ async function loadApp({ signedIn = true, role = "user" } = {}) {
     viewUpload: document.getElementById("view-upload"),
     viewLibrary: document.getElementById("view-library"),
     viewAdmin: document.getElementById("view-admin"),
+    viewEdit: document.getElementById("view-edit"),
+    jobEdit: document.getElementById("job-edit"),
     libraryGrid: document.getElementById("library-grid"),
     libraryEmpty: document.getElementById("library-empty"),
     libraryStatus: document.getElementById("library-status"),
@@ -78,6 +80,29 @@ async function loadApp({ signedIn = true, role = "user" } = {}) {
     adminStatus: document.getElementById("admin-status"),
     adminPrev: document.getElementById("admin-prev"),
     adminNext: document.getElementById("admin-next"),
+    editBack: document.getElementById("edit-back"),
+    editSource: document.getElementById("edit-source"),
+    editPlayer: document.getElementById("edit-player"),
+    editStatus: document.getElementById("edit-status"),
+    editProgress: document.getElementById("edit-progress"),
+    editResult: document.getElementById("edit-result"),
+    editResultName: document.getElementById("edit-result-name"),
+    editResultDownload: document.getElementById("edit-result-download"),
+    editResultNote: document.getElementById("edit-result-note"),
+    editResultPlayer: document.getElementById("edit-result-player"),
+    editForm: document.getElementById("edit-form"),
+    editProcess: document.getElementById("edit-process"),
+    editHint: document.getElementById("edit-hint"),
+    editCrop: document.getElementById("edit-crop"),
+    editCropMount: document.getElementById("edit-crop-mount"),
+    editClip: document.getElementById("edit-clip"),
+    editClipMount: document.getElementById("edit-clip-mount"),
+    editDownscale: document.getElementById("edit-downscale"),
+    editDownscaleHeight: document.getElementById("edit-downscale-height"),
+    editUpscale: document.getElementById("edit-upscale"),
+    editUpscaleHeight: document.getElementById("edit-upscale-height"),
+    editConvert: document.getElementById("edit-convert"),
+    editConvertFormat: document.getElementById("edit-convert-format"),
   };
 }
 
@@ -1537,5 +1562,356 @@ describe("player", () => {
     el.adminTbody.querySelector(".admin-watch").dispatchEvent(new Event("click"));
 
     expect(FakePlyr.created).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The editing panel. It is one view over the contract in sprint3-plan.md §1,
+// so these tests are about two things: what it sends, and what it refuses to
+// send. Crop and clip belong to other tracks, so the seam with them is a
+// stand-in here -- EDITOR-COMPONENTS.md is the contract they implement.
+// ---------------------------------------------------------------------------
+
+describe("editor", () => {
+  const SOURCE = {
+    id: "1",
+    filename: "holiday.mp4",
+    status: "done",
+    output_url: "http://minio/holiday.mp4",
+  };
+
+  beforeEach(() => {
+    FakePlyr.created = [];
+    window.Plyr = FakePlyr;
+  });
+
+  afterEach(() => {
+    delete window.Plyr;
+    delete window.mountCropBox;
+    delete window.mountClipScrubber;
+  });
+
+  async function openLibraryWith(el, jobs) {
+    fetchMock.mockResolvedValueOnce(jsonResponse(jobs));
+    el.navLibrary.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+    fetchMock.mockClear();
+  }
+
+  /** Open the editor from the first Library card that offers it. */
+  async function openEditor(el, jobs = [SOURCE]) {
+    await openLibraryWith(el, jobs);
+    const button = el.libraryGrid.querySelector(".card-edit");
+    expect(button, "no card offered Edit").toBeTruthy();
+    button.dispatchEvent(new Event("click"));
+    return el;
+  }
+
+  /** A stand-in for one of B's or C's components: it records the element it
+   *  was handed, and reports whatever the test tells it to. */
+  function fakeComponent() {
+    return {
+      calls: [],
+      cleanup: vi.fn(),
+      mount(video, onChange) {
+        this.calls.push({ video, onChange });
+        return this.cleanup;
+      },
+      report(selection) {
+        this.calls.at(-1).onChange(selection);
+      },
+    };
+  }
+
+  function submit(el) {
+    el.editForm.dispatchEvent(new Event("submit", { cancelable: true }));
+  }
+
+  /** Answer the three requests an edit makes: the POST, the polls, and the
+   *  library refresh the result triggers. `documents` is what each poll
+   *  returns, with the last one repeating. */
+  function mockEditFlow(documents) {
+    let polls = 0;
+    fetchMock.mockImplementation(async (url) => {
+      if (url === "/api/jobs/1/edit") return jsonResponse({ job_id: "edit-1" }, true, 202);
+      if (url === "/api/jobs/edit-1") {
+        const document = documents[Math.min(polls, documents.length - 1)];
+        polls += 1;
+        return jsonResponse(document);
+      }
+      if (url.startsWith("/api/jobs?")) return jsonResponse([]);
+      return jsonResponse({ error: `unexpected request to ${url}` }, false, 500);
+    });
+  }
+
+  const EDITED = {
+    id: "edit-1",
+    filename: "holiday-crop.mp4",
+    status: "done",
+    output_url: "http://minio/holiday-crop.mp4",
+  };
+
+  /** The operations the panel actually sent, in a stable order -- the array's
+   *  order means nothing to the worker, so nothing here should depend on it. */
+  function sentOperations() {
+    const call = fetchMock.mock.calls.find(([url]) => url.endsWith("/edit"));
+    expect(call, "no edit request was sent").toBeTruthy();
+    const [url, init] = call;
+    expect(url).toBe("/api/jobs/1/edit");
+    expect(init.method).toBe("POST");
+    const { operations } = JSON.parse(init.body);
+    return [...operations].sort((a, b) => a.operation.localeCompare(b.operation));
+  }
+
+  it("opens from a finished library entry, on that job", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+
+    expect(el.viewEdit.hidden).toBe(false);
+    expect(el.editSource.textContent).toBe("holiday.mp4");
+    expect(el.editPlayer.querySelector("video").getAttribute("src")).toBe(SOURCE.output_url);
+    expect(FakePlyr.created).toHaveLength(1);
+  });
+
+  it("offers no Edit for a job that has not finished", async () => {
+    const el = await loadApp();
+    await openLibraryWith(el, [{ id: "2", filename: "recap.mov", status: "processing" }]);
+
+    expect(el.libraryGrid.querySelector(".card-edit")).toBeNull();
+  });
+
+  it("opens from the upload card once its job is done, and not before", async () => {
+    const el = await loadApp();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }))
+      .mockResolvedValueOnce(jsonResponse({ id: "job-1", status: "processing" }))
+      .mockResolvedValue(
+        jsonResponse({ ...SOURCE, id: "job-1", filename: "uploaded.mp4" }),
+      );
+
+    await uploadFile(el);
+    expect(el.jobEdit.hidden).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(4000);
+
+    expect(el.jobEdit.hidden).toBe(false);
+    el.jobEdit.dispatchEvent(new Event("click"));
+    expect(el.viewEdit.hidden).toBe(false);
+    expect(el.editSource.textContent).toBe("uploaded.mp4");
+  });
+
+  it("disables the sections whose components have not landed", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+
+    expect(el.editCrop.disabled).toBe(true);
+    expect(el.editClip.disabled).toBe(true);
+    expect(el.editCropMount.textContent).toContain("Track B");
+    expect(el.editClipMount.textContent).toContain("Track C");
+    // The three the panel owns are always usable.
+    expect(el.editDownscale.disabled).toBe(false);
+    expect(el.editUpscale.disabled).toBe(false);
+    expect(el.editConvert.disabled).toBe(false);
+  });
+
+  it("mounts crop and clip against the video, and sends what they report", async () => {
+    const crop = fakeComponent();
+    const clip = fakeComponent();
+    window.mountCropBox = crop.mount.bind(crop);
+    window.mountClipScrubber = clip.mount.bind(clip);
+    const el = await loadApp();
+    await openEditor(el);
+
+    const video = el.editPlayer.querySelector("video");
+    expect(crop.calls[0].video).toBe(video);
+    expect(clip.calls[0].video).toBe(video);
+    expect(el.editCrop.disabled).toBe(false);
+
+    el.editCrop.checked = true;
+    el.editCrop.dispatchEvent(new Event("change"));
+    el.editClip.checked = true;
+    el.editClip.dispatchEvent(new Event("change"));
+    // Ticked but with nothing selected yet: there is no rectangle or range to
+    // send, and a request without them is a 422.
+    expect(el.editProcess.disabled).toBe(true);
+
+    crop.report({ x: 0, y: 140, w: 1080, h: 1080 });
+    clip.report({ start: 5, end: 12.5 });
+    expect(el.editProcess.disabled).toBe(false);
+
+    submit(el);
+
+    expect(sentOperations()).toEqual([
+      { operation: "clip", params: { start: 5, end: 12.5 } },
+      { operation: "crop", params: { x: 0, y: 140, w: 1080, h: 1080 } },
+    ]);
+  });
+
+  it("cannot be made to send downscale and upscale together", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+
+    el.editDownscale.checked = true;
+    el.editDownscale.dispatchEvent(new Event("change"));
+    expect(el.editUpscale.disabled).toBe(true);
+
+    // Even if the checkbox is forced, ticking it closes the other one -- the
+    // worker answers this combination with a 422, so the panel must not be
+    // able to build it.
+    el.editUpscale.checked = true;
+    el.editUpscale.dispatchEvent(new Event("change"));
+    expect(el.editDownscale.checked).toBe(false);
+
+    submit(el);
+
+    expect(sentOperations()).toEqual([
+      { operation: "upscale", params: { height: 1080 } },
+    ]);
+  });
+
+  it("sends the operations the panel owns with the chosen values", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+
+    el.editDownscale.checked = true;
+    el.editDownscale.dispatchEvent(new Event("change"));
+    el.editDownscaleHeight.value = "360";
+    el.editConvert.checked = true;
+    el.editConvert.dispatchEvent(new Event("change"));
+    el.editConvertFormat.value = "mp3";
+
+    submit(el);
+
+    expect(sentOperations()).toEqual([
+      { operation: "convert", params: { format: "mp3" } },
+      { operation: "downscale", params: { height: 360 } },
+    ]);
+  });
+
+  it("says what still has to be done before Process will send anything", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+
+    expect(el.editProcess.disabled).toBe(true);
+    expect(el.editHint.textContent).toContain("Check an operation");
+
+    el.editConvert.checked = true;
+    el.editConvert.dispatchEvent(new Event("change"));
+
+    expect(el.editProcess.disabled).toBe(false);
+    expect(el.editHint.textContent).toBe("1 operation in one pass.");
+  });
+
+  it("follows the new job and offers the result", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+    mockEditFlow([{ id: "edit-1", status: "processing" }, EDITED]);
+
+    el.editConvert.checked = true;
+    el.editConvert.dispatchEvent(new Event("change"));
+    submit(el);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    await vi.advanceTimersByTimeAsync(4000);
+
+    expect(el.editResult.hidden).toBe(false);
+    expect(el.editResultName.textContent).toBe(EDITED.filename);
+    expect(el.editResultDownload.getAttribute("href")).toBe(EDITED.output_url);
+    expect(el.editResultDownload.getAttribute("download")).toBe(EDITED.filename);
+    expect(el.editResultPlayer.querySelector("video")).not.toBeNull();
+    expect(el.editProgress.hidden).toBe(true);
+  });
+
+  it("warns that a converted result may not play inline", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+    mockEditFlow([
+      { id: "edit-1", filename: "holiday.mkv", status: "done", output_url: "http://minio/holiday.mkv" },
+    ]);
+
+    el.editConvert.checked = true;
+    el.editConvert.dispatchEvent(new Event("change"));
+    submit(el);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.editResultNote.hidden).toBe(false);
+    expect(el.editResultNote.textContent).toContain("Download");
+  });
+
+  it("passes the API's own message back when the edit is refused", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ detail: [{ msg: "downscale and upscale cannot be combined" }] }, false, 422),
+    );
+
+    el.editConvert.checked = true;
+    el.editConvert.dispatchEvent(new Event("change"));
+    submit(el);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.editStatus.textContent).toContain("downscale and upscale cannot be combined");
+    expect(el.editStatus.textContent).toContain("422");
+  });
+
+  it("says which status it got when the endpoint is not there yet", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: "Not Found" }, false, 404));
+
+    el.editConvert.checked = true;
+    el.editConvert.dispatchEvent(new Event("change"));
+    submit(el);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.editStatus.textContent).toBe("Could not start the edit: Not Found (HTTP 404)");
+    // The panel is still usable, so a second attempt is not blocked.
+    expect(el.editProcess.disabled).toBe(false);
+  });
+
+  it("returns to the sign-in form if the session expired mid-edit", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not authenticated" }, false, 401));
+
+    el.editConvert.checked = true;
+    el.editConvert.dispatchEvent(new Event("change"));
+    submit(el);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.auth.hidden).toBe(false);
+    expect(el.authStatus.textContent).toContain("session expired");
+  });
+
+  it("stops following the edit, and tears the session down, on the way out", async () => {
+    const crop = fakeComponent();
+    window.mountCropBox = crop.mount.bind(crop);
+    const el = await loadApp();
+    await openEditor(el);
+    mockEditFlow([{ id: "edit-1", status: "processing" }]);
+
+    el.editConvert.checked = true;
+    el.editConvert.dispatchEvent(new Event("change"));
+    submit(el);
+    await vi.advanceTimersByTimeAsync(4000);
+    // Only the polls: going back also refetches the library, which is a
+    // different request and not the thing being asserted here.
+    const editsPolled = () =>
+      fetchMock.mock.calls.filter(([url]) => url === "/api/jobs/edit-1").length;
+    const pollsWhileOpen = editsPolled();
+    expect(pollsWhileOpen).toBeGreaterThan(1);
+
+    el.editBack.dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(20000);
+
+    expect(editsPolled()).toBe(pollsWhileOpen);
+    expect(crop.cleanup).toHaveBeenCalled();
+    expect(el.editPlayer.querySelector("video")).toBeNull();
+    expect(FakePlyr.created[0].destroyed).toBe(true);
+    expect(el.viewLibrary.hidden).toBe(false);
   });
 });

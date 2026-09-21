@@ -71,6 +71,7 @@ const el = {
   activeJob: document.getElementById("active-job"),
   jobFilename: document.getElementById("job-filename"),
   jobBadge: document.getElementById("job-badge"),
+  jobEdit: document.getElementById("job-edit"),
   jobDelete: document.getElementById("job-delete"),
   jobProgress: document.getElementById("job-progress"),
   player: document.getElementById("player"),
@@ -95,6 +96,31 @@ const el = {
   adminPrev: document.getElementById("admin-prev"),
   adminNext: document.getElementById("admin-next"),
   adminPageLabel: document.getElementById("admin-page-label"),
+
+  viewEdit: document.getElementById("view-edit"),
+  editBack: document.getElementById("edit-back"),
+  editSource: document.getElementById("edit-source"),
+  editPlayer: document.getElementById("edit-player"),
+  editStatus: document.getElementById("edit-status"),
+  editProgress: document.getElementById("edit-progress"),
+  editResult: document.getElementById("edit-result"),
+  editResultName: document.getElementById("edit-result-name"),
+  editResultDownload: document.getElementById("edit-result-download"),
+  editResultNote: document.getElementById("edit-result-note"),
+  editResultPlayer: document.getElementById("edit-result-player"),
+  editForm: document.getElementById("edit-form"),
+  editCrop: document.getElementById("edit-crop"),
+  editCropMount: document.getElementById("edit-crop-mount"),
+  editClip: document.getElementById("edit-clip"),
+  editClipMount: document.getElementById("edit-clip-mount"),
+  editDownscale: document.getElementById("edit-downscale"),
+  editDownscaleHeight: document.getElementById("edit-downscale-height"),
+  editUpscale: document.getElementById("edit-upscale"),
+  editUpscaleHeight: document.getElementById("edit-upscale-height"),
+  editConvert: document.getElementById("edit-convert"),
+  editConvertFormat: document.getElementById("edit-convert-format"),
+  editProcess: document.getElementById("edit-process"),
+  editHint: document.getElementById("edit-hint"),
 };
 
 const STATUS_LABEL = { queued: "Queued", processing: "Processing", done: "Done", failed: "Failed" };
@@ -216,17 +242,30 @@ el.logout.addEventListener("click", async () => {
 // ---------------------------------------------------------------------------
 
 const NAV_BUTTONS = { upload: el.navUpload, library: el.navLibrary, admin: el.navAdmin };
-const VIEWS = { upload: el.viewUpload, library: el.viewLibrary, admin: el.viewAdmin };
+// The editor has no nav button of its own: it is opened from a job, not
+// browsed to, and the nav entry it belongs to is Library.
+const VIEWS = {
+  upload: el.viewUpload,
+  library: el.viewLibrary,
+  admin: el.viewAdmin,
+  edit: el.viewEdit,
+};
 
 function switchView(name) {
   if (name === "admin" && (!currentUser || currentUser.role !== "operator")) {
     name = "upload";
   }
+  // Leaving the editor ends the session: its player would otherwise keep
+  // streaming a video that is no longer on screen, and the components it
+  // mounted would keep their own listeners alive.
+  if (name !== "edit") closeEditor();
   for (const [key, section] of Object.entries(VIEWS)) {
     section.hidden = key !== name;
   }
   for (const [key, button] of Object.entries(NAV_BUTTONS)) {
-    button.classList.toggle("active", key === name);
+    // The editor has no nav button; it is reached from Library, so Library
+    // stays lit while it is open rather than leaving the nav with nothing on.
+    button.classList.toggle("active", key === name || (name === "edit" && key === "library"));
   }
   if (name === "library") loadLibrary();
   if (name === "admin") loadAdmin();
@@ -242,12 +281,15 @@ el.navAdmin.addEventListener("click", () => switchView("admin"));
 // escape hatch is choosing a different file, not waiting forever).
 // ---------------------------------------------------------------------------
 
-let pollTimer = null;
 let lastFile = null;
 let uploading = false;
 let activeJobId = null;
+// The last job document the upload card was showing, so its Edit button has
+// something to hand the editor.
+let activeJobDoc = null;
 
 const POLL_INTERVAL_MS = 2000;
+const PROGRESS_LABEL = { queued: "Queued...", processing: "Processing..." };
 // 30 polls is a minute. The transcode step finishes well inside that under
 // normal load, so past this something is wrong -- most likely a worker that
 // died holding the job, which leaves the row at `processing` with nobody left
@@ -261,11 +303,67 @@ function setStatus(message) {
   el.status.hidden = false;
 }
 
-function stopPolling() {
-  if (pollTimer !== null) {
-    clearTimeout(pollTimer);
-    pollTimer = null;
+// One follower per surface. The upload card and the editor watch different
+// jobs, so starting an upload must not stop an edit that is still running.
+// The counter above each timer is what makes an abandoned poll harmless: a
+// response that arrives after its follower was replaced is dropped rather
+// than drawn over whatever replaced it.
+const pollTimers = { upload: null, edit: null };
+const pollRuns = { upload: 0, edit: 0 };
+
+function stopPolling(scope) {
+  for (const key of scope ? [scope] : Object.keys(pollTimers)) {
+    pollRuns[key] += 1;
+    if (pollTimers[key] !== null) {
+      clearTimeout(pollTimers[key]);
+      pollTimers[key] = null;
+    }
   }
+}
+
+/** Follow one job until it stops changing, handing every response to the
+ *  caller. Both surfaces want the same loop with different chrome around it,
+ *  so the loop lives here and the chrome is passed in.
+ *
+ * Handlers: onJob(job, attempt) for every response, then exactly one of
+ * onDone(job) / onFailed(job), or onError(err) if the request itself fails. */
+function followJob(scope, jobId, handlers) {
+  const run = ++pollRuns[scope];
+
+  const tick = async (attempt) => {
+    pollTimers[scope] = null;
+
+    let job;
+    try {
+      const res = await fetch(`${API}/jobs/${jobId}`);
+      if (res.status === 401) {
+        showSignedOut();
+        setAuthStatus("Your session expired. Sign in again.");
+        return;
+      }
+      job = await res.json();
+    } catch (err) {
+      if (pollRuns[scope] !== run) return;
+      handlers.onError(err);
+      return; // Stop on network errors to avoid a tight loop.
+    }
+
+    if (pollRuns[scope] !== run) return; // Replaced while this was in flight.
+    handlers.onJob(job, attempt);
+
+    if (job.status === "done") {
+      handlers.onDone(job);
+      return;
+    }
+    if (job.status === "failed") {
+      handlers.onFailed(job);
+      return;
+    }
+
+    pollTimers[scope] = setTimeout(() => tick(attempt + 1), POLL_INTERVAL_MS);
+  };
+
+  tick(0);
 }
 
 function setBusy(busy) {
@@ -278,6 +376,8 @@ function resetJobCard() {
   el.activeJob.hidden = true;
   el.jobProgress.hidden = true;
   el.jobActions.hidden = true;
+  el.jobEdit.hidden = true;
+  activeJobDoc = null;
   clearUploadPlayer();
 }
 
@@ -392,56 +492,44 @@ async function handleFile(file) {
     setBadge("queued");
     activeJobId = data.job_id;
     setBusy(false);
-    poll(data.job_id);
+    pollUploadJob(data.job_id);
   } catch (err) {
     setStatus(`Request failed: ${err.message}`);
     setBusy(false);
   }
 }
 
-async function poll(jobId, attempt = 0) {
-  let job;
-  try {
-    const res = await fetch(`${API}/jobs/${jobId}`);
-    if (res.status === 401) {
-      showSignedOut();
-      setAuthStatus("Your session expired. Sign in again.");
-      return;
-    }
-    job = await res.json();
-  } catch (err) {
-    setStatus(`Polling failed: ${err.message}`);
-    return; // Stop on network errors to avoid a tight loop.
-  }
+/** The upload card's half of the loop: badge, progress sweep, and the two
+ *  ways a job can end with the form still in the user's hands. */
+function pollUploadJob(jobId) {
+  followJob("upload", jobId, {
+    onJob(job, attempt) {
+      activeJobDoc = job;
+      setBadge(job.status);
+      el.jobEdit.hidden = job.status !== "done";
+      el.jobProgress.hidden = job.status !== "processing";
 
-  setBadge(job.status);
-
-  if (job.status === "done") {
-    setStatus("Processing complete.");
-    el.jobProgress.hidden = true;
-    mountPlayer(el.player, job);
-    return; // Stop polling.
-  }
-
-  if (job.status === "failed") {
-    setStatus(`Processing failed: ${job.error ?? "Unknown error"}`);
-    el.jobProgress.hidden = true;
-    clearUploadPlayer();
-    el.jobActions.hidden = false;
-    return; // Stop polling.
-  }
-
-  el.jobProgress.hidden = job.status !== "processing";
-
-  if (attempt >= SLOW_AFTER_POLLS) {
-    setStatus(`Still working on it — this is taking longer than expected. Job ${jobId}`);
-    el.jobActions.hidden = false; // Give the form back; a stuck job otherwise never releases it.
-  } else {
-    const labels = { queued: "Queued...", processing: "Processing..." };
-    setStatus(labels[job.status] ?? job.status);
-  }
-
-  pollTimer = setTimeout(() => poll(jobId, attempt + 1), POLL_INTERVAL_MS);
+      if (attempt >= SLOW_AFTER_POLLS) {
+        setStatus(`Still working on it — this is taking longer than expected. Job ${jobId}`);
+        // Give the form back; a stuck job otherwise never releases it.
+        el.jobActions.hidden = false;
+      } else {
+        setStatus(PROGRESS_LABEL[job.status] ?? job.status);
+      }
+    },
+    onDone(job) {
+      setStatus("Processing complete.");
+      mountPlayer(el.player, job);
+    },
+    onFailed(job) {
+      setStatus(`Processing failed: ${job.error ?? "Unknown error"}`);
+      clearUploadPlayer();
+      el.jobActions.hidden = false;
+    },
+    onError(err) {
+      setStatus(`Polling failed: ${err.message}`);
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -653,6 +741,313 @@ function startPlyr(state, levels) {
 }
 
 // ---------------------------------------------------------------------------
+// The editing panel. One shared view, opened from a finished job on the upload
+// card or from any Library entry. It builds the body sprint3-plan.md §1
+// specifies:
+//
+//   POST /jobs/{id}/edit   { "operations": [ { "operation": ..., "params": {...} } ] }
+//     -> 202 { job_id }
+//
+// The array's order is not execution order -- the worker runs clip, crop,
+// scale, convert whatever order it is handed -- so the panel sends them in the
+// order the sections are stacked, which is the order a person reads them.
+//
+// Crop and clip are Track B's and Track C's components; this panel mounts them
+// and owns nothing else about them. EDITOR-COMPONENTS.md is the contract.
+// ---------------------------------------------------------------------------
+
+/** The job being edited. Null unless the editor is open. */
+let editingJob = null;
+/** What the mounted components last reported, or null until the user has made
+ *  a selection -- which is what keeps Process disabled for a section that is
+ *  ticked but not yet set up. */
+let cropSelection = null;
+let clipSelection = null;
+/** Cleanup functions for the components mounted in this editing session. */
+let mountedComponents = [];
+
+function setEditStatus(message) {
+  el.editStatus.textContent = message;
+  el.editStatus.hidden = !message;
+}
+
+/** The API answers a validation failure with FastAPI's detail list and most
+ *  other things with { error }. Both have to reach the user as one line. */
+function apiErrorMessage(data, status) {
+  if (typeof data?.error === "string" && data.error) return data.error;
+  if (typeof data?.detail === "string" && data.detail) return `${data.detail} (HTTP ${status})`;
+  if (Array.isArray(data?.detail) && data.detail.length) {
+    const parts = data.detail.map((item) => item.msg ?? JSON.stringify(item));
+    return `${parts.join("; ")} (HTTP ${status})`;
+  }
+  return `HTTP ${status}`;
+}
+
+/** The request body, or an empty array when nothing is configured. */
+function editOperations() {
+  const operations = [];
+
+  if (el.editClip.checked && clipSelection) {
+    operations.push({
+      operation: "clip",
+      params: { start: clipSelection.start, end: clipSelection.end },
+    });
+  }
+  if (el.editCrop.checked && cropSelection) {
+    operations.push({
+      operation: "crop",
+      params: {
+        x: cropSelection.x,
+        y: cropSelection.y,
+        w: cropSelection.w,
+        h: cropSelection.h,
+      },
+    });
+  }
+  // Downscale and upscale are one slot, not two. The checkboxes are kept
+  // mutually exclusive, and this is the second lock on the same door: the
+  // combination the worker answers with a 422 cannot be built even if the
+  // first lock is ever broken.
+  if (el.editDownscale.checked) {
+    operations.push({
+      operation: "downscale",
+      params: { height: Number(el.editDownscaleHeight.value) },
+    });
+  } else if (el.editUpscale.checked) {
+    operations.push({
+      operation: "upscale",
+      params: { height: Number(el.editUpscaleHeight.value) },
+    });
+  }
+  if (el.editConvert.checked) {
+    operations.push({
+      operation: "convert",
+      params: { format: el.editConvertFormat.value },
+    });
+  }
+
+  return operations;
+}
+
+/** Process is offered exactly when there is something to send, and the line
+ *  under it says which of the two reasons it is. */
+function updateProcessButton() {
+  const count = editOperations().length;
+  el.editProcess.disabled = count === 0;
+  el.editHint.textContent = count
+    ? `${count} operation${count === 1 ? "" : "s"} in one pass.`
+    : "Check an operation and set it up first — a box to crop, a range to keep, or one of the dropdowns.";
+}
+
+/** Downscale and upscale are mutually exclusive, so ticking one closes the
+ *  other rather than letting the panel build a request the worker refuses. */
+function setScaleMode(mode) {
+  el.editDownscale.disabled = mode === "upscale";
+  el.editUpscale.disabled = mode === "downscale";
+  if (mode === "downscale") el.editUpscale.checked = false;
+  if (mode === "upscale") el.editDownscale.checked = false;
+  updateProcessButton();
+}
+
+function showComponentNote(host, message) {
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent = message;
+  host.replaceChildren(note);
+}
+
+function unmountEditComponents() {
+  for (const cleanup of mountedComponents) cleanup();
+  mountedComponents = [];
+}
+
+/** Hand the video to Track B's crop box and Track C's scrubber, when they are
+ *  on the page. A component that has not landed yet leaves its section
+ *  disabled with a note, rather than offering an operation with no parameters
+ *  for the worker to refuse.
+ *
+ * The element is the one the panel just mounted, so a component can read the
+ * video's real dimensions off it; the callback is the only thing that comes
+ * back. See EDITOR-COMPONENTS.md. */
+function mountEditComponents() {
+  unmountEditComponents();
+  cropSelection = null;
+  clipSelection = null;
+
+  const video = el.editPlayer.querySelector("video");
+  const components = [
+    {
+      checkbox: el.editCrop,
+      host: el.editCropMount,
+      mount: window.mountCropBox,
+      missing: "Not loaded yet.",
+      apply: (selection) => {
+        cropSelection = selection;
+      },
+    },
+    {
+      checkbox: el.editClip,
+      host: el.editClipMount,
+      mount: window.mountClipScrubber,
+      missing: "Not loaded yet.",
+      apply: (selection) => {
+        clipSelection = selection;
+      },
+    },
+  ];
+
+  for (const component of components) {
+    if (!video || typeof component.mount !== "function") {
+      component.checkbox.checked = false;
+      component.checkbox.disabled = true;
+      showComponentNote(component.host, component.missing);
+      continue;
+    }
+
+    component.checkbox.disabled = false;
+    component.host.replaceChildren();
+    const cleanup = component.mount(video, (selection) => {
+      component.apply(selection);
+      updateProcessButton();
+    });
+    if (typeof cleanup === "function") mountedComponents.push(cleanup);
+  }
+}
+
+function openEditor(job) {
+  if (!job || job.status !== "done") return;
+
+  editingJob = job;
+  el.editSource.textContent = job.filename;
+  el.editResult.hidden = true;
+  el.editProgress.hidden = true;
+  setEditStatus("");
+
+  for (const box of [el.editCrop, el.editClip, el.editDownscale, el.editUpscale, el.editConvert]) {
+    box.checked = false;
+  }
+  setScaleMode(null);
+
+  switchView("edit");
+  mountPlayer(el.editPlayer, job);
+  mountEditComponents();
+  updateProcessButton();
+}
+
+/** Leaving the editor ends the session. The components' listeners and the
+ *  players both outlive their usefulness otherwise, and an edit still being
+ *  followed is stopped -- the result is a library entry, not a draft to come
+ *  back to. */
+function closeEditor() {
+  unmountEditComponents();
+  stopPolling("edit");
+  unmountPlayer(el.editPlayer);
+  unmountPlayer(el.editResultPlayer);
+  editingJob = null;
+}
+
+function showEditResult(job) {
+  el.editProgress.hidden = true;
+  setEditStatus("Done — the result is a new library entry.");
+  el.editResult.hidden = false;
+  el.editResultName.textContent = job.filename;
+  el.editResultDownload.href = job.output_url ?? "#";
+  el.editResultDownload.setAttribute("download", job.filename);
+
+  // A remux or an audio extraction can come back in a container the browser
+  // will not play inline. Offering the download is the honest answer; saying
+  // so beats a black rectangle with no explanation.
+  const mayNotPlayInline = /\.(mkv|mp3)$/i.test(job.filename);
+  el.editResultNote.hidden = !mayNotPlayInline;
+  el.editResultNote.textContent = mayNotPlayInline
+    ? "Your browser may not play this inline — use Download if it does not start."
+    : "";
+
+  mountPlayer(el.editResultPlayer, job);
+  updateProcessButton();
+  // Same as switching to Library: the new job is an ordinary entry now, so
+  // make sure it is there when the user goes back.
+  loadLibrary();
+}
+
+el.editBack.addEventListener("click", () => switchView("library"));
+el.jobEdit.addEventListener("click", () => {
+  if (activeJobDoc) openEditor(activeJobDoc);
+});
+
+for (const box of [el.editCrop, el.editClip, el.editDownscale, el.editUpscale, el.editConvert]) {
+  // The checkbox lives inside <summary>, which is what makes the section
+  // keyboard-reachable. Stopping the click here keeps ticking a box from also
+  // opening or closing its section in browsers that treat the whole summary
+  // as one target.
+  box.addEventListener("click", (event) => event.stopPropagation());
+  box.addEventListener("change", () => {
+    if (box !== el.editDownscale && box !== el.editUpscale) {
+      updateProcessButton();
+      return;
+    }
+    // Ticking one closes the other; unticking either frees them both.
+    const mode = box.checked ? (box === el.editDownscale ? "downscale" : "upscale") : null;
+    setScaleMode(mode);
+  });
+}
+
+el.editForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const operations = editOperations();
+  if (!editingJob || operations.length === 0) return;
+
+  el.editProcess.disabled = true;
+  el.editResult.hidden = true;
+  setEditStatus("Sending the edit...");
+
+  try {
+    const res = await fetch(`${API}/jobs/${editingJob.id}/edit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operations }),
+    });
+
+    if (res.status === 401) {
+      showSignedOut();
+      setAuthStatus("Your session expired. Sign in again.");
+      return;
+    }
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.job_id) {
+      setEditStatus(`Could not start the edit: ${apiErrorMessage(data, res.status)}`);
+      updateProcessButton();
+      return;
+    }
+
+    setEditStatus(PROGRESS_LABEL.queued);
+    followJob("edit", data.job_id, {
+      onJob(job) {
+        el.editProgress.hidden = job.status !== "processing";
+        if (PROGRESS_LABEL[job.status]) setEditStatus(PROGRESS_LABEL[job.status]);
+      },
+      onDone(job) {
+        showEditResult(job);
+      },
+      onFailed(job) {
+        el.editProgress.hidden = true;
+        setEditStatus(`The edit failed: ${job.error ?? "Unknown error"}`);
+        updateProcessButton();
+      },
+      onError(err) {
+        el.editProgress.hidden = true;
+        setEditStatus(`Polling failed: ${err.message}`);
+        updateProcessButton();
+      },
+    });
+  } catch (err) {
+    setEditStatus(`Request failed: ${err.message}`);
+    updateProcessButton();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Library: the caller's own jobs, paginated. GET /jobs does not return a
 // total count, so paging is honest about that -- "Next" is offered only when
 // a full page came back, never a fabricated "of N".
@@ -715,7 +1110,9 @@ function renderLibrary() {
     const name = document.createElement("div");
     name.className = "video-filename";
     name.textContent = job.filename;
-    head.append(name, makeDeleteButton(job));
+    head.append(name);
+    if (job.status === "done") head.append(makeEditButton(job));
+    head.append(makeDeleteButton(job));
     body.appendChild(head);
 
     if (job.status === "failed" && job.error) {
@@ -776,6 +1173,18 @@ function makeDeleteButton(job) {
     event.stopPropagation();
     deleteJob(job);
   });
+  return button;
+}
+
+/** Open the editor on a finished job. The result is a new library entry; the
+ *  source is left exactly where it is. */
+function makeEditButton(job) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "btn-ghost card-edit";
+  button.textContent = "Edit";
+  button.setAttribute("aria-label", `Edit ${job.filename}`);
+  button.addEventListener("click", () => openEditor(job));
   return button;
 }
 
@@ -1016,5 +1425,8 @@ el.adminNext.addEventListener("click", () => {
 // ---------------------------------------------------------------------------
 
 applyAuthMode();
+// The editor's button state is derived from its inputs rather than written
+// into the markup twice; this is the initial pass.
+updateProcessButton();
 // Decide which half of the page to show before anything else runs.
 refreshIdentity();
