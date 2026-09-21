@@ -43,7 +43,10 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
-      - run: npm test
+      # Coverage, not just the tests: the thresholds in package.json's
+      # test:coverage are what stop the player's error paths from quietly
+      # losing their tests.
+      - run: npm run test:coverage
 
   integration:
     name: Integration tests

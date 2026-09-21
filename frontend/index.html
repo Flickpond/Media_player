@@ -10,6 +10,9 @@
       rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap"
     />
+    <!-- Plyr first, ours second: the player is themed by overriding Plyr's own
+         custom properties from style.css, so our sheet has to win. -->
+    <link rel="stylesheet" href="vendor/plyr.css" />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
@@ -238,7 +241,12 @@
                 <div id="job-progress" class="progress-track" hidden>
                   <div class="progress-sweep"></div>
                 </div>
-                <video id="player" controls hidden></video>
+                <!-- Where the Upload tab's player is mounted. app.js puts a
+                     fresh <video> in here per finished job and tears the whole
+                     thing down again: Plyr augments the element it is given
+                     rather than reusing it, and both it and hls.js keep
+                     listeners on that element until they are destroyed. -->
+                <div id="player" class="player-host" hidden></div>
                 <div id="job-actions" class="job-actions" hidden>
                   <button type="button" id="job-retry" class="btn-primary">Try again</button>
                   <button type="button" id="job-choose-different" class="btn-ghost">
@@ -324,6 +332,13 @@
       </main>
     </div>
 
-    <script src="app.js"></script>
+    <!-- hls.js and Plyr are vendored into frontend/vendor/ instead of being
+         pulled from a CDN: the app is deployed for users in mainland China,
+         where both CDNs are unreliable, and these two files decide whether
+         any video plays at all. Order matters -- Plyr has no HLS support of
+         its own, so hls.js loads first and Plyr is wired to it in app.js. -->
+    <script src="vendor/hls.min.js" defer></script>
+    <script src="vendor/plyr.min.js" defer></script>
+    <script src="app.js" defer></script>
   </body>
 </html>

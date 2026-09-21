@@ -7,9 +7,13 @@
 //   POST /auth/logout    -> 204, clears it
 //   GET  /auth/me        -> 200 { id, email, role } | 401
 //   POST /upload         -> 202 { job_id }, sets no cookie
-//   GET  /jobs/{id}      -> { id, filename, status, output_url?, error? }
+//   GET  /jobs/{id}      -> { id, filename, status, output_url?, hls_url?, error? }
 //   GET  /jobs?limit&offset       -> [ ...job shape... ]   (caller's own jobs)
 //   GET  /admin/jobs?limit&offset -> [ ...job shape... ]   (operator only)
+//
+// `hls_url` is sprint 3's adaptive ladder: present when the worker built one,
+// absent on every job uploaded before it and on any job whose ladder failed.
+// The player falls back to `output_url` -- the MP4 -- whenever it is missing.
 //
 // The session cookie is HttpOnly and sent automatically, so nothing here reads
 // or attaches a token -- which is the point: a script cannot steal what it
@@ -139,8 +143,10 @@ function showSignedOut() {
   el.app.hidden = true;
   stopPolling();
   el.activeJob.hidden = true;
+  // Signing out is not just hiding the page: a player left running behind the
+  // sign-in form would keep streaming a video the user can no longer see.
+  unmountPlayersIn(el.app);
   el.player.hidden = true;
-  el.player.removeAttribute("src");
 }
 
 async function refreshIdentity() {
@@ -272,8 +278,7 @@ function resetJobCard() {
   el.activeJob.hidden = true;
   el.jobProgress.hidden = true;
   el.jobActions.hidden = true;
-  el.player.hidden = true;
-  el.player.removeAttribute("src");
+  clearUploadPlayer();
 }
 
 function setBadge(status) {
@@ -414,15 +419,14 @@ async function poll(jobId, attempt = 0) {
   if (job.status === "done") {
     setStatus("Processing complete.");
     el.jobProgress.hidden = true;
-    el.player.src = job.output_url;
-    el.player.hidden = false;
+    mountPlayer(el.player, job);
     return; // Stop polling.
   }
 
   if (job.status === "failed") {
     setStatus(`Processing failed: ${job.error ?? "Unknown error"}`);
     el.jobProgress.hidden = true;
-    el.player.hidden = true;
+    clearUploadPlayer();
     el.jobActions.hidden = false;
     return; // Stop polling.
   }
@@ -438,6 +442,214 @@ async function poll(jobId, attempt = 0) {
   }
 
   pollTimer = setTimeout(() => poll(jobId, attempt + 1), POLL_INTERVAL_MS);
+}
+
+// ---------------------------------------------------------------------------
+// Playback: Plyr for the control bar, hls.js for the adaptive ladder.
+//
+// Every <video> the app builds goes through mountPlayer() and is taken apart
+// again by unmountPlayer(). That is not tidiness: Plyr keeps listeners on the
+// element it was handed and hls.js keeps the element itself, so a Library card
+// opened and closed ten times would leave ten of each running against elements
+// nobody can see. Both libraries are also looked up at call time rather than
+// assumed -- they are vendored files loaded by index.html, and a player that
+// cannot load its library has to leave a plain playable <video> behind, not
+// nothing at all.
+// ---------------------------------------------------------------------------
+
+// The one place "which URL do we play" is decided. The ladder is best-effort
+// on the server, so its absence is a normal case, not an error.
+function playbackSource(job) {
+  if (job.hls_url) return { hls: job.hls_url, fallback: job.output_url ?? null };
+  if (job.output_url) return { hls: null, fallback: job.output_url };
+  return null;
+}
+
+const HLS_MIME = "application/vnd.apple.mpegurl";
+const VENDOR_DIR = "vendor/";
+// hls.js's own "no fixed level" value is -1, which Plyr would render as the
+// menu entry "-1p". Auto gets its own sentinel and its own label instead.
+const AUTO_QUALITY = 0;
+
+// host element -> { video, plyr, hls }. Keyed by host because that is what the
+// card owns; the <video> inside it does not outlive a Plyr destroy().
+const players = new WeakMap();
+
+/** Tear down whatever is mounted on `host` and empty it. Safe to call twice. */
+function unmountPlayer(host) {
+  const state = players.get(host);
+  if (state) {
+    players.delete(host);
+    // hls.js first. Plyr.destroy() puts a *clone* of the media element back
+    // into the DOM, so destroying hls.js afterwards would leave it holding an
+    // element that is no longer the one on the page -- the leak this section
+    // exists to prevent.
+    // Both are cleared as well as destroyed: the quality menu this state built
+    // outlives the player in whatever the browser still holds, and a callback
+    // from it must find nothing to reach into.
+    if (state.hls) {
+      state.hls.destroy();
+      state.hls = null;
+    }
+    if (state.plyr) {
+      state.plyr.destroy();
+      state.plyr = null;
+    }
+  }
+  host.replaceChildren();
+}
+
+/** Take down every player inside `root` -- for the re-renders that throw away
+ *  the cards holding them. */
+function unmountPlayersIn(root) {
+  for (const host of root.querySelectorAll(".player-host")) unmountPlayer(host);
+}
+
+/** The Upload tab's player slot, emptied. */
+function clearUploadPlayer() {
+  unmountPlayer(el.player);
+  el.player.hidden = true;
+}
+
+/** Put a player for `job` into `host`, replacing whatever was there. */
+function mountPlayer(host, job, { autoplay = false } = {}) {
+  unmountPlayer(host);
+
+  const source = playbackSource(job);
+  if (!source) {
+    host.hidden = true;
+    return null;
+  }
+
+  const video = document.createElement("video");
+  // Native controls until Plyr replaces them, and for good if Plyr's file
+  // never arrives. `preload=metadata` is what Plyr needs to size the box.
+  video.controls = true;
+  video.playsInline = true;
+  video.preload = "metadata";
+  if (autoplay) video.autoplay = true;
+
+  host.replaceChildren(video);
+  host.hidden = false;
+
+  const state = { host, video, plyr: null, hls: null };
+  players.set(host, state);
+
+  // Only hand the ladder to something that can actually play it: Safari does
+  // HLS itself, every other browser needs hls.js, and if neither is available
+  // the MP4 is what the user gets.
+  if (source.hls && attachHls(state, source)) return state;
+
+  // Only a fallback that exists gets set: an empty src would have the element
+  // request the page itself. A done job always has an MP4, so the guard is for
+  // the case the API's own contract rules out.
+  if (source.fallback) video.src = source.fallback;
+  startPlyr(state, null);
+  return state;
+}
+
+/** Returns true if the ladder took over the element. */
+function attachHls(state, source) {
+  const { video } = state;
+
+  if (video.canPlayType(HLS_MIME)) {
+    video.src = source.hls;
+    // No level list to pass: Safari's own controls carry the quality menu,
+    // and it switches levels in hardware where hls.js would do it in JS.
+    startPlyr(state, null);
+    return true;
+  }
+
+  const Hls = window.Hls;
+  if (!Hls || !Hls.isSupported()) return false;
+
+  const hls = new Hls();
+  state.hls = hls;
+
+  hls.on(Hls.Events.MANIFEST_PARSED, () => {
+    // Plyr builds its quality menu once, from the list it is given, so the
+    // real level heights have to be known before the player is created --
+    // which is exactly what waiting for this event buys.
+    startPlyr(state, levelHeights(hls));
+  });
+
+  hls.on(Hls.Events.ERROR, (_event, data) => {
+    if (!data.fatal || !source.fallback) return;
+    // Rebuild rather than repoint: this Plyr was built around the ladder's
+    // level list, and its quality menu cannot be rebuilt in place. Deferred
+    // because this runs inside hls.js's own dispatch, and guarded because the
+    // card may have been collapsed while the failure was in flight.
+    setTimeout(() => {
+      if (players.get(state.host) !== state) return;
+      mountPlayer(state.host, { output_url: source.fallback });
+    }, 0);
+  });
+
+  hls.attachMedia(video);
+  hls.loadSource(source.hls);
+  return true;
+}
+
+/** The ladder's heights, highest first, Auto in front. Plyr's menu is built
+ *  from this, so it never offers a rendition the video does not have. */
+function levelHeights(hls) {
+  const heights = hls.levels.map((level) => level.height).filter(Boolean);
+  return [AUTO_QUALITY, ...[...new Set(heights)].sort((a, b) => b - a)];
+}
+
+/** Plyr takes an option click and hands the value back to us; this is where a
+ *  chosen height becomes an hls.js level. */
+function selectLevel(state, height) {
+  const hls = state.hls;
+  if (!hls) return;
+  if (height === AUTO_QUALITY) {
+    hls.currentLevel = -1;
+    return;
+  }
+  const index = hls.levels.findIndex((level) => level.height === height);
+  // currentLevel rather than nextLevel: someone who picks 480p wants 480p now,
+  // and a switch the quality menu does not reflect is a menu that lies.
+  if (index >= 0) hls.currentLevel = index;
+}
+
+function plyrConfig(levels, state) {
+  const config = {
+    // Both of these default to cdn.plyr.io: the icon sprite is fetched as the
+    // player is built and `blankVideo` is loaded by every destroy(), so leaving
+    // them alone puts a third party in the path of every card toggle.
+    iconUrl: `${VENDOR_DIR}plyr.svg`,
+    blankVideo: `${VENDOR_DIR}blank.mp4`,
+    // Plyr has no HLS support of its own -- it cannot read a manifest -- so the
+    // level list and the Auto label have to come from here.
+    i18n: { qualityLabel: { [AUTO_QUALITY]: "Auto" } },
+  };
+
+  if (levels) {
+    config.quality = {
+      // `forced` is Plyr's hook for a source it cannot inspect: it uses this
+      // list instead of looking for <source size> elements, and routes the
+      // picked value to onChange rather than trying to set a URL itself.
+      forced: true,
+      options: levels,
+      onChange: (height) => selectLevel(state, height),
+    };
+  }
+
+  return config;
+}
+
+function startPlyr(state, levels) {
+  const Plyr = window.Plyr;
+  // Nothing to do without the library, and nothing to do twice -- a manifest
+  // can still arrive after the card was collapsed, and a player built into a
+  // detached element would never be torn down by anything.
+  if (typeof Plyr !== "function" || state.plyr) return;
+  if (players.get(state.host) !== state) return;
+
+  state.plyr = new Plyr(state.video, plyrConfig(levels, state));
+  // Without this the settings menu reads "Quality: undefined": Plyr asks the
+  // media element which level it is on, and an hls.js element has no answer.
+  if (levels) state.plyr.quality = AUTO_QUALITY;
 }
 
 // ---------------------------------------------------------------------------
@@ -467,6 +679,10 @@ function makeBadge(status) {
 }
 
 function renderLibrary() {
+  // Re-rendering throws the cards away, and a card can be holding a player.
+  // Both libraries keep listeners on the element they were handed, so they
+  // have to be destroyed before their cards go, not left to the GC.
+  unmountPlayersIn(el.libraryGrid);
   el.libraryGrid.replaceChildren();
   const visible = libraryJobs.filter((j) => libraryFilter === "all" || j.status === libraryFilter);
 
@@ -481,7 +697,9 @@ function renderLibrary() {
     thumb.className = "video-thumb";
     thumb.appendChild(makeBadge(job.status));
 
-    if (job.status === "done" && job.output_url) {
+    // Playable means the API handed back something to play: the ladder or the
+    // MP4. Every done job has the MP4, but the card should not depend on that.
+    if (job.status === "done" && (job.output_url || job.hls_url)) {
       const playIcon = document.createElement("div");
       playIcon.className = "play-overlay";
       thumb.appendChild(playIcon);
@@ -591,20 +809,30 @@ function setLibraryStatus(message) {
   el.libraryStatus.hidden = false;
 }
 
-/** Swap a done card's thumbnail for an inline player, in place, on click. */
-function toggleInlinePlayer(thumb, job) {
-  const existing = thumb.querySelector("video");
-  if (existing) {
-    existing.remove();
-    thumb.classList.remove("expanded");
+/** Swap a done card's thumbnail for an inline player, in place, on click.
+ *
+ * `container` is the Library card's thumbnail or the Admin table's preview
+ * cell -- anything whose click opens the player. The player goes into a
+ * .player-host of its own so that collapsing removes exactly one thing, and
+ * so the badge and the play overlay next to it survive. */
+function toggleInlinePlayer(container, job) {
+  const host = container.querySelector(".player-host");
+  if (host) {
+    unmountPlayer(host);
+    host.remove();
+    container.classList.remove("expanded");
     return;
   }
-  const video = document.createElement("video");
-  video.src = job.output_url;
-  video.controls = true;
-  video.autoplay = true;
-  thumb.appendChild(video);
-  thumb.classList.add("expanded");
+
+  const playerHost = document.createElement("div");
+  playerHost.className = "player-host";
+  // The player sits inside the element whose click opened it, so without this
+  // every press of play, pause or the settings menu would collapse the card
+  // it is playing in.
+  playerHost.addEventListener("click", (event) => event.stopPropagation());
+  container.appendChild(playerHost);
+  mountPlayer(playerHost, job, { autoplay: true });
+  container.classList.add("expanded");
 }
 
 async function loadLibrary() {
@@ -651,6 +879,7 @@ let adminFilter = "all";
 let adminJobs = [];
 
 function renderAdmin() {
+  unmountPlayersIn(el.adminTbody);
   el.adminTbody.replaceChildren();
   const visible = adminJobs.filter((j) => adminFilter === "all" || j.status === adminFilter);
 
@@ -673,14 +902,14 @@ function renderAdmin() {
     // ignores that header by design, the same way the Library grid's
     // click-to-play already does, so this plays the file in place instead.
     const previewCell = document.createElement("td");
-    if (job.status === "done" && job.output_url) {
+    if (job.status === "done" && (job.output_url || job.hls_url)) {
       const watchButton = document.createElement("button");
       watchButton.type = "button";
       watchButton.className = "btn-ghost admin-watch";
       watchButton.textContent = "Watch";
       watchButton.addEventListener("click", () => {
         toggleInlinePlayer(previewCell, job);
-        const playing = previewCell.querySelector("video") !== null;
+        const playing = previewCell.querySelector(".player-host") !== null;
         watchButton.textContent = playing ? "Hide" : "Watch";
       });
       previewCell.appendChild(watchButton);

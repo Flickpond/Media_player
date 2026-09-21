@@ -620,6 +620,36 @@ video {
   background: #000;
 }
 
+/* --- Plyr -------------------------------------------------------------------
+   Plyr draws the box and the corners itself, so the bare-element chrome above
+   would double up on it. The max-height deliberately stays: it is what keeps
+   an unusually tall source from stretching the upload card, and inside Plyr it
+   means the same thing, because object-fit letterboxes the video in whatever
+   box it ends up with. */
+.plyr video {
+  margin-top: 0;
+  border-radius: 0;
+}
+
+/* Plyr is themed through custom properties. Pointing them at the tokens above
+   keeps the player in the app's palette instead of Plyr's default blue, and
+   means restyling it later happens here rather than in a patched copy of
+   vendor/plyr.css. */
+.plyr {
+  --plyr-color-main: var(--accent);
+  --plyr-video-background: #000;
+  --plyr-menu-background: var(--bg-overlay);
+  --plyr-menu-color: var(--text);
+  --plyr-menu-back-border-color: var(--border-subtle);
+  --plyr-menu-back-border-shadow-color: var(--bg-raised);
+  --plyr-tooltip-background: var(--bg-raised);
+  --plyr-tooltip-color: var(--text);
+  --plyr-badge-background: var(--border);
+  --plyr-font-family: var(--font-body);
+  width: 100%;
+  border-radius: 8px;
+}
+
 .job-actions {
   display: flex;
   gap: 10px;
@@ -730,13 +760,19 @@ video {
 .video-thumb.playable:hover .play-overlay::after {
   background: oklch(98% 0.005 260 / 92%);
 }
-.video-thumb.expanded video {
+/* The player fills the thumbnail it replaced, so the card keeps its 16:9
+   shape whatever the video's own ratio is. */
+.video-thumb .player-host {
   position: absolute;
   inset: 0;
-  width: 100%;
+}
+.video-thumb .player-host .plyr {
   height: 100%;
-  margin: 0;
   border-radius: 0;
+}
+.video-thumb .player-host video {
+  height: 100%;
+  width: 100%;
 }
 .video-card-body {
   padding: 14px 16px 16px;
@@ -876,6 +912,12 @@ video {
 }
 .admin-table td video {
   display: block;
+  width: 220px;
+  margin-top: 8px;
+}
+/* Plyr's wrapper is what carries the cell's size; the <video> inside it is
+   sized by Plyr. */
+.admin-table td .plyr {
   width: 220px;
   margin-top: 8px;
 }
