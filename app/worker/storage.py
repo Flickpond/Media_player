@@ -5,9 +5,11 @@ this module. Keeping that seam separate from the job state machine lets Sprint 2
 replace the copy stand-in with FFmpeg without changing task orchestration.
 """
 
+import logging
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Protocol
@@ -26,6 +28,23 @@ from app.services.minio_client import bucket, internal_client
 UNPROCESSABLE_VIDEO = (
     "the video could not be processed; it may be corrupt or in a format we cannot read"
 )
+
+logger = logging.getLogger("app.worker.storage")
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessingResult:
+    """What a processing step produced.
+
+    `hls_key` is optional because the adaptive ladder is best-effort: a job
+    whose ladder failed is still `done` and still playable through
+    `output_key`. A step that does not build ladders at all simply leaves it
+    `None`, which is why this is a dataclass with a default rather than a
+    tuple every caller has to unpack in the right order.
+    """
+
+    output_key: str
+    hls_key: str | None = None
 
 
 class ObjectStoreError(RuntimeError):
@@ -57,7 +76,7 @@ class ObjectStore(Protocol):
 
     def download_file(self, *, key: str, destination: str) -> None: ...
 
-    def upload_file(self, *, key: str, source: str) -> None: ...
+    def upload_file(self, *, key: str, source: str, content_type: str = ...) -> None: ...
 
 
 class MinioObjectStore:
@@ -105,11 +124,16 @@ class MinioObjectStore:
                 user_message="the uploaded file could not be read back; please try again",
             ) from exc
 
-    def upload_file(self, *, key: str, source: str) -> None:
+    def upload_file(self, *, key: str, source: str, content_type: str = "video/mp4") -> None:
+        # The default keeps every existing caller writing MP4s unchanged. It
+        # is a parameter because the HLS ladder writes playlists and segments
+        # through this same method, and a manifest served as `video/mp4` is
+        # the kind of mistake that looks fine in storage and only surfaces as
+        # a player refusing to load it.
         from minio.error import S3Error
 
         try:
-            self._client.fput_object(self._bucket, key, source, content_type="video/mp4")
+            self._client.fput_object(self._bucket, key, source, content_type=content_type)
         except S3Error as exc:
             raise ObjectStoreError(
                 f"upload failed for {key}: {exc.code}",
@@ -118,8 +142,8 @@ class MinioObjectStore:
 
 
 class ProcessingStep(Protocol):
-    def run(self, *, job_id: UUID, source_key: str) -> str:
-        """Process the source object and return the resulting output key."""
+    def run(self, *, job_id: UUID, source_key: str) -> ProcessingResult:
+        """Process the source object and return what it produced."""
 
 
 class FfmpegProcessor:
@@ -136,6 +160,8 @@ class FfmpegProcessor:
         max_height: int = 720,
         timeout_seconds: int = 870,
         runner=subprocess.run,
+        ladder=None,
+        prober=None,
     ) -> None:
         self._store = store
         self._output_prefix = output_prefix.strip("/")
@@ -145,12 +171,40 @@ class FfmpegProcessor:
         self._max_height = max_height
         self._timeout_seconds = timeout_seconds
         self._runner = runner
+        # Both injected rather than imported: `app.worker.probe` and
+        # `app.worker.hls` each import this module, so importing them back
+        # here at module level would be a cycle. Injection also means the
+        # MP4 path can be tested without either of them existing.
+        # Leaving them None produces an MP4 and no ladder, which is exactly
+        # what the pre-HLS behaviour was.
+        self._ladder = ladder
+        self._prober = prober
 
     def output_key_for(self, *, job_id: UUID, source_key: str) -> str:
         stem = PurePosixPath(source_key).stem or str(job_id)
         return f"{self._output_prefix}/{job_id}/{stem}.mp4"
 
-    def run(self, *, job_id: UUID, source_key: str) -> str:
+    def _build_ladder(self, *, job_id: UUID, source_path: Path) -> str | None:
+        """The adaptive ladder, or None if it could not be built.
+
+        Every failure in here is swallowed on purpose. The contract it keeps
+        is that HLS is additive: by the time this runs the MP4 is already
+        uploaded and the job is going to reach `done` whatever happens next,
+        so a broken ladder costs the viewer a quality selector, never the
+        video itself. The diagnostic goes to the log, which is the audience
+        that can act on it.
+        """
+        if self._ladder is None or self._prober is None:
+            return None
+
+        try:
+            probe = self._prober(source_path)
+            return self._ladder.build(job_id=job_id, source_path=source_path, probe=probe)
+        except Exception:
+            logger.exception("job %s: HLS ladder failed; the MP4 output stands", job_id)
+            return None
+
+    def run(self, *, job_id: UUID, source_key: str) -> ProcessingResult:
         if not self._store.object_exists(source_key):
             raise ObjectStoreError(
                 f"source object missing from storage: {source_key}",
@@ -214,7 +268,10 @@ class FfmpegProcessor:
                     user_message=UNPROCESSABLE_VIDEO,
                 )
             self._store.upload_file(key=output_key, source=str(output_path))
-            return output_key
+            # Only after the MP4 is safely uploaded, and from the source we
+            # already have on disk rather than downloading it a second time.
+            hls_key = self._build_ladder(job_id=job_id, source_path=source_path)
+            return ProcessingResult(output_key=output_key, hls_key=hls_key)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -230,7 +287,7 @@ class CopyProcessor:
         filename = PurePosixPath(source_key).name or f"{job_id}.bin"
         return f"{self._output_prefix}/{job_id}/{filename}"
 
-    def run(self, *, job_id: UUID, source_key: str) -> str:
+    def run(self, *, job_id: UUID, source_key: str) -> ProcessingResult:
         if not self._store.object_exists(source_key):
             raise ObjectStoreError(
                 f"source object missing from storage: {source_key}",
@@ -239,11 +296,19 @@ class CopyProcessor:
 
         output_key = self.output_key_for(job_id=job_id, source_key=source_key)
         self._store.copy_object(source_key=source_key, output_key=output_key)
-        return output_key
+        # No ladder: this stand-in never decoded the video in the first place.
+        return ProcessingResult(output_key=output_key)
 
 
 @lru_cache
 def get_processing_step() -> ProcessingStep:
+    # Imported here, not at module level: both of these import this module,
+    # so a top-level import would be a cycle.
+    from functools import partial
+
+    from app.worker.hls import HlsLadderBuilder
+    from app.worker.probe import probe_source
+
     settings = get_settings()
     # The internal client: the worker only ever reads and writes objects.
     store = MinioObjectStore(internal_client(), bucket=bucket())
@@ -255,4 +320,16 @@ def get_processing_step() -> ProcessingStep:
         crf=settings.worker_ffmpeg_crf,
         max_height=settings.worker_ffmpeg_max_height,
         timeout_seconds=settings.worker_ffmpeg_timeout_seconds,
+        ladder=HlsLadderBuilder(
+            store,
+            output_prefix=settings.worker_output_prefix,
+            ffmpeg_binary=settings.worker_ffmpeg_binary,
+            preset=settings.worker_ffmpeg_preset,
+            timeout_seconds=settings.worker_ffmpeg_timeout_seconds,
+        ),
+        prober=partial(
+            probe_source,
+            ffprobe_binary=settings.worker_ffprobe_binary,
+            timeout_seconds=settings.worker_ffprobe_timeout_seconds,
+        ),
     )

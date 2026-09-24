@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, OperatorUser
+from app.config import get_settings
 from app.database import get_session
 from app.errors import ApiNotFoundError
 from app.models.job import Job, JobStatus
@@ -38,12 +39,23 @@ async def _to_response(job: Job, signer: OutputUrlSigner) -> JobResponse:
     if job.status == JobStatus.DONE.value and job.output_key:
         output_url = await signer.create_url(job.output_key)
 
+    # Not a presigned object URL like `output_url`: a ladder is hundreds of
+    # objects, so this points at the API route that signs each part on
+    # demand behind the owner check. The prefix comes from settings because
+    # nginx strips `/api/` before the app sees it -- the app's own routing
+    # table does not know the path the browser used.
+    hls_url = None
+    if job.status == JobStatus.DONE.value and job.hls_key:
+        prefix = get_settings().api_public_prefix.rstrip("/")
+        hls_url = f"{prefix}/jobs/{job.id}/hls/master.m3u8"
+
     error = job.error if job.status == JobStatus.FAILED.value else None
     return JobResponse(
         id=job.id,
         filename=job.filename,
         status=JobStatus(job.status),
         output_url=output_url,
+        hls_url=hls_url,
         error=error,
     )
 
@@ -106,7 +118,19 @@ async def _delete_job_and_storage(
     if job is None:
         return None
 
-    for key in filter(None, (job.source_key, job.output_key)):
+    keys = list(filter(None, (job.source_key, job.output_key)))
+
+    # An HLS ladder is hundreds of objects under one prefix, so deleting
+    # `hls_key` alone would remove the master playlist and orphan every
+    # segment it pointed at -- invisible, and growing with each delete.
+    if job.hls_key:
+        prefix = job.hls_key.rsplit("/", 1)[0] + "/"
+        try:
+            keys.extend(name for name, _ in await storage.list_objects(prefix))
+        except Exception:
+            logger.warning("job %s: could not list HLS objects under %s", job_id, prefix)
+
+    for key in keys:
         try:
             await storage.delete_object(key)
         except Exception:

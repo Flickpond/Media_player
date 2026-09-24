@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.auth import router as auth_router
+from app.api.hls import router as hls_router
 from app.api.jobs import admin_router
 from app.api.jobs import router as jobs_router
 from app.api.uploads import MAX_FILE_SIZE
@@ -59,6 +60,9 @@ def create_app() -> FastAPI:
     )
     application.include_router(auth_router)
     application.include_router(jobs_router)
+    # Before jobs_router would also work; after is fine because the paths do
+    # not overlap -- /jobs/{id}/hls/... has a segment /jobs/{id} cannot match.
+    application.include_router(hls_router)
     application.include_router(admin_router)
     application.include_router(uploads_router)
 

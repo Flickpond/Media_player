@@ -7,7 +7,7 @@ import pytest
 from app.models.job import JobStatus
 from app.repositories.jobs import InvalidJobTransitionError, JobNotFoundError
 from app.worker import tasks
-from app.worker.storage import UNPROCESSABLE_VIDEO, ObjectStoreError
+from app.worker.storage import UNPROCESSABLE_VIDEO, ObjectStoreError, ProcessingResult
 from app.worker.tasks import JobOutcome, process_job_async, readable_error
 
 
@@ -17,6 +17,7 @@ class FakeJob:
         self.source_key = source_key
         self.status = status
         self.output_key: str | None = None
+        self.hls_key: str | None = None
         self.error: str | None = None
         self.filename = "demo.mp4"
 
@@ -57,11 +58,14 @@ class FakeJobStore:
     async def mark_processing(self, _session, job_id: UUID) -> FakeJob:
         return self._transition(job_id, JobStatus.QUEUED, JobStatus.PROCESSING)
 
-    async def mark_done(self, _session, job_id: UUID, *, output_key: str) -> FakeJob:
+    async def mark_done(
+        self, _session, job_id: UUID, *, output_key: str, hls_key: str | None = None
+    ) -> FakeJob:
         if not output_key.strip():
             raise ValueError("output_key must not be empty")
         job = self._transition(job_id, JobStatus.PROCESSING, JobStatus.DONE)
         job.output_key = output_key
+        job.hls_key = hls_key
         return job
 
     async def mark_failed(self, _session, job_id: UUID, *, error: str) -> FakeJob:
@@ -73,16 +77,23 @@ class FakeJobStore:
 
 
 class FakeStep:
-    def __init__(self, *, output_key: str = "outputs/demo.mp4", raises: Exception | None = None):
+    def __init__(
+        self,
+        *,
+        output_key: str = "outputs/demo.mp4",
+        hls_key: str | None = None,
+        raises: Exception | None = None,
+    ):
         self.output_key = output_key
+        self.hls_key = hls_key
         self.raises = raises
         self.calls: list[tuple[UUID, str]] = []
 
-    def run(self, *, job_id: UUID, source_key: str) -> str:
+    def run(self, *, job_id: UUID, source_key: str) -> ProcessingResult:
         self.calls.append((job_id, source_key))
         if self.raises is not None:
             raise self.raises
-        return self.output_key
+        return ProcessingResult(output_key=self.output_key, hls_key=self.hls_key)
 
 
 @pytest.fixture
@@ -310,7 +321,7 @@ async def test_losing_the_row_before_recording_completion_is_logged_not_raised(
 ):
     job = store.add()
 
-    async def stolen(_session, job_id, *, output_key):
+    async def stolen(_session, job_id, *, output_key, hls_key=None):
         raise InvalidJobTransitionError(f"job {job_id} is failed, not processing")
 
     monkeypatch.setattr(tasks, "mark_done", stolen)
