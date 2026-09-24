@@ -21,31 +21,31 @@ browser -> nginx -> FastAPI -> MinIO + PostgreSQL + Redis queue
 
 ### Where to read next
 
-| File | What it is |
-| --- | --- |
-| [`docs/known-traps.md`](docs/known-traps.md) | **Read this before changing anything.** 23 traps already hit here, most of which fail silently. |
-| [`docs/contract.md`](docs/contract.md) | The shared schema and API boundary. Changing it means telling the team. |
-| [`docs/c-recovery-input-safety.md`](docs/c-recovery-input-safety.md) | Sprint 3, track C: retry API, crop/clip validation, tests, and B/E integration instructions. |
-| [`docs/sprint2-report.md`](docs/sprint2-report.md) | **What sprint 2 delivered**: contributions, evidence, BUG-04 to BUG-12. |
-| [`docs/sprint2-plan.md`](docs/sprint2-plan.md) | Sprint 2: all eight items, what each decided, and why. |
-| [`docs/sprint2-backlog.md`](docs/sprint2-backlog.md) | The sprint 1 review's findings, P1-P9. All closed; kept for the reasoning. |
-| [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md) | Why authentication is shaped the way it is. |
-| [`docs/scaling-notes.md`](docs/scaling-notes.md) | What serving 50 concurrent users would take. |
-| [`docs/sprint1-report.md`](docs/sprint1-report.md) | What sprint 1 built, by whom, and what broke. |
-| [`docs/sprint1-plan.md`](docs/sprint1-plan.md), [`docs/proposal.md`](docs/proposal.md) | The original plan and module proposal. |
-| [`CLAUDE.md`](CLAUDE.md) | Working notes: commands, ownership, conventions. |
+| File                                                                                   | What it is                                                                                      |
+| -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| [`docs/known-traps.md`](docs/known-traps.md)                                           | **Read this before changing anything.** 23 traps already hit here, most of which fail silently. |
+| [`docs/contract.md`](docs/contract.md)                                                 | The shared schema and API boundary. Changing it means telling the team.                         |
+| [`docs/c-recovery-input-safety.md`](docs/c-recovery-input-safety.md)                   | Sprint 3, track C: retry API, crop/clip validation, tests, and B/E integration instructions.    |
+| [`docs/sprint2-report.md`](docs/sprint2-report.md)                                     | **What sprint 2 delivered**: contributions, evidence, BUG-04 to BUG-12.                         |
+| [`docs/sprint2-plan.md`](docs/sprint2-plan.md)                                         | Sprint 2: all eight items, what each decided, and why.                                          |
+| [`docs/sprint2-backlog.md`](docs/sprint2-backlog.md)                                   | The sprint 1 review's findings, P1-P9. All closed; kept for the reasoning.                      |
+| [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md)                               | Why authentication is shaped the way it is.                                                     |
+| [`docs/scaling-notes.md`](docs/scaling-notes.md)                                       | What serving 50 concurrent users would take.                                                    |
+| [`docs/sprint1-report.md`](docs/sprint1-report.md)                                     | What sprint 1 built, by whom, and what broke.                                                   |
+| [`docs/sprint1-plan.md`](docs/sprint1-plan.md), [`docs/proposal.md`](docs/proposal.md) | The original plan and module proposal.                                                          |
+| [`CLAUDE.md`](CLAUDE.md)                                                               | Working notes: commands, ownership, conventions.                                                |
 
 ## Architecture
 
-| Component | Responsibility | Default local address |
-| --- | --- | --- |
-| nginx (frontend) | Serves the UI; proxies `/api/` and `/videos/`. The only public port. | `http://localhost:3000` (deploy: `:80`) |
-| FastAPI | Upload and job-status HTTP API | `127.0.0.1:8000` (loopback only) |
-| PostgreSQL | Durable job metadata and processing state | `127.0.0.1:5432` |
-| Redis + RQ | Delivery of job IDs to workers | `127.0.0.1:6379` |
-| MinIO | Original and processed video objects | API `127.0.0.1:9000`, console `127.0.0.1:9001` (both loopback only) |
-| Worker | FFmpeg transcode to 720p MP4, one-way state transitions | Internal Compose service |
-| Reaper | Fails rows a dead worker abandoned; sweeps orphaned objects | Internal Compose service |
+| Component        | Responsibility                                                       | Default local address                                               |
+| ---------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| nginx (frontend) | Serves the UI; proxies `/api/` and `/videos/`. The only public port. | `http://localhost:3000` (deploy: `:80`)                             |
+| FastAPI          | Upload and job-status HTTP API                                       | `127.0.0.1:8000` (loopback only)                                    |
+| PostgreSQL       | Durable job metadata and processing state                            | `127.0.0.1:5432`                                                    |
+| Redis + RQ       | Delivery of job IDs to workers                                       | `127.0.0.1:6379`                                                    |
+| MinIO            | Original and processed video objects                                 | API `127.0.0.1:9000`, console `127.0.0.1:9001` (both loopback only) |
+| Worker           | FFmpeg transcode to 720p MP4, one-way state transitions              | Internal Compose service                                            |
+| Reaper           | Fails rows a dead worker abandoned; sweeps orphaned objects          | Internal Compose service                                            |
 
 The queue coordinates work, PostgreSQL records state, and MinIO stores the video bytes. Workers remain stateless, so any worker replica can process any queued job.
 
@@ -231,11 +231,11 @@ processing:
 
 Returns `202`. Rejections:
 
-| Status | Body | When |
-| --- | --- | --- |
-| `413` | `{"error": "file too large"}` | Above the 100MB limit. Checked against `Content-Length` before the body is read, and again against the bytes that arrived. |
-| `415` | `{"error": "unsupported media type"}` | The declared `Content-Type` is not an accepted video type. |
-| `415` | `{"error": "file content is not a recognized video format"}` | The bytes are not a recognised video container. The declared type is attacker-supplied — a browser fills it in from the file extension — so the content is checked too. |
+| Status | Body                                                         | When                                                                                                                                                                    |
+| ------ | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `413`  | `{"error": "file too large"}`                                | Above the 100MB limit. Checked against `Content-Length` before the body is read, and again against the bytes that arrived.                                              |
+| `415`  | `{"error": "unsupported media type"}`                        | The declared `Content-Type` is not an accepted video type.                                                                                                              |
+| `415`  | `{"error": "file content is not a recognized video format"}` | The bytes are not a recognised video container. The declared type is attacker-supplied — a browser fills it in from the file extension — so the content is checked too. |
 
 The stored object is served back under the *sniffed* type, not the client's claim.
 
@@ -342,18 +342,26 @@ npm test                                    # unit tests, mocked fetch
 RUN_LIVE_TESTS=1 npx vitest run app.live.test.js   # against the running stack
 ```
 
+CI sends Python and frontend coverage to SonarCloud for static security
+analysis. Create the SonarCloud project with Automatic Analysis disabled, then
+configure the repository with the `SONAR_TOKEN` secret and the
+`SONAR_PROJECT_KEY` and `SONAR_ORGANIZATION` variables. The Quality Gate should
+require an A security rating on new code. The scan currently reports its gate
+result without blocking the PR while the initial baseline is reviewed; forked
+PRs without access to the secret skip the scan with a warning.
+
 ## Environment variables
 
-| Variable | Meaning | Local default |
-| --- | --- | --- |
-| `POSTGRES_DSN` | Async API and worker database connection | Compose PostgreSQL service |
-| `REDIS_HOST` / `REDIS_PORT` | Queue connection | `redis` / `6379` |
-| `REDIS_QUEUE` | Shared RQ queue | `video_jobs` |
-| `MINIO_ENDPOINT` | Internal object-store address | `minio:9000` |
-| `MINIO_PUBLIC_ENDPOINT` | Browser-accessible signed-URL address | `127.0.0.1:9000` |
-| `MINIO_BUCKET` | Source and output object bucket | `videos` |
-| `MINIO_REGION` | Signing region | `us-east-1` |
-| `MINIO_USE_SSL` | Whether MinIO uses TLS | `false` |
+| Variable                    | Meaning                                  | Local default              |
+| --------------------------- | ---------------------------------------- | -------------------------- |
+| `POSTGRES_DSN`              | Async API and worker database connection | Compose PostgreSQL service |
+| `REDIS_HOST` / `REDIS_PORT` | Queue connection                         | `redis` / `6379`           |
+| `REDIS_QUEUE`               | Shared RQ queue                          | `video_jobs`               |
+| `MINIO_ENDPOINT`            | Internal object-store address            | `minio:9000`               |
+| `MINIO_PUBLIC_ENDPOINT`     | Browser-accessible signed-URL address    | `127.0.0.1:9000`           |
+| `MINIO_BUCKET`              | Source and output object bucket          | `videos`                   |
+| `MINIO_REGION`              | Signing region                           | `us-east-1`                |
+| `MINIO_USE_SSL`             | Whether MinIO uses TLS                   | `false`                    |
 
 See [`.env.example`](.env.example) for the complete list. Never commit `.env` or real credentials.
 
