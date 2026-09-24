@@ -111,7 +111,7 @@ describe.skipIf(!live)("frontend against the live stack", () => {
     expect(el.dropzone.classList.contains("busy")).toBe(false);
 
     // The player must have a URL a browser can actually fetch.
-    const src = el.player.getAttribute("src");
+    const src = el.player.querySelector("video").getAttribute("src");
     expect(src).toContain("/videos/outputs/");
     const played = await fetch(src);
     expect(played.ok).toBe(true);

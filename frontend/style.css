@@ -620,6 +620,36 @@ video {
   background: #000;
 }
 
+/* --- Plyr -------------------------------------------------------------------
+   Plyr draws the box and the corners itself, so the bare-element chrome above
+   would double up on it. The max-height deliberately stays: it is what keeps
+   an unusually tall source from stretching the upload card, and inside Plyr it
+   means the same thing, because object-fit letterboxes the video in whatever
+   box it ends up with. */
+.plyr video {
+  margin-top: 0;
+  border-radius: 0;
+}
+
+/* Plyr is themed through custom properties. Pointing them at the tokens above
+   keeps the player in the app's palette instead of Plyr's default blue, and
+   means restyling it later happens here rather than in a patched copy of
+   vendor/plyr.css. */
+.plyr {
+  --plyr-color-main: var(--accent);
+  --plyr-video-background: #000;
+  --plyr-menu-background: var(--bg-overlay);
+  --plyr-menu-color: var(--text);
+  --plyr-menu-back-border-color: var(--border-subtle);
+  --plyr-menu-back-border-shadow-color: var(--bg-raised);
+  --plyr-tooltip-background: var(--bg-raised);
+  --plyr-tooltip-color: var(--text);
+  --plyr-badge-background: var(--border);
+  --plyr-font-family: var(--font-body);
+  width: 100%;
+  border-radius: 8px;
+}
+
 .job-actions {
   display: flex;
   gap: 10px;
@@ -640,6 +670,137 @@ video {
 }
 
 /* --- filter chips ------------------------------------------------------------ */
+
+/* --- the editing panel -------------------------------------------------------
+   Two columns: the video being edited on the left, the five operations on the
+   right. The sections are <details>, so the open/closed state and the keyboard
+   behaviour come from the platform rather than from a click handler. */
+
+.edit-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.edit-source-name {
+  color: var(--text);
+  font-weight: 500;
+}
+.edit-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.edit-stage {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.edit-panel {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 16px;
+}
+.edit-panel-title {
+  margin: 0 0 12px;
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.edit-op {
+  border-top: 1px solid var(--border-subtle);
+}
+.edit-op:first-of-type {
+  border-top: none;
+}
+.edit-op summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 2px;
+  cursor: pointer;
+  font-size: 14px;
+  list-style: none;
+}
+.edit-op summary::-webkit-details-marker {
+  display: none;
+}
+/* The disclosure arrow, drawn rather than an icon font: it has to line up with
+   the checkbox on the left and the name next to it. */
+.edit-op summary::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-right: 1.5px solid var(--text-faint);
+  border-bottom: 1.5px solid var(--text-faint);
+  transform: rotate(45deg);
+  transition: transform 0.15s;
+}
+.edit-op[open] summary::after {
+  transform: rotate(-135deg);
+}
+.edit-op input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.edit-op input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+}
+.edit-op-name {
+  font-weight: 500;
+}
+.edit-op-hint {
+  color: var(--text-faint);
+  font-size: 11.5px;
+  text-align: right;
+}
+.edit-op-body {
+  padding: 2px 2px 16px 25px;
+}
+.edit-mount:empty {
+  display: none;
+}
+.edit-panel .field {
+  margin-bottom: 10px;
+}
+.edit-panel .hint {
+  margin: 6px 0 0;
+}
+.edit-panel #edit-process {
+  margin-top: 16px;
+}
+.edit-result {
+  margin-top: 18px;
+  padding: 14px 16px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+}
+.edit-result-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.edit-result-head .job-filename {
+  flex: 1;
+}
+.card-edit {
+  padding: 3px 10px;
+  font-size: 11.5px;
+}
+
+@media (max-width: 900px) {
+  .edit-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 
 .filter-row {
   display: flex;
@@ -730,13 +891,19 @@ video {
 .video-thumb.playable:hover .play-overlay::after {
   background: oklch(98% 0.005 260 / 92%);
 }
-.video-thumb.expanded video {
+/* The player fills the thumbnail it replaced, so the card keeps its 16:9
+   shape whatever the video's own ratio is. */
+.video-thumb .player-host {
   position: absolute;
   inset: 0;
-  width: 100%;
+}
+.video-thumb .player-host .plyr {
   height: 100%;
-  margin: 0;
   border-radius: 0;
+}
+.video-thumb .player-host video {
+  height: 100%;
+  width: 100%;
 }
 .video-card-body {
   padding: 14px 16px 16px;
@@ -876,6 +1043,12 @@ video {
 }
 .admin-table td video {
   display: block;
+  width: 220px;
+  margin-top: 8px;
+}
+/* Plyr's wrapper is what carries the cell's size; the <video> inside it is
+   sized by Plyr. */
+.admin-table td .plyr {
   width: 220px;
   margin-top: 8px;
 }
