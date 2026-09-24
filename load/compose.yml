@@ -1,0 +1,9 @@
+services:
+  api:
+    image: flickpond-api:load
+  worker:
+    image: flickpond-worker:load
+  reaper:
+    image: flickpond-worker:load
+  minio:
+    image: flickpond-minio:load

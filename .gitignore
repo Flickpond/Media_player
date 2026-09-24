@@ -12,6 +12,7 @@ frontend/coverage/
 .scannerwork/
 zap-reports/
 .mypy_cache/
+load/results/
 
 # Credentials and keys. Never commit these -- a key in a public repo is
 # compromised the moment it is pushed, whether or not anyone notices.
