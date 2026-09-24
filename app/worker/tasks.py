@@ -100,7 +100,7 @@ async def process_job_async(
     # 2. Do the work with no database connection held. The step is blocking
     #    object-store I/O, so it goes to a thread rather than stalling the loop.
     try:
-        output_key = await asyncio.to_thread(step.run, job_id=job_id, source_key=source_key)
+        result = await asyncio.to_thread(step.run, job_id=job_id, source_key=source_key)
     except Exception as exc:
         reason = readable_error(exc)
         # The diagnostic half lives here and only here: the traceback, and for
@@ -121,12 +121,19 @@ async def process_job_async(
     # 3. Record success.
     async with session_factory() as session:
         try:
-            await mark_done(session, job_id, output_key=output_key)
+            await mark_done(
+                session, job_id, output_key=result.output_key, hls_key=result.hls_key
+            )
         except (JobNotFoundError, InvalidJobTransitionError) as write_exc:
             logger.error("job %s: could not record completion: %s", job_id, write_exc)
             return JobOutcome.SKIPPED
 
-    logger.info("job %s: processing -> done (output_key=%s)", job_id, output_key)
+    logger.info(
+        "job %s: processing -> done (output_key=%s, hls_key=%s)",
+        job_id,
+        result.output_key,
+        result.hls_key or "none",
+    )
     return JobOutcome.DONE
 
 

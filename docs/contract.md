@@ -110,7 +110,30 @@ DELETE /admin/jobs/{id}
   204                          // unscoped -- deletes any user's job
   403 { "error": "operator role required" }
   404 { "error": "not found" } // unknown id only; ownership is never checked
+
+GET /jobs/{id}/hls/{path}
+  307 -> a freshly presigned, time-limited object URL (Location header)
+  404 { "error": "not found" } // unknown id, not this caller's job, no ladder
+                                // built, or a `path` outside a ladder's shape
 ```
+
+**The HLS route.** A ladder is hundreds of objects, so they cannot all be
+signed in advance the way `output_url` is. Each part is signed on demand
+behind the same ownership check as every other job route, and returned as a
+redirect -- segment traffic goes straight from the browser to object storage
+and never through the API.
+
+`path` is an allowlist of the shapes FFmpeg writes (`master.m3u8`,
+`v0/index.m3u8`, `v0/seg00001.ts`), not a blocklist of traversal tricks. It
+is interpolated into an object key, which is where sprint 1's review found
+the unsanitised upload filename; anything else is 404, never 400, since a 400
+would confirm the job exists and only the path was wrong.
+
+Playlists are **not** rewritten. FFmpeg writes relative segment names, so a
+player resolving one against `/jobs/{id}/hls/v0/index.m3u8` asks this same
+route for `/jobs/{id}/hls/v0/seg00001.ts`. Serving the ladder under a path
+that mirrors its storage layout is what removes the need for any manifest
+post-processing.
 
 `GET /admin/jobs` is sprint 1's operator story ("see all jobs, so I can spot
 stuck jobs"), which used to be what `GET /jobs` did for everybody. It is a
@@ -133,10 +156,16 @@ create_job(session, *, owner_id, filename, source_key, job_id=None)
 get_job(session, job_id, *, owner_id=None)  # None = any owner (worker, reaper)
 list_jobs(session, *, owner_id=None, limit=50, offset=0)  # None = every owner
 mark_processing(session, job_id)
-mark_done(session, job_id, *, output_key)
+mark_done(session, job_id, *, output_key, hls_key=None)
 mark_failed(session, job_id, *, error)
 prepare_retry(session, job_id, *, owner_id)  # API: enqueue, then commit; rollback on failure
 ```
+
+`hls_key` is optional because the adaptive ladder is best-effort: a `done`
+job with no ladder is a legitimate state, and the database carries no
+constraint tying the two together. It is written on every transition, so a
+retry that produces no ladder clears a stale key rather than leaving it
+pointing at segments the new run has overwritten.
 
 The worker is the sole caller of the three processing `mark_*` functions.
 Each transition is a conditional update. `mark_processing` first locks the

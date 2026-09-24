@@ -57,6 +57,15 @@ class Settings(BaseSettings):
     # an error.
     worker_ffprobe_binary: str = "ffprobe"
     worker_ffprobe_timeout_seconds: int = 30
+
+    # Where the browser reaches this API, which is not where the API thinks
+    # it lives: nginx proxies `/api/` and strips the prefix, so a path built
+    # from the app's own routing table is missing it. Same problem, and the
+    # same shape of answer, as `minio_public_endpoint`.
+    #
+    # Only HLS needs this. Every other URL the API hands out is either
+    # absolute (a presigned object URL) or resolved by the page itself.
+    api_public_prefix: str = "/api"
     worker_ffmpeg_preset: str = "veryfast"
     worker_ffmpeg_crf: int = 23
     worker_ffmpeg_max_height: int = 720

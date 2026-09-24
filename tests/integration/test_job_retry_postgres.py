@@ -33,7 +33,7 @@ from app.repositories.jobs import (
 )
 from app.worker import tasks
 from app.worker.probe import SourceProbe
-from app.worker.storage import ObjectStoreError
+from app.worker.storage import ObjectStoreError, ProcessingResult
 from app.worker.tasks import JobOutcome, process_job_async
 from app.worker.validation import validate_clip, validate_crop
 from tests.conftest import authenticate_as
@@ -221,7 +221,7 @@ async def test_a_failed_rq_delivery_can_retry_the_same_id_and_reach_done(
             attempts.append((job_id, source_key))
             if len(attempts) == 1:
                 raise ObjectStoreError("temporary test fault", user_message="please retry")
-            return f"outputs/{job_id}/result.mp4"
+            return ProcessingResult(output_key=f"outputs/{job_id}/result.mp4")
 
     step = Step()
 
@@ -298,7 +298,7 @@ async def test_bs_adapter_reports_a_bad_edit_through_the_worker_and_polling_api(
             except ValueError as exc:
                 raise ObjectStoreError("edit validation failed", user_message=str(exc)) from exc
             ffmpeg()
-            return f"outputs/{job_id}/result.mp4"
+            return ProcessingResult(output_key=f"outputs/{job_id}/result.mp4")
 
     async with session_factory() as session:
         job = await create_job(

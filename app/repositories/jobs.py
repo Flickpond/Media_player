@@ -88,11 +88,16 @@ async def _transition(
     expected_status: JobStatus,
     next_status: JobStatus,
     output_key: str | None = None,
+    hls_key: str | None = None,
     error: str | None = None,
 ) -> Job:
     values: dict[str, object | None] = {
         "status": next_status.value,
         "output_key": output_key,
+        # Written on every transition, like the others, so a retry that
+        # produces no ladder clears a stale key rather than leaving it
+        # pointing at segments the new run has already overwritten.
+        "hls_key": hls_key,
         "error": error,
         "updated_at": func.now(),
     }
@@ -130,7 +135,15 @@ async def mark_processing(session: AsyncSession, job_id: UUID) -> Job:
     )
 
 
-async def mark_done(session: AsyncSession, job_id: UUID, *, output_key: str) -> Job:
+async def mark_done(
+    session: AsyncSession, job_id: UUID, *, output_key: str, hls_key: str | None = None
+) -> Job:
+    """`hls_key` is optional because the adaptive ladder is best-effort.
+
+    A `done` job with no ladder is a legitimate state, not a missing write:
+    the MP4 in `output_key` is the fallback, and the database deliberately
+    carries no constraint tying the two together.
+    """
     if not output_key.strip():
         raise ValueError("output_key must not be empty")
     return await _transition(
@@ -139,6 +152,7 @@ async def mark_done(session: AsyncSession, job_id: UUID, *, output_key: str) -> 
         expected_status=JobStatus.PROCESSING,
         next_status=JobStatus.DONE,
         output_key=output_key,
+        hls_key=hls_key,
     )
 
 

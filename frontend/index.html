@@ -10,6 +10,9 @@
       rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap"
     />
+    <!-- Plyr first, ours second: the player is themed by overriding Plyr's own
+         custom properties from style.css, so our sheet has to win. -->
+    <link rel="stylesheet" href="vendor/plyr.css" />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
@@ -219,6 +222,7 @@
                 <div class="job-head">
                   <span id="job-filename" class="job-filename"></span>
                   <span id="job-badge" class="badge badge-queued"></span>
+                  <button type="button" id="job-edit" class="btn-ghost card-edit" hidden>Edit</button>
                   <button
                     type="button"
                     id="job-delete"
@@ -238,7 +242,12 @@
                 <div id="job-progress" class="progress-track" hidden>
                   <div class="progress-sweep"></div>
                 </div>
-                <video id="player" controls hidden></video>
+                <!-- Where the Upload tab's player is mounted. app.js puts a
+                     fresh <video> in here per finished job and tears the whole
+                     thing down again: Plyr augments the element it is given
+                     rather than reusing it, and both it and hls.js keep
+                     listeners on that element until they are destroyed. -->
+                <div id="player" class="player-host" hidden></div>
                 <div id="job-actions" class="job-actions" hidden>
                   <button type="button" id="job-retry" class="btn-primary">Try again</button>
                   <button type="button" id="job-choose-different" class="btn-ghost">
@@ -321,9 +330,137 @@
             </button>
           </div>
         </section>
+
+        <!-- One shared editing view, opened from a finished job on the upload
+             card or from any Library entry. The player is the same player the
+             rest of the app uses; crop and clip are Track B's and Track C's
+             components, mounted into the two empty divs (see
+             EDITOR-COMPONENTS.md for the contract they implement). -->
+        <section id="view-edit" class="view" hidden>
+          <div class="view-header edit-header">
+            <div>
+              <h1>Edit</h1>
+              <p class="muted">
+                Editing <span id="edit-source" class="edit-source-name"></span>
+              </p>
+            </div>
+            <button type="button" id="edit-back" class="btn-ghost">Back to library</button>
+          </div>
+
+          <div class="edit-layout">
+            <div class="edit-stage">
+              <div id="edit-player" class="player-host"></div>
+              <p id="edit-status" class="status" hidden></p>
+              <div id="edit-progress" class="progress-track" hidden>
+                <div class="progress-sweep"></div>
+              </div>
+
+              <div id="edit-result" class="edit-result" hidden>
+                <div class="edit-result-head">
+                  <span id="edit-result-name" class="job-filename"></span>
+                  <a id="edit-result-download" class="btn-ghost" download>Download</a>
+                </div>
+                <p id="edit-result-note" class="hint" hidden></p>
+                <div id="edit-result-player" class="player-host"></div>
+              </div>
+            </div>
+
+            <form id="edit-form" class="edit-panel">
+              <p class="edit-panel-title">Operations</p>
+
+              <details class="edit-op">
+                <summary>
+                  <input type="checkbox" id="edit-crop" />
+                  <span class="edit-op-name">Crop</span>
+                  <span class="edit-op-hint">draw a box on a paused frame</span>
+                </summary>
+                <div class="edit-op-body">
+                  <div id="edit-crop-mount" class="edit-mount"></div>
+                </div>
+              </details>
+
+              <details class="edit-op">
+                <summary>
+                  <input type="checkbox" id="edit-clip" />
+                  <span class="edit-op-name">Clip</span>
+                  <span class="edit-op-hint">keep a range of the timeline</span>
+                </summary>
+                <div class="edit-op-body">
+                  <div id="edit-clip-mount" class="edit-mount"></div>
+                </div>
+              </details>
+
+              <details class="edit-op">
+                <summary>
+                  <input type="checkbox" id="edit-downscale" />
+                  <span class="edit-op-name">Downscale</span>
+                  <span class="edit-op-hint">smaller, keeps the frame</span>
+                </summary>
+                <div class="edit-op-body">
+                  <label class="field">
+                    <span class="field-label">Height</span>
+                    <select id="edit-downscale-height">
+                      <option value="480">480p</option>
+                      <option value="360">360p</option>
+                      <option value="240">240p</option>
+                    </select>
+                  </label>
+                </div>
+              </details>
+
+              <details class="edit-op">
+                <summary>
+                  <input type="checkbox" id="edit-upscale" />
+                  <span class="edit-op-name">Upscale</span>
+                  <span class="edit-op-hint">larger, lanczos resample</span>
+                </summary>
+                <div class="edit-op-body">
+                  <label class="field">
+                    <span class="field-label">Height</span>
+                    <select id="edit-upscale-height">
+                      <option value="1080">1080p</option>
+                      <option value="1440">1440p</option>
+                    </select>
+                  </label>
+                  <p class="hint">A resample, not real super-resolution.</p>
+                </div>
+              </details>
+
+              <details class="edit-op">
+                <summary>
+                  <input type="checkbox" id="edit-convert" />
+                  <span class="edit-op-name">Convert</span>
+                  <span class="edit-op-hint">change the container</span>
+                </summary>
+                <div class="edit-op-body">
+                  <label class="field">
+                    <span class="field-label">Format</span>
+                    <select id="edit-convert-format">
+                      <option value="mkv">MKV, keeps the video</option>
+                      <option value="mp3">MP3, audio only</option>
+                    </select>
+                  </label>
+                  <p class="hint">Not every browser plays these inline — use Download.</p>
+                </div>
+              </details>
+
+              <button type="submit" id="edit-process" class="btn-primary btn-full" disabled>
+                Process
+              </button>
+              <p id="edit-hint" class="hint"></p>
+            </form>
+          </div>
+        </section>
       </main>
     </div>
 
-    <script src="app.js"></script>
+    <!-- hls.js and Plyr are vendored into frontend/vendor/ instead of being
+         pulled from a CDN: the app is deployed for users in mainland China,
+         where both CDNs are unreliable, and these two files decide whether
+         any video plays at all. Order matters -- Plyr has no HLS support of
+         its own, so hls.js loads first and Plyr is wired to it in app.js. -->
+    <script src="vendor/hls.min.js" defer></script>
+    <script src="vendor/plyr.min.js" defer></script>
+    <script src="app.js" defer></script>
   </body>
 </html>

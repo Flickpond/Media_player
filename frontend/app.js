@@ -7,9 +7,13 @@
 //   POST /auth/logout    -> 204, clears it
 //   GET  /auth/me        -> 200 { id, email, role } | 401
 //   POST /upload         -> 202 { job_id }, sets no cookie
-//   GET  /jobs/{id}      -> { id, filename, status, output_url?, error? }
+//   GET  /jobs/{id}      -> { id, filename, status, output_url?, hls_url?, error? }
 //   GET  /jobs?limit&offset       -> [ ...job shape... ]   (caller's own jobs)
 //   GET  /admin/jobs?limit&offset -> [ ...job shape... ]   (operator only)
+//
+// `hls_url` is sprint 3's adaptive ladder: present when the worker built one,
+// absent on every job uploaded before it and on any job whose ladder failed.
+// The player falls back to `output_url` -- the MP4 -- whenever it is missing.
 //
 // The session cookie is HttpOnly and sent automatically, so nothing here reads
 // or attaches a token -- which is the point: a script cannot steal what it
@@ -67,6 +71,7 @@ const el = {
   activeJob: document.getElementById("active-job"),
   jobFilename: document.getElementById("job-filename"),
   jobBadge: document.getElementById("job-badge"),
+  jobEdit: document.getElementById("job-edit"),
   jobDelete: document.getElementById("job-delete"),
   jobProgress: document.getElementById("job-progress"),
   player: document.getElementById("player"),
@@ -91,6 +96,31 @@ const el = {
   adminPrev: document.getElementById("admin-prev"),
   adminNext: document.getElementById("admin-next"),
   adminPageLabel: document.getElementById("admin-page-label"),
+
+  viewEdit: document.getElementById("view-edit"),
+  editBack: document.getElementById("edit-back"),
+  editSource: document.getElementById("edit-source"),
+  editPlayer: document.getElementById("edit-player"),
+  editStatus: document.getElementById("edit-status"),
+  editProgress: document.getElementById("edit-progress"),
+  editResult: document.getElementById("edit-result"),
+  editResultName: document.getElementById("edit-result-name"),
+  editResultDownload: document.getElementById("edit-result-download"),
+  editResultNote: document.getElementById("edit-result-note"),
+  editResultPlayer: document.getElementById("edit-result-player"),
+  editForm: document.getElementById("edit-form"),
+  editCrop: document.getElementById("edit-crop"),
+  editCropMount: document.getElementById("edit-crop-mount"),
+  editClip: document.getElementById("edit-clip"),
+  editClipMount: document.getElementById("edit-clip-mount"),
+  editDownscale: document.getElementById("edit-downscale"),
+  editDownscaleHeight: document.getElementById("edit-downscale-height"),
+  editUpscale: document.getElementById("edit-upscale"),
+  editUpscaleHeight: document.getElementById("edit-upscale-height"),
+  editConvert: document.getElementById("edit-convert"),
+  editConvertFormat: document.getElementById("edit-convert-format"),
+  editProcess: document.getElementById("edit-process"),
+  editHint: document.getElementById("edit-hint"),
 };
 
 const STATUS_LABEL = { queued: "Queued", processing: "Processing", done: "Done", failed: "Failed" };
@@ -139,8 +169,10 @@ function showSignedOut() {
   el.app.hidden = true;
   stopPolling();
   el.activeJob.hidden = true;
+  // Signing out is not just hiding the page: a player left running behind the
+  // sign-in form would keep streaming a video the user can no longer see.
+  unmountPlayersIn(el.app);
   el.player.hidden = true;
-  el.player.removeAttribute("src");
 }
 
 async function refreshIdentity() {
@@ -210,17 +242,30 @@ el.logout.addEventListener("click", async () => {
 // ---------------------------------------------------------------------------
 
 const NAV_BUTTONS = { upload: el.navUpload, library: el.navLibrary, admin: el.navAdmin };
-const VIEWS = { upload: el.viewUpload, library: el.viewLibrary, admin: el.viewAdmin };
+// The editor has no nav button of its own: it is opened from a job, not
+// browsed to, and the nav entry it belongs to is Library.
+const VIEWS = {
+  upload: el.viewUpload,
+  library: el.viewLibrary,
+  admin: el.viewAdmin,
+  edit: el.viewEdit,
+};
 
 function switchView(name) {
   if (name === "admin" && (!currentUser || currentUser.role !== "operator")) {
     name = "upload";
   }
+  // Leaving the editor ends the session: its player would otherwise keep
+  // streaming a video that is no longer on screen, and the components it
+  // mounted would keep their own listeners alive.
+  if (name !== "edit") closeEditor();
   for (const [key, section] of Object.entries(VIEWS)) {
     section.hidden = key !== name;
   }
   for (const [key, button] of Object.entries(NAV_BUTTONS)) {
-    button.classList.toggle("active", key === name);
+    // The editor has no nav button; it is reached from Library, so Library
+    // stays lit while it is open rather than leaving the nav with nothing on.
+    button.classList.toggle("active", key === name || (name === "edit" && key === "library"));
   }
   if (name === "library") loadLibrary();
   if (name === "admin") loadAdmin();
@@ -236,12 +281,15 @@ el.navAdmin.addEventListener("click", () => switchView("admin"));
 // escape hatch is choosing a different file, not waiting forever).
 // ---------------------------------------------------------------------------
 
-let pollTimer = null;
 let lastFile = null;
 let uploading = false;
 let activeJobId = null;
+// The last job document the upload card was showing, so its Edit button has
+// something to hand the editor.
+let activeJobDoc = null;
 
 const POLL_INTERVAL_MS = 2000;
+const PROGRESS_LABEL = { queued: "Queued...", processing: "Processing..." };
 // 30 polls is a minute. The transcode step finishes well inside that under
 // normal load, so past this something is wrong -- most likely a worker that
 // died holding the job, which leaves the row at `processing` with nobody left
@@ -255,11 +303,67 @@ function setStatus(message) {
   el.status.hidden = false;
 }
 
-function stopPolling() {
-  if (pollTimer !== null) {
-    clearTimeout(pollTimer);
-    pollTimer = null;
+// One follower per surface. The upload card and the editor watch different
+// jobs, so starting an upload must not stop an edit that is still running.
+// The counter above each timer is what makes an abandoned poll harmless: a
+// response that arrives after its follower was replaced is dropped rather
+// than drawn over whatever replaced it.
+const pollTimers = { upload: null, edit: null };
+const pollRuns = { upload: 0, edit: 0 };
+
+function stopPolling(scope) {
+  for (const key of scope ? [scope] : Object.keys(pollTimers)) {
+    pollRuns[key] += 1;
+    if (pollTimers[key] !== null) {
+      clearTimeout(pollTimers[key]);
+      pollTimers[key] = null;
+    }
   }
+}
+
+/** Follow one job until it stops changing, handing every response to the
+ *  caller. Both surfaces want the same loop with different chrome around it,
+ *  so the loop lives here and the chrome is passed in.
+ *
+ * Handlers: onJob(job, attempt) for every response, then exactly one of
+ * onDone(job) / onFailed(job), or onError(err) if the request itself fails. */
+function followJob(scope, jobId, handlers) {
+  const run = ++pollRuns[scope];
+
+  const tick = async (attempt) => {
+    pollTimers[scope] = null;
+
+    let job;
+    try {
+      const res = await fetch(`${API}/jobs/${jobId}`);
+      if (res.status === 401) {
+        showSignedOut();
+        setAuthStatus("Your session expired. Sign in again.");
+        return;
+      }
+      job = await res.json();
+    } catch (err) {
+      if (pollRuns[scope] !== run) return;
+      handlers.onError(err);
+      return; // Stop on network errors to avoid a tight loop.
+    }
+
+    if (pollRuns[scope] !== run) return; // Replaced while this was in flight.
+    handlers.onJob(job, attempt);
+
+    if (job.status === "done") {
+      handlers.onDone(job);
+      return;
+    }
+    if (job.status === "failed") {
+      handlers.onFailed(job);
+      return;
+    }
+
+    pollTimers[scope] = setTimeout(() => tick(attempt + 1), POLL_INTERVAL_MS);
+  };
+
+  tick(0);
 }
 
 function setBusy(busy) {
@@ -272,8 +376,9 @@ function resetJobCard() {
   el.activeJob.hidden = true;
   el.jobProgress.hidden = true;
   el.jobActions.hidden = true;
-  el.player.hidden = true;
-  el.player.removeAttribute("src");
+  el.jobEdit.hidden = true;
+  activeJobDoc = null;
+  clearUploadPlayer();
 }
 
 function setBadge(status) {
@@ -387,58 +492,560 @@ async function handleFile(file) {
     setBadge("queued");
     activeJobId = data.job_id;
     setBusy(false);
-    poll(data.job_id);
+    pollUploadJob(data.job_id);
   } catch (err) {
     setStatus(`Request failed: ${err.message}`);
     setBusy(false);
   }
 }
 
-async function poll(jobId, attempt = 0) {
-  let job;
+/** The upload card's half of the loop: badge, progress sweep, and the two
+ *  ways a job can end with the form still in the user's hands. */
+function pollUploadJob(jobId) {
+  followJob("upload", jobId, {
+    onJob(job, attempt) {
+      activeJobDoc = job;
+      setBadge(job.status);
+      el.jobEdit.hidden = job.status !== "done";
+      el.jobProgress.hidden = job.status !== "processing";
+
+      if (attempt >= SLOW_AFTER_POLLS) {
+        setStatus(`Still working on it — this is taking longer than expected. Job ${jobId}`);
+        // Give the form back; a stuck job otherwise never releases it.
+        el.jobActions.hidden = false;
+      } else {
+        setStatus(PROGRESS_LABEL[job.status] ?? job.status);
+      }
+    },
+    onDone(job) {
+      setStatus("Processing complete.");
+      mountPlayer(el.player, job);
+    },
+    onFailed(job) {
+      setStatus(`Processing failed: ${job.error ?? "Unknown error"}`);
+      clearUploadPlayer();
+      el.jobActions.hidden = false;
+    },
+    onError(err) {
+      setStatus(`Polling failed: ${err.message}`);
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Playback: Plyr for the control bar, hls.js for the adaptive ladder.
+//
+// Every <video> the app builds goes through mountPlayer() and is taken apart
+// again by unmountPlayer(). That is not tidiness: Plyr keeps listeners on the
+// element it was handed and hls.js keeps the element itself, so a Library card
+// opened and closed ten times would leave ten of each running against elements
+// nobody can see. Both libraries are also looked up at call time rather than
+// assumed -- they are vendored files loaded by index.html, and a player that
+// cannot load its library has to leave a plain playable <video> behind, not
+// nothing at all.
+// ---------------------------------------------------------------------------
+
+// The one place "which URL do we play" is decided. The ladder is best-effort
+// on the server, so its absence is a normal case, not an error.
+function playbackSource(job) {
+  if (job.hls_url) return { hls: job.hls_url, fallback: job.output_url ?? null };
+  if (job.output_url) return { hls: null, fallback: job.output_url };
+  return null;
+}
+
+const HLS_MIME = "application/vnd.apple.mpegurl";
+const VENDOR_DIR = "vendor/";
+// hls.js's own "no fixed level" value is -1, which Plyr would render as the
+// menu entry "-1p". Auto gets its own sentinel and its own label instead.
+const AUTO_QUALITY = 0;
+
+// host element -> { video, plyr, hls }. Keyed by host because that is what the
+// card owns; the <video> inside it does not outlive a Plyr destroy().
+const players = new WeakMap();
+
+/** Tear down whatever is mounted on `host` and empty it. Safe to call twice. */
+function unmountPlayer(host) {
+  const state = players.get(host);
+  if (state) {
+    players.delete(host);
+    // hls.js first. Plyr.destroy() puts a *clone* of the media element back
+    // into the DOM, so destroying hls.js afterwards would leave it holding an
+    // element that is no longer the one on the page -- the leak this section
+    // exists to prevent.
+    // Both are cleared as well as destroyed: the quality menu this state built
+    // outlives the player in whatever the browser still holds, and a callback
+    // from it must find nothing to reach into.
+    if (state.hls) {
+      state.hls.destroy();
+      state.hls = null;
+    }
+    if (state.plyr) {
+      state.plyr.destroy();
+      state.plyr = null;
+    }
+  }
+  host.replaceChildren();
+}
+
+/** Take down every player inside `root` -- for the re-renders that throw away
+ *  the cards holding them. */
+function unmountPlayersIn(root) {
+  for (const host of root.querySelectorAll(".player-host")) unmountPlayer(host);
+}
+
+/** The Upload tab's player slot, emptied. */
+function clearUploadPlayer() {
+  unmountPlayer(el.player);
+  el.player.hidden = true;
+}
+
+/** Put a player for `job` into `host`, replacing whatever was there. */
+function mountPlayer(host, job, { autoplay = false } = {}) {
+  unmountPlayer(host);
+
+  const source = playbackSource(job);
+  if (!source) {
+    host.hidden = true;
+    return null;
+  }
+
+  const video = document.createElement("video");
+  // Native controls until Plyr replaces them, and for good if Plyr's file
+  // never arrives. `preload=metadata` is what Plyr needs to size the box.
+  video.controls = true;
+  video.playsInline = true;
+  video.preload = "metadata";
+  if (autoplay) video.autoplay = true;
+
+  host.replaceChildren(video);
+  host.hidden = false;
+
+  const state = { host, video, plyr: null, hls: null };
+  players.set(host, state);
+
+  // Only hand the ladder to something that can actually play it: Safari does
+  // HLS itself, every other browser needs hls.js, and if neither is available
+  // the MP4 is what the user gets.
+  if (source.hls && attachHls(state, source)) return state;
+
+  // Only a fallback that exists gets set: an empty src would have the element
+  // request the page itself. A done job always has an MP4, so the guard is for
+  // the case the API's own contract rules out.
+  if (source.fallback) video.src = source.fallback;
+  startPlyr(state, null);
+  return state;
+}
+
+/** Returns true if the ladder took over the element. */
+function attachHls(state, source) {
+  const { video } = state;
+
+  if (video.canPlayType(HLS_MIME)) {
+    video.src = source.hls;
+    // No level list to pass: Safari's own controls carry the quality menu,
+    // and it switches levels in hardware where hls.js would do it in JS.
+    startPlyr(state, null);
+    return true;
+  }
+
+  const Hls = window.Hls;
+  if (!Hls || !Hls.isSupported()) return false;
+
+  const hls = new Hls();
+  state.hls = hls;
+
+  hls.on(Hls.Events.MANIFEST_PARSED, () => {
+    // Plyr builds its quality menu once, from the list it is given, so the
+    // real level heights have to be known before the player is created --
+    // which is exactly what waiting for this event buys.
+    startPlyr(state, levelHeights(hls));
+  });
+
+  hls.on(Hls.Events.ERROR, (_event, data) => {
+    if (!data.fatal || !source.fallback) return;
+    // Rebuild rather than repoint: this Plyr was built around the ladder's
+    // level list, and its quality menu cannot be rebuilt in place. Deferred
+    // because this runs inside hls.js's own dispatch, and guarded because the
+    // card may have been collapsed while the failure was in flight.
+    setTimeout(() => {
+      if (players.get(state.host) !== state) return;
+      mountPlayer(state.host, { output_url: source.fallback });
+    }, 0);
+  });
+
+  hls.attachMedia(video);
+  hls.loadSource(source.hls);
+  return true;
+}
+
+/** The ladder's heights, highest first, Auto in front. Plyr's menu is built
+ *  from this, so it never offers a rendition the video does not have. */
+function levelHeights(hls) {
+  const heights = hls.levels.map((level) => level.height).filter(Boolean);
+  return [AUTO_QUALITY, ...[...new Set(heights)].sort((a, b) => b - a)];
+}
+
+/** Plyr takes an option click and hands the value back to us; this is where a
+ *  chosen height becomes an hls.js level. */
+function selectLevel(state, height) {
+  const hls = state.hls;
+  if (!hls) return;
+  if (height === AUTO_QUALITY) {
+    hls.currentLevel = -1;
+    return;
+  }
+  const index = hls.levels.findIndex((level) => level.height === height);
+  // currentLevel rather than nextLevel: someone who picks 480p wants 480p now,
+  // and a switch the quality menu does not reflect is a menu that lies.
+  if (index >= 0) hls.currentLevel = index;
+}
+
+function plyrConfig(levels, state) {
+  const config = {
+    // Both of these default to cdn.plyr.io: the icon sprite is fetched as the
+    // player is built and `blankVideo` is loaded by every destroy(), so leaving
+    // them alone puts a third party in the path of every card toggle.
+    iconUrl: `${VENDOR_DIR}plyr.svg`,
+    blankVideo: `${VENDOR_DIR}blank.mp4`,
+    // Plyr has no HLS support of its own -- it cannot read a manifest -- so the
+    // level list and the Auto label have to come from here.
+    i18n: { qualityLabel: { [AUTO_QUALITY]: "Auto" } },
+  };
+
+  if (levels) {
+    config.quality = {
+      // `forced` is Plyr's hook for a source it cannot inspect: it uses this
+      // list instead of looking for <source size> elements, and routes the
+      // picked value to onChange rather than trying to set a URL itself.
+      forced: true,
+      options: levels,
+      onChange: (height) => selectLevel(state, height),
+    };
+  }
+
+  return config;
+}
+
+function startPlyr(state, levels) {
+  const Plyr = window.Plyr;
+  // Nothing to do without the library, and nothing to do twice -- a manifest
+  // can still arrive after the card was collapsed, and a player built into a
+  // detached element would never be torn down by anything.
+  if (typeof Plyr !== "function" || state.plyr) return;
+  if (players.get(state.host) !== state) return;
+
+  state.plyr = new Plyr(state.video, plyrConfig(levels, state));
+  // Without this the settings menu reads "Quality: undefined": Plyr asks the
+  // media element which level it is on, and an hls.js element has no answer.
+  if (levels) state.plyr.quality = AUTO_QUALITY;
+}
+
+// ---------------------------------------------------------------------------
+// The editing panel. One shared view, opened from a finished job on the upload
+// card or from any Library entry. It builds the body sprint3-plan.md §1
+// specifies:
+//
+//   POST /jobs/{id}/edit   { "operations": [ { "operation": ..., "params": {...} } ] }
+//     -> 202 { job_id }
+//
+// The array's order is not execution order -- the worker runs clip, crop,
+// scale, convert whatever order it is handed -- so the panel sends them in the
+// order the sections are stacked, which is the order a person reads them.
+//
+// Crop and clip are Track B's and Track C's components; this panel mounts them
+// and owns nothing else about them. EDITOR-COMPONENTS.md is the contract.
+// ---------------------------------------------------------------------------
+
+/** The job being edited. Null unless the editor is open. */
+let editingJob = null;
+/** What the mounted components last reported, or null until the user has made
+ *  a selection -- which is what keeps Process disabled for a section that is
+ *  ticked but not yet set up. */
+let cropSelection = null;
+let clipSelection = null;
+/** Cleanup functions for the components mounted in this editing session. */
+let mountedComponents = [];
+
+function setEditStatus(message) {
+  el.editStatus.textContent = message;
+  el.editStatus.hidden = !message;
+}
+
+/** The API answers a validation failure with FastAPI's detail list and most
+ *  other things with { error }. Both have to reach the user as one line. */
+function apiErrorMessage(data, status) {
+  if (typeof data?.error === "string" && data.error) return data.error;
+  if (typeof data?.detail === "string" && data.detail) return `${data.detail} (HTTP ${status})`;
+  if (Array.isArray(data?.detail) && data.detail.length) {
+    const parts = data.detail.map((item) => item.msg ?? JSON.stringify(item));
+    return `${parts.join("; ")} (HTTP ${status})`;
+  }
+  return `HTTP ${status}`;
+}
+
+/** The request body, or an empty array when nothing is configured. */
+function editOperations() {
+  const operations = [];
+
+  if (el.editClip.checked && clipSelection) {
+    operations.push({
+      operation: "clip",
+      params: { start: clipSelection.start, end: clipSelection.end },
+    });
+  }
+  if (el.editCrop.checked && cropSelection) {
+    operations.push({
+      operation: "crop",
+      params: {
+        x: cropSelection.x,
+        y: cropSelection.y,
+        w: cropSelection.w,
+        h: cropSelection.h,
+      },
+    });
+  }
+  // Downscale and upscale are one slot, not two. The checkboxes are kept
+  // mutually exclusive, and this is the second lock on the same door: the
+  // combination the worker answers with a 422 cannot be built even if the
+  // first lock is ever broken.
+  if (el.editDownscale.checked) {
+    operations.push({
+      operation: "downscale",
+      params: { height: Number(el.editDownscaleHeight.value) },
+    });
+  } else if (el.editUpscale.checked) {
+    operations.push({
+      operation: "upscale",
+      params: { height: Number(el.editUpscaleHeight.value) },
+    });
+  }
+  if (el.editConvert.checked) {
+    operations.push({
+      operation: "convert",
+      params: { format: el.editConvertFormat.value },
+    });
+  }
+
+  return operations;
+}
+
+/** Process is offered exactly when there is something to send, and the line
+ *  under it says which of the two reasons it is. */
+function updateProcessButton() {
+  const count = editOperations().length;
+  el.editProcess.disabled = count === 0;
+  el.editHint.textContent = count
+    ? `${count} operation${count === 1 ? "" : "s"} in one pass.`
+    : "Check an operation and set it up first — a box to crop, a range to keep, or one of the dropdowns.";
+}
+
+/** Downscale and upscale are mutually exclusive, so ticking one closes the
+ *  other rather than letting the panel build a request the worker refuses. */
+function setScaleMode(mode) {
+  el.editDownscale.disabled = mode === "upscale";
+  el.editUpscale.disabled = mode === "downscale";
+  if (mode === "downscale") el.editUpscale.checked = false;
+  if (mode === "upscale") el.editDownscale.checked = false;
+  updateProcessButton();
+}
+
+function showComponentNote(host, message) {
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent = message;
+  host.replaceChildren(note);
+}
+
+function unmountEditComponents() {
+  for (const cleanup of mountedComponents) cleanup();
+  mountedComponents = [];
+}
+
+/** Hand the video to Track B's crop box and Track C's scrubber, when they are
+ *  on the page. A component that has not landed yet leaves its section
+ *  disabled with a note, rather than offering an operation with no parameters
+ *  for the worker to refuse.
+ *
+ * The element is the one the panel just mounted, so a component can read the
+ * video's real dimensions off it; the callback is the only thing that comes
+ * back. See EDITOR-COMPONENTS.md. */
+function mountEditComponents() {
+  unmountEditComponents();
+  cropSelection = null;
+  clipSelection = null;
+
+  const video = el.editPlayer.querySelector("video");
+  const components = [
+    {
+      checkbox: el.editCrop,
+      host: el.editCropMount,
+      mount: window.mountCropBox,
+      missing: "Not loaded yet.",
+      apply: (selection) => {
+        cropSelection = selection;
+      },
+    },
+    {
+      checkbox: el.editClip,
+      host: el.editClipMount,
+      mount: window.mountClipScrubber,
+      missing: "Not loaded yet.",
+      apply: (selection) => {
+        clipSelection = selection;
+      },
+    },
+  ];
+
+  for (const component of components) {
+    if (!video || typeof component.mount !== "function") {
+      component.checkbox.checked = false;
+      component.checkbox.disabled = true;
+      showComponentNote(component.host, component.missing);
+      continue;
+    }
+
+    component.checkbox.disabled = false;
+    component.host.replaceChildren();
+    const cleanup = component.mount(video, (selection) => {
+      component.apply(selection);
+      updateProcessButton();
+    });
+    if (typeof cleanup === "function") mountedComponents.push(cleanup);
+  }
+}
+
+function openEditor(job) {
+  if (!job || job.status !== "done") return;
+
+  editingJob = job;
+  el.editSource.textContent = job.filename;
+  el.editResult.hidden = true;
+  el.editProgress.hidden = true;
+  setEditStatus("");
+
+  for (const box of [el.editCrop, el.editClip, el.editDownscale, el.editUpscale, el.editConvert]) {
+    box.checked = false;
+  }
+  setScaleMode(null);
+
+  switchView("edit");
+  mountPlayer(el.editPlayer, job);
+  mountEditComponents();
+  updateProcessButton();
+}
+
+/** Leaving the editor ends the session. The components' listeners and the
+ *  players both outlive their usefulness otherwise, and an edit still being
+ *  followed is stopped -- the result is a library entry, not a draft to come
+ *  back to. */
+function closeEditor() {
+  unmountEditComponents();
+  stopPolling("edit");
+  unmountPlayer(el.editPlayer);
+  unmountPlayer(el.editResultPlayer);
+  editingJob = null;
+}
+
+function showEditResult(job) {
+  el.editProgress.hidden = true;
+  setEditStatus("Done — the result is a new library entry.");
+  el.editResult.hidden = false;
+  el.editResultName.textContent = job.filename;
+  el.editResultDownload.href = job.output_url ?? "#";
+  el.editResultDownload.setAttribute("download", job.filename);
+
+  // A remux or an audio extraction can come back in a container the browser
+  // will not play inline. Offering the download is the honest answer; saying
+  // so beats a black rectangle with no explanation.
+  const mayNotPlayInline = /\.(mkv|mp3)$/i.test(job.filename);
+  el.editResultNote.hidden = !mayNotPlayInline;
+  el.editResultNote.textContent = mayNotPlayInline
+    ? "Your browser may not play this inline — use Download if it does not start."
+    : "";
+
+  mountPlayer(el.editResultPlayer, job);
+  updateProcessButton();
+  // Same as switching to Library: the new job is an ordinary entry now, so
+  // make sure it is there when the user goes back.
+  loadLibrary();
+}
+
+el.editBack.addEventListener("click", () => switchView("library"));
+el.jobEdit.addEventListener("click", () => {
+  if (activeJobDoc) openEditor(activeJobDoc);
+});
+
+for (const box of [el.editCrop, el.editClip, el.editDownscale, el.editUpscale, el.editConvert]) {
+  // The checkbox lives inside <summary>, which is what makes the section
+  // keyboard-reachable. Stopping the click here keeps ticking a box from also
+  // opening or closing its section in browsers that treat the whole summary
+  // as one target.
+  box.addEventListener("click", (event) => event.stopPropagation());
+  box.addEventListener("change", () => {
+    if (box !== el.editDownscale && box !== el.editUpscale) {
+      updateProcessButton();
+      return;
+    }
+    // Ticking one closes the other; unticking either frees them both.
+    const mode = box.checked ? (box === el.editDownscale ? "downscale" : "upscale") : null;
+    setScaleMode(mode);
+  });
+}
+
+el.editForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const operations = editOperations();
+  if (!editingJob || operations.length === 0) return;
+
+  el.editProcess.disabled = true;
+  el.editResult.hidden = true;
+  setEditStatus("Sending the edit...");
+
   try {
-    const res = await fetch(`${API}/jobs/${jobId}`);
+    const res = await fetch(`${API}/jobs/${editingJob.id}/edit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operations }),
+    });
+
     if (res.status === 401) {
       showSignedOut();
       setAuthStatus("Your session expired. Sign in again.");
       return;
     }
-    job = await res.json();
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.job_id) {
+      setEditStatus(`Could not start the edit: ${apiErrorMessage(data, res.status)}`);
+      updateProcessButton();
+      return;
+    }
+
+    setEditStatus(PROGRESS_LABEL.queued);
+    followJob("edit", data.job_id, {
+      onJob(job) {
+        el.editProgress.hidden = job.status !== "processing";
+        if (PROGRESS_LABEL[job.status]) setEditStatus(PROGRESS_LABEL[job.status]);
+      },
+      onDone(job) {
+        showEditResult(job);
+      },
+      onFailed(job) {
+        el.editProgress.hidden = true;
+        setEditStatus(`The edit failed: ${job.error ?? "Unknown error"}`);
+        updateProcessButton();
+      },
+      onError(err) {
+        el.editProgress.hidden = true;
+        setEditStatus(`Polling failed: ${err.message}`);
+        updateProcessButton();
+      },
+    });
   } catch (err) {
-    setStatus(`Polling failed: ${err.message}`);
-    return; // Stop on network errors to avoid a tight loop.
+    setEditStatus(`Request failed: ${err.message}`);
+    updateProcessButton();
   }
-
-  setBadge(job.status);
-
-  if (job.status === "done") {
-    setStatus("Processing complete.");
-    el.jobProgress.hidden = true;
-    el.player.src = job.output_url;
-    el.player.hidden = false;
-    return; // Stop polling.
-  }
-
-  if (job.status === "failed") {
-    setStatus(`Processing failed: ${job.error ?? "Unknown error"}`);
-    el.jobProgress.hidden = true;
-    el.player.hidden = true;
-    el.jobActions.hidden = false;
-    return; // Stop polling.
-  }
-
-  el.jobProgress.hidden = job.status !== "processing";
-
-  if (attempt >= SLOW_AFTER_POLLS) {
-    setStatus(`Still working on it — this is taking longer than expected. Job ${jobId}`);
-    el.jobActions.hidden = false; // Give the form back; a stuck job otherwise never releases it.
-  } else {
-    const labels = { queued: "Queued...", processing: "Processing..." };
-    setStatus(labels[job.status] ?? job.status);
-  }
-
-  pollTimer = setTimeout(() => poll(jobId, attempt + 1), POLL_INTERVAL_MS);
-}
+});
 
 // ---------------------------------------------------------------------------
 // Library: the caller's own jobs, paginated. GET /jobs does not return a
@@ -467,6 +1074,10 @@ function makeBadge(status) {
 }
 
 function renderLibrary() {
+  // Re-rendering throws the cards away, and a card can be holding a player.
+  // Both libraries keep listeners on the element they were handed, so they
+  // have to be destroyed before their cards go, not left to the GC.
+  unmountPlayersIn(el.libraryGrid);
   el.libraryGrid.replaceChildren();
   const visible = libraryJobs.filter((j) => libraryFilter === "all" || j.status === libraryFilter);
 
@@ -481,7 +1092,9 @@ function renderLibrary() {
     thumb.className = "video-thumb";
     thumb.appendChild(makeBadge(job.status));
 
-    if (job.status === "done" && job.output_url) {
+    // Playable means the API handed back something to play: the ladder or the
+    // MP4. Every done job has the MP4, but the card should not depend on that.
+    if (job.status === "done" && (job.output_url || job.hls_url)) {
       const playIcon = document.createElement("div");
       playIcon.className = "play-overlay";
       thumb.appendChild(playIcon);
@@ -497,7 +1110,9 @@ function renderLibrary() {
     const name = document.createElement("div");
     name.className = "video-filename";
     name.textContent = job.filename;
-    head.append(name, makeDeleteButton(job));
+    head.append(name);
+    if (job.status === "done") head.append(makeEditButton(job));
+    head.append(makeDeleteButton(job));
     body.appendChild(head);
 
     if (job.status === "failed" && job.error) {
@@ -561,6 +1176,18 @@ function makeDeleteButton(job) {
   return button;
 }
 
+/** Open the editor on a finished job. The result is a new library entry; the
+ *  source is left exactly where it is. */
+function makeEditButton(job) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "btn-ghost card-edit";
+  button.textContent = "Edit";
+  button.setAttribute("aria-label", `Edit ${job.filename}`);
+  button.addEventListener("click", () => openEditor(job));
+  return button;
+}
+
 async function deleteJob(job) {
   if (!window.confirm(`Delete "${job.filename}"? This cannot be undone.`)) return;
 
@@ -591,20 +1218,30 @@ function setLibraryStatus(message) {
   el.libraryStatus.hidden = false;
 }
 
-/** Swap a done card's thumbnail for an inline player, in place, on click. */
-function toggleInlinePlayer(thumb, job) {
-  const existing = thumb.querySelector("video");
-  if (existing) {
-    existing.remove();
-    thumb.classList.remove("expanded");
+/** Swap a done card's thumbnail for an inline player, in place, on click.
+ *
+ * `container` is the Library card's thumbnail or the Admin table's preview
+ * cell -- anything whose click opens the player. The player goes into a
+ * .player-host of its own so that collapsing removes exactly one thing, and
+ * so the badge and the play overlay next to it survive. */
+function toggleInlinePlayer(container, job) {
+  const host = container.querySelector(".player-host");
+  if (host) {
+    unmountPlayer(host);
+    host.remove();
+    container.classList.remove("expanded");
     return;
   }
-  const video = document.createElement("video");
-  video.src = job.output_url;
-  video.controls = true;
-  video.autoplay = true;
-  thumb.appendChild(video);
-  thumb.classList.add("expanded");
+
+  const playerHost = document.createElement("div");
+  playerHost.className = "player-host";
+  // The player sits inside the element whose click opened it, so without this
+  // every press of play, pause or the settings menu would collapse the card
+  // it is playing in.
+  playerHost.addEventListener("click", (event) => event.stopPropagation());
+  container.appendChild(playerHost);
+  mountPlayer(playerHost, job, { autoplay: true });
+  container.classList.add("expanded");
 }
 
 async function loadLibrary() {
@@ -651,6 +1288,7 @@ let adminFilter = "all";
 let adminJobs = [];
 
 function renderAdmin() {
+  unmountPlayersIn(el.adminTbody);
   el.adminTbody.replaceChildren();
   const visible = adminJobs.filter((j) => adminFilter === "all" || j.status === adminFilter);
 
@@ -673,14 +1311,14 @@ function renderAdmin() {
     // ignores that header by design, the same way the Library grid's
     // click-to-play already does, so this plays the file in place instead.
     const previewCell = document.createElement("td");
-    if (job.status === "done" && job.output_url) {
+    if (job.status === "done" && (job.output_url || job.hls_url)) {
       const watchButton = document.createElement("button");
       watchButton.type = "button";
       watchButton.className = "btn-ghost admin-watch";
       watchButton.textContent = "Watch";
       watchButton.addEventListener("click", () => {
         toggleInlinePlayer(previewCell, job);
-        const playing = previewCell.querySelector("video") !== null;
+        const playing = previewCell.querySelector(".player-host") !== null;
         watchButton.textContent = playing ? "Hide" : "Watch";
       });
       previewCell.appendChild(watchButton);
@@ -787,5 +1425,8 @@ el.adminNext.addEventListener("click", () => {
 // ---------------------------------------------------------------------------
 
 applyAuthMode();
+// The editor's button state is derived from its inputs rather than written
+// into the markup twice; this is the initial pass.
+updateProcessButton();
 // Decide which half of the page to show before anything else runs.
 refreshIdentity();

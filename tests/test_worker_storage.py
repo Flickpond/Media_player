@@ -74,9 +74,10 @@ def test_copy_processor_returns_the_output_key_it_wrote():
     processor = CopyProcessor(store, output_prefix="outputs")
     job_id = uuid4()
 
-    key = processor.run(job_id=job_id, source_key="uploads/a/demo.mp4")
+    result = processor.run(job_id=job_id, source_key="uploads/a/demo.mp4")
 
-    assert store.copies == [("uploads/a/demo.mp4", key)]
+    assert store.copies == [("uploads/a/demo.mp4", result.output_key)]
+    assert result.hls_key is None
 
 
 def test_missing_source_object_raises_a_readable_error():
