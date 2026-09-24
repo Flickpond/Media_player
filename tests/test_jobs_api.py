@@ -363,6 +363,24 @@ async def test_deleting_a_queued_job_only_touches_the_source_key(
 
 
 @pytest.mark.asyncio
+async def test_deleting_an_edit_never_deletes_the_original_jobs_output(
+    client: AsyncClient, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = make_job(status=JobStatus.DONE, output_key="outputs/edit/result.mp4")
+    job.source_key = "outputs/original/source.mp4"
+    job.operations = [{"operation": "downscale", "params": {"height": 480}}]
+
+    async def fake_delete_job(_session, _job_id, *, owner_id):
+        return job
+
+    monkeypatch.setattr(jobs_api, "delete_job", fake_delete_job)
+    response = await client.delete(f"/jobs/{job.id}")
+
+    assert response.status_code == 204
+    assert storage.deleted == ["outputs/edit/result.mp4"]
+
+
+@pytest.mark.asyncio
 async def test_deleting_an_unknown_or_unowned_job_returns_contract_error(
     client: AsyncClient, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:

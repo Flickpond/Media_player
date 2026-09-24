@@ -42,6 +42,32 @@ async def create_job(
     return job
 
 
+async def create_edit_job(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    filename: str,
+    source_key: str,
+    operations: list[dict],
+    job_id: UUID | None = None,
+) -> Job:
+    """Create a queued edit without changing the plain-upload contract."""
+    if not operations:
+        raise ValueError("an edit job requires at least one operation")
+    job = Job(
+        owner_id=owner_id,
+        filename=filename,
+        source_key=source_key,
+        operations=operations,
+        status=JobStatus.QUEUED.value,
+        **({"id": job_id} if job_id is not None else {}),
+    )
+    session.add(job)
+    await session.commit()
+    await session.refresh(job)
+    return job
+
+
 async def get_job(
     session: AsyncSession, job_id: UUID, *, owner_id: UUID | None = None
 ) -> Job | None:

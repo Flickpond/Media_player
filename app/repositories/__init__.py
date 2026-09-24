@@ -1,6 +1,7 @@
 from app.repositories.jobs import (
     InvalidJobTransitionError,
     JobNotFoundError,
+    create_edit_job,
     create_job,
     get_job,
     list_jobs,
@@ -13,6 +14,7 @@ from app.repositories.jobs import (
 __all__ = [
     "InvalidJobTransitionError",
     "JobNotFoundError",
+    "create_edit_job",
     "create_job",
     "get_job",
     "list_jobs",
