@@ -1,0 +1,144 @@
+name: DAST
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
+  pull_request:
+    paths:
+      - ".github/workflows/dast.yml"
+      - "app/**"
+      - "deploy/nginx/**"
+      - "migrations/**"
+      - "docker-compose.yml"
+      - "Dockerfile"
+      - "nginx.conf"
+      - "pyproject.toml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dast:
+    name: OWASP ZAP API scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      COMPOSE_PROJECT_NAME: flickpond-dast-${{ github.run_id }}
+      JWT_SECRET: dast-only-jwt-secret-not-for-production-2026
+      REDIS_PASSWORD: dast-only-redis-password
+      POSTGRES_PASSWORD: dast-only-postgres-password
+      DAST_BASE_URL: http://127.0.0.1:3000
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare report directory
+        run: |
+          mkdir -p zap-reports
+          chmod 777 zap-reports
+
+      - name: Start isolated application stack
+        run: docker compose up --build -d --wait --wait-timeout 180 frontend
+
+      - name: Prepare authenticated OpenAPI scan
+        run: |
+          curl --fail-with-body --silent --show-error \
+            "${DAST_BASE_URL}/api/openapi.json" \
+            | jq '.servers = [{"url": "http://127.0.0.1:3000/api"}]' \
+            > zap-reports/openapi.json
+
+          curl --fail-with-body --silent --show-error \
+            --dump-header /tmp/dast-register-headers \
+            --output /tmp/dast-register-body \
+            --request POST "${DAST_BASE_URL}/api/auth/register" \
+            --header "Content-Type: application/json" \
+            --data '{"email":"dast@example.com","password":"Dast-only-password-123!"}'
+
+          token="$(sed -nE 's/^set-cookie: access_token=([^;]+).*/\1/ip' \
+            /tmp/dast-register-headers | tr -d '\r' | head -n 1)"
+          if [ -z "${token}" ]; then
+            cat /tmp/dast-register-body
+            echo "Registration did not return an access_token cookie" >&2
+            exit 1
+          fi
+
+          echo "::add-mask::${token}"
+          echo "DAST_COOKIE=access_token=${token}" >> "${GITHUB_ENV}"
+
+          curl --fail-with-body --silent --show-error \
+            --header "Cookie: access_token=${token}" \
+            "${DAST_BASE_URL}/api/auth/me" \
+            | jq -e '.email == "dast@example.com"'
+
+      - name: Run authenticated OWASP ZAP scan
+        run: |
+          set +e
+          docker run --rm --network host \
+            --volume "${PWD}/zap-reports:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef \
+            zap-api-scan.py \
+            -t /zap/wrk/openapi.json \
+            -f openapi \
+            -r zap-report.html \
+            -J zap-report.json \
+            -w zap-report.md \
+            -x zap-report.xml \
+            -T 10 \
+            -z "-config replacer.full_list(0).description=flickpond-auth \
+              -config replacer.full_list(0).enabled=true \
+              -config replacer.full_list(0).matchtype=REQ_HEADER \
+              -config replacer.full_list(0).matchstr=Cookie \
+              -config replacer.full_list(0).regex=false \
+              -config replacer.full_list(0).replacement=${DAST_COOKIE}"
+          status=$?
+          set -e
+
+          echo "ZAP_EXIT_CODE=${status}" >> "${GITHUB_ENV}"
+          case "${status}" in
+            0|1|2) ;;
+            *)
+              echo "ZAP failed to run (exit ${status})" >&2
+              exit "${status}"
+              ;;
+          esac
+
+      - name: Summarize ZAP findings
+        if: always() && hashFiles('zap-reports/zap-report.json') != ''
+        run: |
+          high="$(jq '[.site[]?.alerts[]? | select(.riskcode == "3")] | length' zap-reports/zap-report.json)"
+          medium="$(jq '[.site[]?.alerts[]? | select(.riskcode == "2")] | length' zap-reports/zap-report.json)"
+          low="$(jq '[.site[]?.alerts[]? | select(.riskcode == "1")] | length' zap-reports/zap-report.json)"
+          informational="$(jq '[.site[]?.alerts[]? | select(.riskcode == "0")] | length' zap-reports/zap-report.json)"
+          {
+            echo "## OWASP ZAP DAST"
+            echo
+            echo "| Risk | Alerts |"
+            echo "| --- | ---: |"
+            echo "| High | ${high} |"
+            echo "| Medium | ${medium} |"
+            echo "| Low | ${low} |"
+            echo "| Informational | ${informational} |"
+            echo
+            echo "ZAP exit code: ${ZAP_EXIT_CODE:-unknown}. Findings are report-only; exit code 3 still fails because it means the scan did not run."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Capture application logs
+        if: always()
+        run: docker compose logs --no-color > zap-reports/compose.log 2>&1 || true
+
+      - name: Upload ZAP reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-reports-${{ github.run_id }}
+          path: zap-reports/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Tear down isolated stack
+        if: always()
+        run: docker compose down -v --remove-orphans

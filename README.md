@@ -350,6 +350,15 @@ require an A security rating on new code. The scan currently reports its gate
 result without blocking the PR while the initial baseline is reviewed; forked
 PRs without access to the secret skip the scan with a warning.
 
+The separate DAST workflow runs an authenticated OWASP ZAP API scan against an
+isolated Compose stack on relevant pull requests, every Monday at 03:00 UTC,
+and on manual dispatch. It never targets the deployed site. High, medium, low,
+and informational findings are summarized without blocking the PR while the
+baseline is reviewed; a ZAP infrastructure failure still fails the workflow.
+HTML, JSON, Markdown, XML, and application logs are retained as workflow
+artifacts for 30 days. No repository secret is required because every DAST
+credential exists only for the lifetime of the disposable runner.
+
 ## Environment variables
 
 | Variable                    | Meaning                                  | Local default              |
