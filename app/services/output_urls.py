@@ -6,10 +6,13 @@ from minio import Minio
 from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
+from app.services.minio_client import bucket, public_client
 
 
 class OutputUrlSigner(Protocol):
     async def create_url(self, output_key: str) -> str: ...
+
+    async def create_inline_url(self, output_key: str) -> str: ...
 
 
 class MinioOutputUrlSigner:
@@ -39,19 +42,34 @@ class MinioOutputUrlSigner:
             response_headers={"response-content-disposition": "attachment"},
         )
 
+    async def create_inline_url(self, output_key: str) -> str:
+        """The same signature without the forced download.
+
+        For HLS parts, which hls.js fetches with XHR and feeds to the media
+        source rather than navigating to. `Content-Disposition: attachment`
+        has no effect on an XHR, so this is not a behaviour change so much
+        as removing a header that would only ever confuse whoever debugs
+        this next.
+
+        Deliberately a second method rather than a parameter on the first:
+        the download path's forced disposition is a control worth being
+        hard to switch off by accident, and the MP4 must keep it.
+        """
+        return await run_in_threadpool(
+            self._client.presigned_get_object,
+            self._bucket,
+            output_key,
+            expires=self._expiry,
+        )
+
 
 @lru_cache
 def get_output_url_signer() -> OutputUrlSigner:
-    settings = get_settings()
-    client = Minio(
-        settings.minio_public_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=settings.minio_use_ssl,
-        region=settings.minio_region,
-    )
+    # The *public* client, deliberately not the internal one: the host it is
+    # built with lands inside the SigV4 signature, and the URL is opened by a
+    # browser. Swapping this for internal_client() breaks playback silently.
     return MinioOutputUrlSigner(
-        client,
-        bucket=settings.minio_bucket,
-        expiry_seconds=settings.output_url_expiry_seconds,
+        public_client(),
+        bucket=bucket(),
+        expiry_seconds=get_settings().output_url_expiry_seconds,
     )

@@ -4,20 +4,25 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.config import get_settings
 from app.models.job import Job, JobStatus
+from app.models.user import User
 from app.repositories.jobs import (
     InvalidJobTransitionError,
+    JobNotFoundError,
     create_job,
+    delete_job,
     get_job,
     list_jobs,
     mark_done,
     mark_failed,
     mark_processing,
 )
+from app.repositories.users import create_user
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_POSTGRES_TESTS") != "1",
@@ -34,12 +39,13 @@ async def session_factory():
 
 
 @pytest.mark.asyncio
-async def test_job_success_state_machine(session_factory) -> None:
+async def test_job_success_state_machine(session_factory, owner) -> None:
     job_id = uuid4()
     try:
         async with session_factory() as session:
             created = await create_job(
                 session,
+                owner_id=owner.id,
                 job_id=job_id,
                 filename="demo.mp4",
                 source_key=f"uploads/{job_id}/demo.mp4",
@@ -63,12 +69,13 @@ async def test_job_success_state_machine(session_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_failed_job_requires_readable_error(session_factory) -> None:
+async def test_failed_job_requires_readable_error(session_factory, owner) -> None:
     job_id = uuid4()
     try:
         async with session_factory() as session:
             await create_job(
                 session,
+                owner_id=owner.id,
                 job_id=job_id,
                 filename="broken.mp4",
                 source_key=f"uploads/{job_id}/broken.mp4",
@@ -90,12 +97,13 @@ async def test_failed_job_requires_readable_error(session_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_empty_failure_message_is_rejected(session_factory) -> None:
+async def test_empty_failure_message_is_rejected(session_factory, owner) -> None:
     job_id = uuid4()
     try:
         async with session_factory() as session:
             await create_job(
                 session,
+                owner_id=owner.id,
                 job_id=job_id,
                 filename="broken.mp4",
                 source_key=f"uploads/{job_id}/broken.mp4",
@@ -111,7 +119,7 @@ async def test_empty_failure_message_is_rejected(session_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_jobs_pages_without_repeating_or_dropping_rows(session_factory) -> None:
+async def test_list_jobs_pages_without_repeating_or_dropping_rows(session_factory, owner) -> None:
     """Real SQL, because LIMIT/OFFSET and the tie-break are the whole point.
 
     All five rows are created in a tight loop, so `created_at` values can be
@@ -124,6 +132,7 @@ async def test_list_jobs_pages_without_repeating_or_dropping_rows(session_factor
             for index in range(5):
                 job = await create_job(
                     session,
+                    owner_id=owner.id,
                     filename=f"page-{index}.mp4",
                     source_key=f"uploads/page-{index}.mp4",
                     job_id=uuid4(),
@@ -152,13 +161,14 @@ async def test_list_jobs_pages_without_repeating_or_dropping_rows(session_factor
 
 
 @pytest.mark.asyncio
-async def test_list_jobs_returns_newest_first(session_factory) -> None:
+async def test_list_jobs_returns_newest_first(session_factory, owner) -> None:
     made = []
     try:
         async with session_factory() as session:
             for index in range(3):
                 job = await create_job(
                     session,
+                    owner_id=owner.id,
                     filename=f"order-{index}.mp4",
                     source_key=f"uploads/order-{index}.mp4",
                     job_id=uuid4(),
@@ -174,3 +184,215 @@ async def test_list_jobs_returns_newest_first(session_factory) -> None:
         async with session_factory() as cleanup:
             await cleanup.execute(delete(Job).where(Job.id.in_([job.id for job in made])))
             await cleanup.commit()
+
+
+# --- operations and hls_key: the editing suite's and HLS's columns ---
+
+
+@pytest.mark.asyncio
+async def test_a_plain_upload_has_no_operations_and_no_hls_key(session_factory, owner) -> None:
+    """Guards against a future default that would make every upload look like
+    an edit job, or like it already has a ladder.
+    """
+    job_id = uuid4()
+    try:
+        async with session_factory() as session:
+            created = await create_job(
+                session,
+                owner_id=owner.id,
+                job_id=job_id,
+                filename="plain.mp4",
+                source_key=f"uploads/{job_id}/plain.mp4",
+            )
+            assert created.operations is None
+            assert created.hls_key is None
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.commit()
+
+
+@pytest.mark.asyncio
+async def test_an_empty_operations_array_is_rejected_by_the_database(
+    session_factory, owner
+) -> None:
+    """`ck_jobs_operations_nonempty_array`, proven against real SQL rather
+    than trusted because the migration ran.
+
+    "This job is an edit" and "this job was asked to do nothing" are
+    different things, and only the first is storable -- a Pydantic schema
+    rejecting an empty list on the way in is not the same as the column
+    being unable to hold one. Same posture as `ck_jobs_error`.
+    """
+    job_id = uuid4()
+    try:
+        async with session_factory() as session:
+            session.add(
+                Job(
+                    id=job_id,
+                    owner_id=owner.id,
+                    filename="empty.mp4",
+                    status=JobStatus.QUEUED.value,
+                    source_key=f"uploads/{job_id}/empty.mp4",
+                    operations=[],
+                )
+            )
+            with pytest.raises(IntegrityError):
+                await session.commit()
+            await session.rollback()
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_done_job_may_have_no_hls_key(session_factory, owner) -> None:
+    """The ladder is best-effort: if FFmpeg cannot build one, the MP4 still
+    stands and the job is legitimately `done` with `hls_key IS NULL`.
+
+    Deliberately *not* constrained the way `ck_jobs_output_key` constrains
+    `output_key` -- mirroring that here would turn the intended fallback
+    into a write the database rejects, failing a job that succeeded.
+    """
+    job_id = uuid4()
+    try:
+        async with session_factory() as session:
+            await create_job(
+                session,
+                owner_id=owner.id,
+                job_id=job_id,
+                filename="noladder.mp4",
+                source_key=f"uploads/{job_id}/noladder.mp4",
+            )
+            await mark_processing(session, job_id)
+            done = await mark_done(session, job_id, output_key=f"outputs/{job_id}/noladder.mp4")
+
+        assert done.status == JobStatus.DONE.value
+        assert done.hls_key is None
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.commit()
+
+
+# --- DELETE /jobs/{id}: an accidental upload, or general library cleanup ---
+
+
+@pytest.mark.asyncio
+async def test_delete_job_removes_the_row_and_returns_both_storage_keys(
+    session_factory, owner
+) -> None:
+    """The API cleans up storage from what this returns -- both keys have to
+    travel back, not just enough to prove the row is gone.
+    """
+    job_id = uuid4()
+    async with session_factory() as session:
+        await create_job(
+            session,
+            owner_id=owner.id,
+            job_id=job_id,
+            filename="demo.mp4",
+            source_key=f"uploads/{job_id}/demo.mp4",
+        )
+        await mark_processing(session, job_id)
+        await mark_done(session, job_id, output_key=f"outputs/{job_id}/demo.mp4")
+
+    async with session_factory() as session:
+        deleted = await delete_job(session, job_id, owner_id=owner.id)
+
+    assert deleted is not None
+    assert deleted.source_key == f"uploads/{job_id}/demo.mp4"
+    assert deleted.output_key == f"outputs/{job_id}/demo.mp4"
+
+    async with session_factory() as session:
+        assert await get_job(session, job_id) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_job_is_scoped_to_the_owner(session_factory, owner) -> None:
+    """Someone else's id must not be able to delete this job -- and, same as
+    get_job, the row must still be there afterward, not just "not deleted by
+    that caller".
+    """
+    job_id = uuid4()
+    async with session_factory() as session:
+        stranger = await create_user(
+            session, email=f"stranger-{uuid4().hex[:10]}@example.test", password_hash="x"
+        )
+    try:
+        async with session_factory() as session:
+            await create_job(
+                session,
+                owner_id=owner.id,
+                job_id=job_id,
+                filename="demo.mp4",
+                source_key=f"uploads/{job_id}/demo.mp4",
+            )
+
+        async with session_factory() as session:
+            result = await delete_job(session, job_id, owner_id=stranger.id)
+        assert result is None
+
+        async with session_factory() as session:
+            assert await get_job(session, job_id, owner_id=owner.id) is not None
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.execute(delete(User).where(User.id == stranger.id))
+            await cleanup.commit()
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_processing_job_leaves_the_worker_to_find_it_gone(
+    session_factory, owner
+) -> None:
+    """The safety argument `delete_job`'s docstring makes, proven: a worker
+    mid-flight on a job that gets deleted loses its conditional update to a
+    row that is no longer there, the same as any other race this state
+    machine already tolerates -- it does not corrupt one that is.
+    """
+    job_id = uuid4()
+    async with session_factory() as session:
+        await create_job(
+            session,
+            owner_id=owner.id,
+            job_id=job_id,
+            filename="demo.mp4",
+            source_key=f"uploads/{job_id}/demo.mp4",
+        )
+        await mark_processing(session, job_id)
+
+    async with session_factory() as session:
+        deleted = await delete_job(session, job_id, owner_id=owner.id)
+    assert deleted is not None
+
+    async with session_factory() as session:
+        with pytest.raises(JobNotFoundError):
+            await mark_done(session, job_id, output_key=f"outputs/{job_id}/demo.mp4")
+
+
+@pytest.mark.asyncio
+async def test_owner_id_none_deletes_regardless_of_owner(session_factory, owner) -> None:
+    """The operator route's unscoped delete -- same `owner_id=None` convention
+    as `get_job` and `list_jobs`, proved against a job it is not testing as
+    the owner of anything in particular.
+    """
+    job_id = uuid4()
+    async with session_factory() as session:
+        await create_job(
+            session,
+            owner_id=owner.id,
+            job_id=job_id,
+            filename="demo.mp4",
+            source_key=f"uploads/{job_id}/demo.mp4",
+        )
+
+    async with session_factory() as session:
+        deleted = await delete_job(session, job_id)
+
+    assert deleted is not None
+    assert deleted.owner_id == owner.id
+
+    async with session_factory() as session:
+        assert await get_job(session, job_id) is None

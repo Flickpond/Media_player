@@ -35,6 +35,11 @@ logger = logging.getLogger("app.worker")
 # human in a UI, not parsed. Keep it to something that fits on a screen.
 MAX_ERROR_LENGTH = 500
 
+# What the uploader sees when the worker hit something nobody anticipated. An
+# exception repr is rarely actionable and sometimes names a path, a host or a
+# credential, so it stays in the log where the traceback already is.
+UNEXPECTED_FAILURE = "processing failed unexpectedly; please try uploading again"
+
 
 class JobOutcome(StrEnum):
     DONE = "done"
@@ -43,18 +48,25 @@ class JobOutcome(StrEnum):
 
 
 def readable_error(exception: BaseException) -> str:
-    """Turn an exception into something worth showing a user.
+    """The half of a failure that is safe to show the person who uploaded.
 
-    `ObjectStoreError` messages are written to be read, so they pass through
-    as-is. Anything else is unexpected, so the class name is kept for
-    diagnosis. Never returns an empty string: `mark_failed` rejects those, and
-    a blank error column is exactly the "left guessing" case US4 is about.
+    `ObjectStoreError` carries a curated `user_message` for exactly this. Every
+    other exception is by definition one nobody wrote a message for, so it gets
+    a fixed one.
+
+    This used to splice in `exception.__class__.__name__` and `str(exception)`,
+    which is how object keys, temp paths and FFmpeg stderr reached the `error`
+    column that `GET /jobs/{id}` returns verbatim (P9). The diagnostic is not
+    lost -- it is logged by the caller, which is the audience it was written
+    for.
+
+    Never returns an empty string: `mark_failed` rejects those, and a blank
+    error column is exactly the "left guessing" case US4 is about.
     """
-    message = str(exception).strip()
-    if not message:
-        message = exception.__class__.__name__
-    elif not isinstance(exception, ObjectStoreError):
-        message = f"{exception.__class__.__name__}: {message}"
+    if isinstance(exception, ObjectStoreError):
+        message = exception.user_message.strip() or UNEXPECTED_FAILURE
+    else:
+        message = UNEXPECTED_FAILURE
 
     if len(message) > MAX_ERROR_LENGTH:
         message = message[: MAX_ERROR_LENGTH - 3].rstrip() + "..."
@@ -88,10 +100,15 @@ async def process_job_async(
     # 2. Do the work with no database connection held. The step is blocking
     #    object-store I/O, so it goes to a thread rather than stalling the loop.
     try:
-        output_key = await asyncio.to_thread(step.run, job_id=job_id, source_key=source_key)
+        result = await asyncio.to_thread(step.run, job_id=job_id, source_key=source_key)
     except Exception as exc:
         reason = readable_error(exc)
-        logger.exception("job %s: processing raised, marking failed", job_id)
+        # The diagnostic half lives here and only here: the traceback, and for
+        # an ObjectStoreError the keys and stderr its message carries. `reason`
+        # is logged beside it so support can match a user's screen to a log line.
+        logger.exception(
+            "job %s: processing raised, marking failed (user sees: %s)", job_id, reason
+        )
         async with session_factory() as session:
             try:
                 await mark_failed(session, job_id, error=reason)
@@ -104,12 +121,19 @@ async def process_job_async(
     # 3. Record success.
     async with session_factory() as session:
         try:
-            await mark_done(session, job_id, output_key=output_key)
+            await mark_done(
+                session, job_id, output_key=result.output_key, hls_key=result.hls_key
+            )
         except (JobNotFoundError, InvalidJobTransitionError) as write_exc:
             logger.error("job %s: could not record completion: %s", job_id, write_exc)
             return JobOutcome.SKIPPED
 
-    logger.info("job %s: processing -> done (output_key=%s)", job_id, output_key)
+    logger.info(
+        "job %s: processing -> done (output_key=%s, hls_key=%s)",
+        job_id,
+        result.output_key,
+        result.hls_key or "none",
+    )
     return JobOutcome.DONE
 
 

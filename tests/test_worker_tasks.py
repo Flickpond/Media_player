@@ -7,7 +7,7 @@ import pytest
 from app.models.job import JobStatus
 from app.repositories.jobs import InvalidJobTransitionError, JobNotFoundError
 from app.worker import tasks
-from app.worker.storage import ObjectStoreError
+from app.worker.storage import UNPROCESSABLE_VIDEO, ObjectStoreError, ProcessingResult
 from app.worker.tasks import JobOutcome, process_job_async, readable_error
 
 
@@ -17,6 +17,7 @@ class FakeJob:
         self.source_key = source_key
         self.status = status
         self.output_key: str | None = None
+        self.hls_key: str | None = None
         self.error: str | None = None
         self.filename = "demo.mp4"
 
@@ -57,11 +58,14 @@ class FakeJobStore:
     async def mark_processing(self, _session, job_id: UUID) -> FakeJob:
         return self._transition(job_id, JobStatus.QUEUED, JobStatus.PROCESSING)
 
-    async def mark_done(self, _session, job_id: UUID, *, output_key: str) -> FakeJob:
+    async def mark_done(
+        self, _session, job_id: UUID, *, output_key: str, hls_key: str | None = None
+    ) -> FakeJob:
         if not output_key.strip():
             raise ValueError("output_key must not be empty")
         job = self._transition(job_id, JobStatus.PROCESSING, JobStatus.DONE)
         job.output_key = output_key
+        job.hls_key = hls_key
         return job
 
     async def mark_failed(self, _session, job_id: UUID, *, error: str) -> FakeJob:
@@ -73,16 +77,23 @@ class FakeJobStore:
 
 
 class FakeStep:
-    def __init__(self, *, output_key: str = "outputs/demo.mp4", raises: Exception | None = None):
+    def __init__(
+        self,
+        *,
+        output_key: str = "outputs/demo.mp4",
+        hls_key: str | None = None,
+        raises: Exception | None = None,
+    ):
         self.output_key = output_key
+        self.hls_key = hls_key
         self.raises = raises
         self.calls: list[tuple[UUID, str]] = []
 
-    def run(self, *, job_id: UUID, source_key: str) -> str:
+    def run(self, *, job_id: UUID, source_key: str) -> ProcessingResult:
         self.calls.append((job_id, source_key))
         if self.raises is not None:
             raise self.raises
-        return self.output_key
+        return ProcessingResult(output_key=self.output_key, hls_key=self.hls_key)
 
 
 @pytest.fixture
@@ -117,15 +128,22 @@ async def test_happy_path_walks_queued_processing_done(store, session_factory):
     assert step.calls == [(job.id, "uploads/abc/demo.mp4")]
 
 
-async def test_processing_failure_reaches_failed_with_readable_error(store, session_factory):
+async def test_processing_failure_records_the_user_half_not_the_diagnostic(store, session_factory):
+    """P9: `GET /jobs/{id}` returns this column verbatim, so it gets their half."""
     job = store.add()
-    step = FakeStep(raises=ObjectStoreError("source object missing from storage: uploads/x.mp4"))
+    step = FakeStep(
+        raises=ObjectStoreError(
+            "source object missing from storage: uploads/x.mp4",
+            user_message="the uploaded file is no longer in storage; please upload it again",
+        )
+    )
 
     outcome = await process_job_async(job.id, session_factory=session_factory, step=step)
 
     assert outcome is JobOutcome.FAILED
     assert job.status == JobStatus.FAILED.value
-    assert job.error == "source object missing from storage: uploads/x.mp4"
+    assert job.error == "the uploaded file is no longer in storage; please upload it again"
+    assert "uploads/x.mp4" not in job.error, "an object key must not reach a user-facing column"
     assert job.output_key is None
     assert store.transitions == [(job.id, "processing"), (job.id, "failed")]
 
@@ -139,17 +157,23 @@ async def test_unexpected_exception_still_reaches_failed_never_hangs(store, sess
 
     assert outcome is JobOutcome.FAILED
     assert job.status == JobStatus.FAILED.value
-    assert job.error == "RuntimeError: connection reset by peer"
+    # The row still lands in `failed`, which is what N3 is about. What changed
+    # is that it no longer lands there carrying "RuntimeError: ..." (P9).
+    assert job.error == tasks.UNEXPECTED_FAILURE
+    assert "RuntimeError" not in job.error
+    assert "connection reset by peer" not in job.error
 
 
 async def test_exception_with_blank_message_still_records_something(store, session_factory):
+    """An empty error column is US4's "left guessing", and `mark_failed` rejects it."""
     job = store.add()
     step = FakeStep(raises=TimeoutError(""))
 
     outcome = await process_job_async(job.id, session_factory=session_factory, step=step)
 
     assert outcome is JobOutcome.FAILED
-    assert job.error == "TimeoutError"
+    assert job.error == tasks.UNEXPECTED_FAILURE
+    assert job.error.strip()
 
 
 async def test_duplicate_delivery_of_a_done_job_is_left_alone(store, session_factory):
@@ -215,10 +239,51 @@ async def test_every_transition_is_logged_with_the_job_id(
 
 
 def test_readable_error_truncates_runaway_messages():
-    message = readable_error(ObjectStoreError("x" * 5000))
+    message = readable_error(ObjectStoreError("diagnostic", user_message="x" * 5000))
 
     assert len(message) <= tasks.MAX_ERROR_LENGTH
     assert message.endswith("...")
+
+
+# --- what reaches the user, and what must not (P9) -------------------------
+
+
+def test_an_unexpected_exception_never_names_its_class_or_its_message():
+    """This used to render as `KeyError: 'minio_secret_key'` on the user's screen."""
+    message = readable_error(KeyError("minio_secret_key"))
+
+    assert message == tasks.UNEXPECTED_FAILURE
+    assert "KeyError" not in message
+    assert "minio_secret_key" not in message
+
+
+def test_ffmpeg_stderr_stays_out_of_the_error_column():
+    """The worst of the leaks: stderr names the temp path it was working on."""
+    stderr = "/tmp/flickpond-transcode-9k2/source: Invalid data found when processing input"
+    message = readable_error(
+        ObjectStoreError(f"FFmpeg failed: {stderr}", user_message=UNPROCESSABLE_VIDEO)
+    )
+
+    assert message == UNPROCESSABLE_VIDEO
+    assert "/tmp/" not in message
+
+
+def test_splitting_the_audiences_does_not_throw_the_operators_half_away():
+    """The diagnostic still has to be there, or this trades one gap for another."""
+    exc = ObjectStoreError(
+        "download failed for uploads/a/b.mp4: AccessDenied",
+        user_message="the uploaded file could not be read back; please try again",
+    )
+
+    assert "AccessDenied" in str(exc)
+    assert "uploads/a/b.mp4" in str(exc)
+
+
+def test_a_blank_user_message_falls_back_instead_of_emptying_the_column():
+    """`mark_failed` rejects empty, and a blank column is US4's "left guessing"."""
+    blank = ObjectStoreError("diagnostic", user_message="   ")
+
+    assert readable_error(blank) == tasks.UNEXPECTED_FAILURE
 
 
 # --- the row moving underneath us -----------------------------------------
@@ -242,7 +307,9 @@ async def test_losing_the_row_before_recording_failure_is_logged_not_raised(
         outcome = await process_job_async(
             job.id,
             session_factory=session_factory,
-            step=FakeStep(raises=ObjectStoreError("storage down")),
+            step=FakeStep(
+                raises=ObjectStoreError("storage down", user_message="please try again")
+            ),
         )
 
     assert outcome is JobOutcome.SKIPPED
@@ -254,7 +321,7 @@ async def test_losing_the_row_before_recording_completion_is_logged_not_raised(
 ):
     job = store.add()
 
-    async def stolen(_session, job_id, *, output_key):
+    async def stolen(_session, job_id, *, output_key, hls_key=None):
         raise InvalidJobTransitionError(f"job {job_id} is failed, not processing")
 
     monkeypatch.setattr(tasks, "mark_done", stolen)

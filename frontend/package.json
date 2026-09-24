@@ -6,6 +6,7 @@
   "description": "Tests for the Flickpond upload/poll frontend. No build step - app.js stays a plain script the browser loads directly.",
   "scripts": {
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.include=app.js --coverage.thresholds.statements=90 --coverage.thresholds.branches=90 --coverage.thresholds.functions=90 --coverage.thresholds.lines=90",
     "test:watch": "vitest"
   },
   "devDependencies": {

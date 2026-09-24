@@ -20,7 +20,16 @@ services:
       # Set MINIO_ENDPOINT, MINIO_USE_SSL and the access credentials in .env for cloud object storage.
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
       # Used only when signing URLs returned to a browser; it must be host-accessible.
+      # Signing secret for the session cookie. No default anywhere -- an
+      # unset secret makes the API refuse to issue or accept a token,
+      # which is the correct failure. Generate with:
+      #   openssl rand -base64 48
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      JWT_TTL_SECONDS: ${JWT_TTL_SECONDS:-1800}
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-127.0.0.1:9000}
+      # https for the browser-facing URLs once TLS is on; the internal client
+      # keeps using MINIO_USE_SSL, which stays false.
+      MINIO_PUBLIC_USE_SSL: ${MINIO_PUBLIC_USE_SSL:-false}
       MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
       MINIO_BUCKET: ${MINIO_BUCKET:-videos}
       MINIO_REGION: ${MINIO_REGION:-us-east-1}
@@ -65,6 +74,19 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
       # Keep this value identical to the API value when using a cloud PostgreSQL instance.
       POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://${POSTGRES_USER:-flickpond}:${POSTGRES_PASSWORD:-flickpond_dev_password}@postgres:5432/${POSTGRES_DB:-flickpond}}
+      # Transcode tuning. These have defaults in app/config.py, but a setting is
+      # only configurable in a deployment if compose passes it through -- .env
+      # feeds substitution into this file, not the container's environment.
+      #
+      # WORKER_FFMPEG_BINARY is deliberately not here. It is the only one of
+      # these that changes *what executes* rather than how, and the binary is a
+      # property of the image, installed by the Dockerfile at a known path.
+      WORKER_FFMPEG_PRESET: ${WORKER_FFMPEG_PRESET:-veryfast}
+      WORKER_FFMPEG_CRF: ${WORKER_FFMPEG_CRF:-23}
+      WORKER_FFMPEG_MAX_HEIGHT: ${WORKER_FFMPEG_MAX_HEIGHT:-720}
+      WORKER_FFMPEG_TIMEOUT_SECONDS: ${WORKER_FFMPEG_TIMEOUT_SECONDS:-870}
+      WORKER_JOB_TIMEOUT_SECONDS: ${WORKER_JOB_TIMEOUT_SECONDS:-900}
+      WORKER_OUTPUT_PREFIX: ${WORKER_OUTPUT_PREFIX:-outputs}
     depends_on:
       redis:
         condition: service_healthy
@@ -85,6 +107,44 @@ services:
       retries: 5
     restart: unless-stopped
 
+  reaper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flickpond-worker:dev
+    command: ["python", "-m", "app.worker.reaper"]
+    environment:
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-flickpond_dev_redis_password}
+      REDIS_SSL: ${REDIS_SSL:-false}
+      REDIS_QUEUE: video_jobs
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
+      MINIO_BUCKET: ${MINIO_BUCKET:-videos}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://${POSTGRES_USER:-flickpond}:${POSTGRES_PASSWORD:-flickpond_dev_password}@postgres:5432/${POSTGRES_DB:-flickpond}}
+      # Same reasoning as the worker's transcode settings. The lease in
+      # particular needs lowering to demonstrate crash recovery -- 1800s is
+      # correct in production and far too long to watch.
+      REAPER_INTERVAL_SECONDS: ${REAPER_INTERVAL_SECONDS:-60}
+      REAPER_LEASE_SECONDS: ${REAPER_LEASE_SECONDS:-1800}
+      REAPER_ORPHAN_GRACE_SECONDS: ${REAPER_ORPHAN_GRACE_SECONDS:-3600}
+      WORKER_OUTPUT_PREFIX: ${WORKER_OUTPUT_PREFIX:-outputs}
+    depends_on:
+      worker:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "from app.queue import get_redis_connection; get_redis_connection().ping()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     environment:
@@ -94,9 +154,12 @@ services:
     # password even though the port is loopback-only.
     command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
     ports:
-      # Keep Redis private by default. Set REDIS_BIND=0.0.0.0 only when a
-      # remote client must connect, and restrict port 6379 in the cloud firewall.
-      - "${REDIS_BIND:-127.0.0.1}:${REDIS_PUBLIC_PORT:-6379}:6379"
+      # Loopback only, and deliberately not configurable. An RQ payload names a
+      # Python import path for the worker to call, so write access to this queue
+      # is remote code execution -- there is no deployment where publishing it is
+      # the right answer. Reach it from another host with an SSH tunnel:
+      #   ssh -L 6379:127.0.0.1:6379 root@<host>
+      - "127.0.0.1:${REDIS_PUBLIC_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -113,10 +176,13 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-flickpond}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flickpond_dev_password}
     ports:
-      # Keep PostgreSQL private by default. Set POSTGRES_BIND=0.0.0.0 only
-      # when a remote client must connect, and restrict port 5432 in the
-      # cloud firewall to the team's public IP addresses.
-      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+      # Loopback only, and deliberately not configurable. A cloud firewall is a
+      # single control that someone widens "just to debug" -- and Docker's
+      # published ports bypass ufw entirely, so on a host that believes it is
+      # firewalled this would be the only thing standing between the internet
+      # and every user's data. Use an SSH tunnel instead:
+      #   ssh -L 5432:127.0.0.1:5432 root@<host>
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -141,10 +207,11 @@ services:
       # admin console -- holding every uploaded and processed video, behind
       # the well-known default credentials above -- on the local network.
       - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
-      # The console can be public independently of the S3 API. Set
-      # MINIO_CONSOLE_BIND=0.0.0.0 for a cloud demo and use strong root
-      # credentials in .env before opening this port.
-      - "${MINIO_CONSOLE_BIND:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
+      # The console is an admin UI for all stored video. Nothing in the app
+      # needs it reachable -- the API talks to MinIO over the compose network --
+      # so it stays on loopback and is reached by tunnel when an operator needs
+      # it:  ssh -L 9001:127.0.0.1:9001 root@<host>
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio-data:/data
     healthcheck:
@@ -156,20 +223,69 @@ services:
 
   frontend:
     image: nginx:1.27-alpine
-    # nginx is the only public entry point; it proxies API and video requests.
+    # The only service that is ever published beyond loopback. It proxies /api/
+    # and /videos/ over the compose network, so nothing else needs a host port.
+    # Local default stays 127.0.0.1:3000; a deployment sets FRONTEND_BIND=0.0.0.0
+    # and FRONTEND_PORT=80 in .env.
     ports:
       - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-3000}:80"
+      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_TLS_PORT:-3443}:443"
+    # Reload periodically so a renewed certificate is actually picked up.
+    # nginx reads the certificate once at startup and keeps it in memory --
+    # certbot rewriting the file on disk changes nothing until the master
+    # process re-reads it, so without this the site would serve an expired
+    # certificate despite a valid one sitting right there. The reload is
+    # graceful: in-flight requests finish on the old workers. Harmless with no
+    # certificate, which is why it is unconditional rather than deployment-only.
+    command: >-
+      sh -c "while :; do sleep 12h & wait $${!}; nginx -s reload; done &
+      exec nginx -g 'daemon off;'"
     volumes:
       - ./frontend:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Let's Encrypt. The webroot is where certbot drops challenge files for
+      # nginx to serve; conf holds the certificates and private keys and is
+      # gitignored.
+      - ./deploy/certbot/www:/var/www/certbot
+      - ./deploy/certbot/conf:/etc/letsencrypt:ro
+      # The app's routes, shared by the HTTP and HTTPS servers so they cannot
+      # drift, plus the deployment-only TLS server block (empty in a checkout).
+      - ./deploy/nginx:/etc/nginx/app-locations:ro
+      - ./deploy/nginx-tls:/etc/nginx/app-tls:ro
     depends_on:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost/index.html"]
+      # /healthz, not /index.html: a cheap endpoint that stays reachable
+      # regardless of what the app requires of real callers.
+      #
+      # 127.0.0.1, not localhost: mounting nginx.conf read-only stops the image's
+      # 10-listen-on-ipv6-by-default.sh from adding `listen [::]:80`, so nginx is
+      # IPv4-only -- while /etc/hosts still maps localhost to ::1 first. wget
+      # would try IPv6, get refused, and report an otherwise healthy service as
+      # failed.
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  certbot:
+    image: certbot/certbot:latest
+    # Behind a profile: a developer with no certificate has nothing to renew,
+    # and should not pull this image on `docker compose up`. A deployment sets
+    # COMPOSE_PROFILES=tls in .env so it starts with everything else.
+    profiles: ["tls"]
+    volumes:
+      - ./deploy/certbot/conf:/etc/letsencrypt
+      - ./deploy/certbot/www:/var/www/certbot
+    # `renew` is a no-op until roughly 30 days before expiry, so running it
+    # twice a day costs nothing and means a transient failure has many more
+    # chances before the certificate actually lapses.
+    entrypoint: >-
+      sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet;
+      echo \"[$$(date -Iseconds)] renewal check finished (exit $$?)\";
+      sleep 12h & wait $${!}; done"
     restart: unless-stopped
 
 volumes:

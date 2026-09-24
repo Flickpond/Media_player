@@ -1,5 +1,5 @@
 # Sprint 1 — Team Plan & Contract
-**Project:** Async video upload/transcode platform — SWE5001
+**Project:** Async video upload/transcode platform
 **Sprint 1 goal:** Upload → queue → worker → status → play. No real transcoding — worker does a copy job as a stand-in for FFmpeg.
 **Sprint window:** 4 September – 10 September 2026
 

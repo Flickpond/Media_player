@@ -1,0 +1,8 @@
+# Shell scripts must keep LF endings. A CRLF .sh checked out on Windows and
+# run on Linux fails with "bad interpreter: No such file or directory".
+*.sh text eol=lf
+
+# Same for anything the containers execute or parse.
+Dockerfile text eol=lf
+*.yml text eol=lf
+nginx.conf text eol=lf

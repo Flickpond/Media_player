@@ -9,6 +9,7 @@ from app.database import get_session_factory
 from app.main import create_app
 from app.models.job import Job
 from app.repositories.jobs import create_job, mark_done, mark_processing
+from tests.conftest import authenticate_as
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_POSTGRES_TESTS") != "1",
@@ -17,18 +18,24 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.mark.asyncio
-async def test_status_endpoints_read_real_postgres_data() -> None:
+async def test_status_endpoints_read_real_postgres_data(owner) -> None:
     job_id = uuid4()
     try:
         async with get_session_factory()() as session:
             await create_job(
                 session,
+                owner_id=owner.id,
                 job_id=job_id,
                 filename="integration.mp4",
                 source_key=f"uploads/{job_id}/integration.mp4",
             )
 
         application = create_app()
+        # The endpoints need a caller now, and this one is about the database
+        # round trip rather than about signing in -- tests/test_auth.py covers
+        # that. The owner is the real row the job was created against, so the
+        # scoping is genuinely exercised against PostgreSQL.
+        authenticate_as(application, owner)
         transport = ASGITransport(app=application)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             item_response = await client.get(f"/jobs/{job_id}")

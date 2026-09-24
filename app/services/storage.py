@@ -1,10 +1,11 @@
+from datetime import datetime
 from functools import lru_cache
 from typing import BinaryIO
 
 from minio import Minio
 from starlette.concurrency import run_in_threadpool
 
-from app.config import get_settings
+from app.services.minio_client import bucket, internal_client
 
 
 class StorageService:
@@ -18,6 +19,13 @@ class StorageService:
         self._bucket = bucket
 
     async def ensure_bucket(self) -> None:
+        """Create the bucket if it is missing.
+
+        Called once at application startup, not per write. It used to run
+        before every upload, which cost a `bucket_exists` round trip on a path
+        the contract budgets under one second (N1) -- and the bucket does not
+        disappear between requests.
+        """
         exists = await run_in_threadpool(
             self._client.bucket_exists,
             self._bucket,
@@ -34,8 +42,6 @@ class StorageService:
         local_path: str,
         object_key: str,
     ) -> None:
-        await self.ensure_bucket()
-
         await run_in_threadpool(
             self._client.fput_object,
             self._bucket,
@@ -55,6 +61,20 @@ class StorageService:
             local_path,
         )
 
+    async def delete_object(self, object_key: str) -> None:
+        await run_in_threadpool(self._client.remove_object, self._bucket, object_key)
+
+    async def list_objects(self, prefix: str = "") -> list[tuple[str, datetime | None]]:
+        def collect() -> list[tuple[str, datetime | None]]:
+            return [
+                (item.object_name, item.last_modified)
+                for item in self._client.list_objects(
+                    self._bucket, prefix=prefix, recursive=True
+                )
+            ]
+
+        return await run_in_threadpool(collect)
+
     async def upload_stream(
         self,
         object_key: str,
@@ -63,8 +83,6 @@ class StorageService:
         length: int,
         content_type: str = "application/octet-stream",
     ) -> None:
-        await self.ensure_bucket()
-
         await run_in_threadpool(
             self._client.put_object,
             self._bucket,
@@ -77,17 +95,6 @@ class StorageService:
 
 @lru_cache
 def get_storage_service() -> StorageService:
-    settings = get_settings()
-
-    client = Minio(
-        settings.minio_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=settings.minio_use_ssl,
-        region=settings.minio_region,
-    )
-
-    return StorageService(
-        client,
-        bucket=settings.minio_bucket,
-    )
+    # The internal client: this runs inside the compose network and never
+    # produces a URL anyone else opens. See app/services/minio_client.py.
+    return StorageService(internal_client(), bucket=bucket())

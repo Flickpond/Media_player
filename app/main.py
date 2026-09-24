@@ -1,15 +1,37 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.auth import router as auth_router
+from app.api.hls import router as hls_router
+from app.api.jobs import admin_router
 from app.api.jobs import router as jobs_router
 from app.api.uploads import MAX_FILE_SIZE
 from app.api.uploads import router as uploads_router
-from app.errors import ApiNotFoundError
+from app.errors import ApiForbiddenError, ApiNotFoundError, ApiUnauthorizedError
+from app.services.storage import get_storage_service
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Make sure the bucket exists, once, before serving anything.
+
+    This used to happen on every upload. Doing it here costs one round trip per
+    process instead of one per request, and the worker can rely on it because
+    compose gates the worker on the API being healthy.
+
+    A failure here is deliberately fatal: an API that cannot reach object
+    storage has nothing useful to offer, and failing at startup is far easier
+    to diagnose than every upload failing later.
+    """
+    await get_storage_service().ensure_bucket()
+    yield
 
 
 def create_app() -> FastAPI:
-    application = FastAPI(title="Flickpond API", version="0.1.0")
+    application = FastAPI(title="Flickpond API", version="0.1.0", lifespan=lifespan)
 
     @application.middleware("http")
     async def reject_oversized_bodies(request: Request, call_next):
@@ -36,12 +58,27 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    application.include_router(auth_router)
     application.include_router(jobs_router)
+    # Before jobs_router would also work; after is fine because the paths do
+    # not overlap -- /jobs/{id}/hls/... has a segment /jobs/{id} cannot match.
+    application.include_router(hls_router)
+    application.include_router(admin_router)
     application.include_router(uploads_router)
 
     @application.exception_handler(ApiNotFoundError)
     async def not_found_handler(_request: Request, exception: ApiNotFoundError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"error": exception.message})
+
+    @application.exception_handler(ApiUnauthorizedError)
+    async def unauthorized_handler(
+        _request: Request, exception: ApiUnauthorizedError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=401, content={"error": exception.message})
+
+    @application.exception_handler(ApiForbiddenError)
+    async def forbidden_handler(_request: Request, exception: ApiForbiddenError) -> JSONResponse:
+        return JSONResponse(status_code=403, content={"error": exception.message})
 
     @application.get("/health", tags=["health"])
     async def health() -> dict[str, str]:

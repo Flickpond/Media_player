@@ -37,11 +37,15 @@ async function loadPage() {
   await import("./app.js");
 
   el = {
-    form: document.getElementById("upload-form"),
+    dropzone: document.getElementById("dropzone"),
     fileInput: document.getElementById("file-input"),
-    button: document.getElementById("upload-button"),
     status: document.getElementById("status"),
     player: document.getElementById("player"),
+    app: document.getElementById("app"),
+    authForm: document.getElementById("auth-form"),
+    authEmail: document.getElementById("auth-email"),
+    authPassword: document.getElementById("auth-password"),
+    authToggle: document.getElementById("auth-toggle"),
   };
 }
 
@@ -60,6 +64,18 @@ describe.skipIf(!live)("frontend against the live stack", () => {
     const health = await fetch(`${API}/health`);
     if (!health.ok) throw new Error("stack is not up; run docker compose up -d --wait");
     await loadPage();
+
+    // Every job endpoint needs a caller now, so this registers a throwaway
+    // account and signs in through the page's own form -- the same path a
+    // person takes. The session cookie is HttpOnly, so nothing here holds a
+    // token; jsdom's cookie jar carries it exactly as a browser would.
+    el.authEmail.value = `live-${Date.now()}@example.test`;
+    el.authPassword.value = "live-test-password";
+    el.authToggle.dispatchEvent(new dom.window.Event("click"));
+    el.authForm.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
+    await until(() => el.app.hidden === false, {
+      label: "the app to appear after registering",
+    });
   });
 
   afterAll(() => dom?.window?.close());
@@ -80,7 +96,9 @@ describe.skipIf(!live)("frontend against the live stack", () => {
     const file = new File([bytes], "live-clip.mp4", { type: "video/mp4" });
     Object.defineProperty(el.fileInput, "files", { value: [file], configurable: true });
 
-    el.form.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
+    // The dropzone's real trigger is the file input's change event, not a
+    // form submit -- there is no separate "Upload" button to click.
+    el.fileInput.dispatchEvent(new dom.window.Event("change"));
 
     // Do not assert the transient "waiting for processing" text: a copy job on
     // a warm stack can finish inside one poll interval, so that state is not
@@ -90,10 +108,10 @@ describe.skipIf(!live)("frontend against the live stack", () => {
     });
 
     expect(el.status.textContent).toBe("Processing complete.");
-    expect(el.button.disabled).toBe(false);
+    expect(el.dropzone.classList.contains("busy")).toBe(false);
 
     // The player must have a URL a browser can actually fetch.
-    const src = el.player.getAttribute("src");
+    const src = el.player.querySelector("video").getAttribute("src");
     expect(src).toContain("/videos/outputs/");
     const played = await fetch(src);
     expect(played.ok).toBe(true);

@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     minio_bucket: str = "videos"
     minio_region: str = "us-east-1"
     minio_use_ssl: bool = False
+    # Separate from minio_use_ssl on purpose. The internal client talks to
+    # minio:9000 over plain HTTP inside the compose network and always will;
+    # the presigned URLs handed to a browser must be https once the site is,
+    # or the page blocks them as mixed content. One flag cannot be both.
+    minio_public_use_ssl: bool = False
     output_url_expiry_seconds: int = 3600
 
     redis_host: str = "127.0.0.1"
@@ -32,8 +37,42 @@ class Settings(BaseSettings):
     redis_ssl: bool = False
     redis_queue: str = "video_jobs"
 
+    # No default: a signing secret that falls back to something predictable is
+    # worse than one that fails loudly on startup. Must be set in the
+    # environment, and compose has to pass it through (T-19).
+    jwt_secret: str = ""
+    jwt_algorithm: str = "HS256"
+    # Short, because a JWT cannot be revoked -- logout can only clear the
+    # client's copy. This is the window a stolen token stays usable.
+    jwt_ttl_seconds: int = 1800
+
     worker_output_prefix: str = "outputs"
     worker_job_timeout_seconds: int = 900
+    worker_ffmpeg_binary: str = "ffmpeg"
+    # Ships in the same package as ffmpeg, so it is a new call rather than a
+    # new dependency. Separate setting anyway: a deployment that points
+    # `worker_ffmpeg_binary` at a custom build needs to say where the
+    # matching probe is, and silently probing with a different version's
+    # binary is the kind of mismatch that shows up as bad geometry, not as
+    # an error.
+    worker_ffprobe_binary: str = "ffprobe"
+    worker_ffprobe_timeout_seconds: int = 30
+
+    # Where the browser reaches this API, which is not where the API thinks
+    # it lives: nginx proxies `/api/` and strips the prefix, so a path built
+    # from the app's own routing table is missing it. Same problem, and the
+    # same shape of answer, as `minio_public_endpoint`.
+    #
+    # Only HLS needs this. Every other URL the API hands out is either
+    # absolute (a presigned object URL) or resolved by the page itself.
+    api_public_prefix: str = "/api"
+    worker_ffmpeg_preset: str = "veryfast"
+    worker_ffmpeg_crf: int = 23
+    worker_ffmpeg_max_height: int = 720
+    worker_ffmpeg_timeout_seconds: int = 870
+    reaper_interval_seconds: int = 60
+    reaper_lease_seconds: int = 1800
+    reaper_orphan_grace_seconds: int = 3600
 
     @property
     def redis_url(self) -> str:

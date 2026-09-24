@@ -7,6 +7,7 @@ from app.repositories.jobs import (
     mark_done,
     mark_failed,
     mark_processing,
+    prepare_retry,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "mark_done",
     "mark_failed",
     "mark_processing",
+    "prepare_retry",
 ]

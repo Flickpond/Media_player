@@ -1,7 +1,8 @@
 # Sprint 2 Backlog — what the sprint 1 review left open
 
 **Written:** 7 September 2026 · against `main` @ `40d5e6b` plus the review's fixes
-**Status:** P1, P2, P6 and P9 are open. Everything else here is done.
+**Status:** every problem in this document is closed. P1 became S2-03, P2 the
+reaper's orphan sweep, P6 became S2-07, and P9 became S2-08.
 
 Companion to [`sprint1-report.md`](sprint1-report.md), which records what exists,
 and [`scaling-notes.md`](scaling-notes.md), which records what serving 50 users
@@ -55,9 +56,14 @@ the `docker kill` demo.
 
 ---
 
-## 3. P1 — No authorization
+## 3. P1 — No authorization ✅ CLOSED
 
-**Severity: high. Blocks any deployment that is not loopback-only.**
+**Closed 11 September 2026.** Accounts, per-user job ownership and an operator
+role are live on <https://flickpond.com>; verified with two accounts that
+neither can see the other's jobs, and that a cross-owner read is 404 rather
+than 403. The basic-auth gate that stood in for this has been removed.
+
+The original finding, kept because the reasoning still matters:
 
 `GET /jobs` returns rows from the whole table, each with a live signed download
 URL. `GET /jobs/{id}` is equally open. There is no authentication anywhere in
@@ -68,10 +74,24 @@ This is a design gap, not a coding slip — sprint 1 scoped auth out
 deliberately. It only becomes exploitable the moment the API is reachable by
 someone who should not see everything.
 
-**Mitigated for now** by binding every published port to `127.0.0.1`. That is a
-deployment constraint, not a fix: the first time anyone publishes port 8000
-wider, every upload on the system becomes readable by whoever can reach it.
-Pagination (P5) caps how much leaks per request; it does not stop the leak.
+**Mitigated two ways, neither of them a fix.**
+
+1. Every service except nginx is pinned to `127.0.0.1`, and that is no longer
+   configurable — see the port policy in the README. nginx proxies `/api/` and
+   `/videos/` over the compose network, so nothing else needs a host port.
+2. A published deployment put HTTP basic auth in front of the whole server as a
+   stopgap. That is gone now that the app authenticates its own callers — a
+   shared password says nobody uninvited got in, not who did what.
+
+Both are deployment controls. Basic auth is a *shared* password: it tells you
+nobody uninvited got in, not who did what, and it cannot express "this user may
+see their own jobs". Pagination (P5) caps how much leaks per request; it does
+not stop the leak. Delete the gate when this lands.
+
+This was not hypothetical. The Alibaba deployment ran for a time with
+PostgreSQL, Redis and the MinIO console on `0.0.0.0` and the API reachable
+through nginx, and `GET /api/jobs` served every job with a working signed
+download URL to anyone who found the address.
 
 **What it takes:**
 
@@ -195,8 +215,8 @@ silently. The row is still stranded — that is P2, and it is still the finding.
 
 | Id | Problem | Where | Note |
 |---|---|---|---|
-| **P6** | `ensure_bucket()` runs on every upload | `app/services/storage.py` | An extra round-trip on a path budgeted under 1 s (N1). Belongs in a startup hook. Flat cost — no urgency. |
-| **P9** | Exception class names and object keys reach the user-facing `error` column | `app/worker/tasks.py`, `app/worker/storage.py` | Fine for a demo. Split the user-facing message from the logged diagnostic before real users see it. |
+| **P6** | `ensure_bucket()` runs on every upload | `app/services/storage.py` | **Closed by S2-07.** Moved to a FastAPI lifespan hook; uploads perform no bucket check at all. |
+| **P9** | Exception class names and object keys reach the user-facing `error` column | `app/worker/tasks.py`, `app/worker/storage.py` | **Closed by S2-08.** `ObjectStoreError` now carries two messages: `str(exc)` for the log, `user_message` for the `error` column. Both are required at every raise site. |
 
 ---
 
@@ -234,3 +254,5 @@ other people's files for no functional gain.
 2. **P2 via the sweeper**, built together with the already-planned `processing`
    reaper. Two limitations, one component.
 3. **P6 and P9** as hygiene, whenever those files are open anyway.
+
+All four landed in sprint 2, in that order.
