@@ -29,6 +29,7 @@ jobs:
     timeout-minutes: 25
     env:
       COMPOSE_PROJECT_NAME: flickpond-dast-${{ github.run_id }}
+      COMPOSE_FILE: docker-compose.yml:deploy/dast/compose.yml
       JWT_SECRET: dast-only-jwt-secret-not-for-production-2026
       REDIS_PASSWORD: dast-only-redis-password
       POSTGRES_PASSWORD: dast-only-postgres-password

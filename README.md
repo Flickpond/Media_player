@@ -357,7 +357,10 @@ and informational findings are summarized without blocking the PR while the
 baseline is reviewed; a ZAP infrastructure failure still fails the workflow.
 HTML, JSON, Markdown, XML, and application logs are retained as workflow
 artifacts for 30 days. No repository secret is required because every DAST
-credential exists only for the lifetime of the disposable runner.
+credential exists only for the lifetime of the disposable runner. The DAST
+stack builds its pinned MinIO release from source because MinIO's community
+container registries no longer allow anonymous pulls; this override does not
+change the image used by normal deployments.
 
 ## Environment variables
 
