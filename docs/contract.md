@@ -6,7 +6,10 @@ This document is the shared boundary for the API, worker, database, storage, and
 
 The only valid states are `queued`, `processing`, `done`, and `failed`.
 
-The API creates a job in `queued`. After creation, only the worker may change `status`, `output_key`, `error`, or `updated_at`.
+The API creates a job in `queued`. The worker owns processing transitions;
+Sprint 3 adds one explicit API exception: an authenticated owner can retry
+their failed job through `prepare_retry`, changing `failed -> queued`.
+All of these writes go through `app/repositories/jobs.py`.
 
 Valid one-way transitions are:
 
@@ -15,7 +18,10 @@ queued -> processing -> done
                      -> failed
 ```
 
-Sprint 1 has no retries. A failed job must contain a readable error.
+Sprint 1 had no retries. Sprint 3 adds `failed -> queued` through
+`POST /jobs/{id}/retry`; a failed job must still contain a readable error.
+Retry preserves the job ID, owner, source and operations, clears `error`,
+`output_key` and `hls_key`, and advances `updated_at`.
 
 **`error` is read by the person who uploaded the file**, because
 `GET /jobs/{id}` returns it verbatim. It must name a cause they can act on and
@@ -78,6 +84,12 @@ POST /upload
 GET /jobs/{id}
   200 { "id", "filename", "status", "output_url"?, "error"? }
   404 { "error": "not found" }
+
+POST /jobs/{id}/retry
+  202 { "job_id": "<same uuid>" } // no request body; only the owner's failed job
+  404 { "error": "not found" }    // missing or another owner's job
+  409 { "error": "only failed jobs can be retried" }
+  503 { "error": "retry could not be confirmed; refresh the job and try again" }
 
 DELETE /jobs/{id}
   204                          // no body. Deletes regardless of status.
@@ -146,6 +158,7 @@ list_jobs(session, *, owner_id=None, limit=50, offset=0)  # None = every owner
 mark_processing(session, job_id)
 mark_done(session, job_id, *, output_key, hls_key=None)
 mark_failed(session, job_id, *, error)
+prepare_retry(session, job_id, *, owner_id)  # API: enqueue, then commit; rollback on failure
 ```
 
 `hls_key` is optional because the adaptive ladder is best-effort: a `done`
@@ -154,7 +167,33 @@ constraint tying the two together. It is written on every transition, so a
 retry that produces no ladder clears a stale key rather than leaving it
 pointing at segments the new run has overwritten.
 
-The worker is the sole caller of the three `mark_*` functions. Each transition is an atomic conditional update, so an invalid or repeated transition fails rather than silently overwriting state.
+The worker is the sole caller of the three processing `mark_*` functions.
+Each transition is a conditional update. `mark_processing` first locks the
+row by ID so it waits for a pending retry transaction, even while the
+committed snapshot still says `failed`.
+
+`prepare_retry` leaves a transaction open deliberately: the caller enqueues
+before committing. An enqueue failure rolls back the entire change, retaining
+the original failed row. This is not a distributed transaction with Redis;
+after a 503, refresh the job before retrying. Never commit this preparation
+without attempting queue delivery.
+
+## Sprint 3 crop/clip validation seam
+
+Track C supplies `app/worker/validation.py`; B's edit processor calls:
+
+```python
+validate_crop(params: dict, probe: SourceProbe) -> None
+validate_clip(params: dict, probe: SourceProbe) -> None
+```
+
+Both raise `ValueError` with a curated, user-readable message on failure.
+The probe describes the real input, after download and before constructing
+FFmpeg arguments. A rectangle outside the frame or an end time beyond the
+source duration fails the worker job; it is **not an HTTP 422**. API request
+shape, supported operation names, and downscale/upscale conflicts remain B's
+responsibility. See [C's handoff](c-recovery-input-safety.md) for the required
+`ObjectStoreError` adapter that preserves these messages in `GET /jobs/{id}`.
 
 ## Shared configuration
 

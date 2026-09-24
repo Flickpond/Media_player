@@ -25,6 +25,7 @@ browser -> nginx -> FastAPI -> MinIO + PostgreSQL + Redis queue
 | --- | --- |
 | [`docs/known-traps.md`](docs/known-traps.md) | **Read this before changing anything.** 23 traps already hit here, most of which fail silently. |
 | [`docs/contract.md`](docs/contract.md) | The shared schema and API boundary. Changing it means telling the team. |
+| [`docs/c-recovery-input-safety.md`](docs/c-recovery-input-safety.md) | Sprint 3, track C: retry API, crop/clip validation, tests, and B/E integration instructions. |
 | [`docs/sprint2-report.md`](docs/sprint2-report.md) | **What sprint 2 delivered**: contributions, evidence, BUG-04 to BUG-12. |
 | [`docs/sprint2-plan.md`](docs/sprint2-plan.md) | Sprint 2: all eight items, what each decided, and why. |
 | [`docs/sprint2-backlog.md`](docs/sprint2-backlog.md) | The sprint 1 review's findings, P1-P9. All closed; kept for the reasoning. |
@@ -383,7 +384,12 @@ register/login -> upload -> queued -> processing (FFmpeg 720p) -> done | failed
                      reaper recovers rows abandoned by a dead worker
 ```
 
-Still out of scope: retries, format selection, quotas, resumable or multipart
+Sprint 3 track C adds the owner-scoped `POST /jobs/{id}/retry` endpoint and
+source-aware crop/clip validation. See the [C handoff](docs/c-recovery-input-safety.md)
+for usage, transaction behaviour, and the B/E integration still required before
+claiming the complete editing feature works in the browser.
+
+Still out of scope here: format selection, quotas, resumable or multipart
 upload, cloud orchestration, and instant session revocation (the JWT is
 stateless and stays valid until it expires — see
 [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md) §1).
