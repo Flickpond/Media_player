@@ -91,6 +91,15 @@ POST /jobs/{id}/retry
   409 { "error": "only failed jobs can be retried" }
   503 { "error": "retry could not be confirmed; refresh the job and try again" }
 
+POST /jobs/{id}/edit
+  { "operations": [ { "operation": "...", "params": { ... } } ] }
+  202 { "job_id": "<new uuid>" }
+  404 { "error": "not found" } // missing or another owner's source job
+  409 { "error": "only completed jobs can be edited" }
+  422 { "detail": [...] }       // empty, unknown, malformed, duplicate, or
+                                  // downscale and upscale together
+  503 { "error": "edit could not be queued; please try again" }
+
 DELETE /jobs/{id}
   204                          // no body. Deletes regardless of status.
   404 { "error": "not found" } // unknown id, or not this caller's job -- same
@@ -153,6 +162,7 @@ The shared asynchronous repository functions are:
 
 ```python
 create_job(session, *, owner_id, filename, source_key, job_id=None)
+create_edit_job(session, *, owner_id, filename, source_key, operations, job_id=None)
 get_job(session, job_id, *, owner_id=None)  # None = any owner (worker, reaper)
 list_jobs(session, *, owner_id=None, limit=50, offset=0)  # None = every owner
 mark_processing(session, job_id)
