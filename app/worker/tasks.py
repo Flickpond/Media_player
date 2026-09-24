@@ -27,7 +27,12 @@ from app.repositories.jobs import (
     mark_processing,
 )
 from app.worker.db import get_worker_session_factory
-from app.worker.storage import ObjectStoreError, ProcessingStep, get_processing_step
+from app.worker.storage import (
+    ObjectStoreError,
+    ProcessingStep,
+    get_edit_processing_step,
+    get_processing_step,
+)
 
 logger = logging.getLogger("app.worker")
 
@@ -78,6 +83,7 @@ async def process_job_async(
     *,
     session_factory: async_sessionmaker[AsyncSession],
     step: ProcessingStep,
+    edit_step_factory=get_edit_processing_step,
 ) -> JobOutcome:
     # 1. Claim the job. The conditional update in `mark_processing` is what
     #    makes this safe with N workers racing on the same queue entry: exactly
@@ -95,12 +101,14 @@ async def process_job_async(
             return JobOutcome.SKIPPED
 
     source_key = job.source_key
+    operations = getattr(job, "operations", None)
+    selected_step = edit_step_factory(operations) if operations is not None else step
     logger.info("job %s: queued -> processing (source_key=%s)", job_id, source_key)
 
     # 2. Do the work with no database connection held. The step is blocking
     #    object-store I/O, so it goes to a thread rather than stalling the loop.
     try:
-        result = await asyncio.to_thread(step.run, job_id=job_id, source_key=source_key)
+        result = await asyncio.to_thread(selected_step.run, job_id=job_id, source_key=source_key)
     except Exception as exc:
         reason = readable_error(exc)
         # The diagnostic half lives here and only here: the traceback, and for
