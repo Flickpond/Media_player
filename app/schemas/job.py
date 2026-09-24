@@ -12,6 +12,10 @@ class JobResponse(BaseModel):
     filename: str
     status: JobStatus
     output_url: str | None = None
+    # The adaptive ladder's master playlist, when one was built. Absent on
+    # every job uploaded before sprint 3 and on any job whose ladder failed,
+    # so the player treats it as optional and falls back to `output_url`.
+    hls_url: str | None = None
     error: str | None = None
 
 
