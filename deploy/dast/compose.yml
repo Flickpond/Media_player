@@ -1,0 +1,9 @@
+services:
+  minio:
+    image: flickpond-minio:dast
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: deploy/dast/minio.Dockerfile
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9000/minio/health/live" ]
