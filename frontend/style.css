@@ -233,6 +233,59 @@ input:focus {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+/* Same surface as the text inputs above, so a dropdown reads as part of the
+   form rather than a white OS widget dropped onto a dark page. The chevron
+   is two gradients instead of an SVG data URI because a data URI cannot
+   read a CSS variable -- this way it follows --text-muted like everything
+   else, and turns accent on focus. */
+.field select,
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  padding: 11px 38px 11px 14px;
+  background-color: var(--bg-raised);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
+    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 19px) 50%,
+    calc(100% - 14px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 14px;
+  font-family: var(--font-body);
+  cursor: pointer;
+  /* Makes the opened list dark too, in browsers that draw it natively. */
+  color-scheme: dark;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+select:hover:not(:disabled) {
+  border-color: var(--text-faint);
+}
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--accent) 50%),
+    linear-gradient(135deg, var(--accent) 50%, transparent 50%);
+}
+select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* For browsers whose opened list ignores color-scheme. */
+select option {
+  background: var(--bg-raised);
+  color: var(--text);
+}
+
 .hint {
   font-size: 12px;
   color: var(--text-faint);
