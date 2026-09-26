@@ -61,6 +61,23 @@ class StorageService:
             local_path,
         )
 
+    async def read_object(self, object_key: str) -> bytes:
+        """The whole object, in memory -- only for small objects.
+
+        Exists for HLS playlists, which are a few hundred bytes. Never point
+        this at a video: it holds the entire body in the API process.
+        """
+
+        def read() -> bytes:
+            response = self._client.get_object(self._bucket, object_key)
+            try:
+                return response.read()
+            finally:
+                response.close()
+                response.release_conn()
+
+        return await run_in_threadpool(read)
+
     async def delete_object(self, object_key: str) -> None:
         await run_in_threadpool(self._client.remove_object, self._bucket, object_key)
 
