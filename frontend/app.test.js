@@ -1707,8 +1707,12 @@ describe("editor", () => {
 
     expect(el.editCrop.disabled).toBe(true);
     expect(el.editClip.disabled).toBe(true);
-    expect(el.editCropMount.textContent).toContain("Track B");
-    expect(el.editClipMount.textContent).toContain("Track C");
+    // Visitors see this, so it says what they can expect -- not which of
+    // the team's tracks owns the missing component.
+    expect(el.editCropMount.textContent).toContain("next update");
+    expect(el.editClipMount.textContent).toContain("next update");
+    expect(el.editCropMount.textContent).not.toMatch(/Track [A-E]/);
+    expect(el.editClipMount.textContent).not.toMatch(/Track [A-E]/);
     // The three the panel owns are always usable.
     expect(el.editDownscale.disabled).toBe(false);
     expect(el.editUpscale.disabled).toBe(false);

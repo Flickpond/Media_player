@@ -880,7 +880,7 @@ function mountEditComponents() {
       checkbox: el.editCrop,
       host: el.editCropMount,
       mount: window.mountCropBox,
-      missing: "Not loaded yet — the crop box is Track B's.",
+      missing: "Coming in the next update.",
       apply: (selection) => {
         cropSelection = selection;
       },
@@ -889,7 +889,7 @@ function mountEditComponents() {
       checkbox: el.editClip,
       host: el.editClipMount,
       mount: window.mountClipScrubber,
-      missing: "Not loaded yet — the clip scrubber is Track C's.",
+      missing: "Coming in the next update.",
       apply: (selection) => {
         clipSelection = selection;
       },
