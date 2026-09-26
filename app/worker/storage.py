@@ -333,3 +333,28 @@ def get_processing_step() -> ProcessingStep:
             timeout_seconds=settings.worker_ffprobe_timeout_seconds,
         ),
     )
+
+
+def get_edit_processing_step(operations: list[dict]) -> ProcessingStep:
+    """Build an uncached processor because operations belong to one job."""
+    from functools import partial
+
+    from app.worker.operations import EditProcessor
+    from app.worker.probe import probe_source
+
+    settings = get_settings()
+    store = MinioObjectStore(internal_client(), bucket=bucket())
+    return EditProcessor(
+        store,
+        operations,
+        output_prefix=settings.worker_output_prefix,
+        ffmpeg_binary=settings.worker_ffmpeg_binary,
+        preset=settings.worker_ffmpeg_preset,
+        crf=settings.worker_ffmpeg_crf,
+        timeout_seconds=settings.worker_ffmpeg_timeout_seconds,
+        prober=partial(
+            probe_source,
+            ffprobe_binary=settings.worker_ffprobe_binary,
+            timeout_seconds=settings.worker_ffprobe_timeout_seconds,
+        ),
+    )
