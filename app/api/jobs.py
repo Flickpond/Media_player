@@ -1,7 +1,8 @@
 import asyncio
 import logging
+from pathlib import PurePosixPath
 from typing import Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Query, Response, status
 from fastapi.responses import JSONResponse
@@ -19,11 +20,13 @@ from app.repositories.jobs import (
     MAX_PAGE_SIZE,
     InvalidJobTransitionError,
     JobNotFoundError,
+    create_edit_job,
     delete_job,
     get_job,
     list_jobs,
     prepare_retry,
 )
+from app.schemas.edit import EditRequest
 from app.schemas.job import ErrorResponse, JobResponse
 from app.services.output_urls import OutputUrlSigner, get_output_url_signer
 from app.services.storage import StorageService, get_storage_service
@@ -142,6 +145,60 @@ async def retry_job_by_id(
     return {"job_id": str(job_id)}
 
 
+@router.post(
+    "/{job_id}/edit",
+    response_model=dict[str, str],
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+async def edit_job_by_id(
+    job_id: UUID,
+    request: EditRequest,
+    user: CurrentUser,
+    session: SessionDependency,
+) -> dict[str, str] | Response:
+    """Create one queued batch edit from a completed job owned by the caller."""
+    source = await get_job(session, job_id, owner_id=user.id)
+    if source is None:
+        raise ApiNotFoundError("not found")
+    if source.status != JobStatus.DONE.value or not source.output_key:
+        return JSONResponse(
+            status_code=409,
+            content={"error": "only completed jobs can be edited"},
+        )
+
+    convert = request.operation("convert")
+    extension = convert.params.format if convert is not None else "mp4"
+    stem = PurePosixPath(source.filename).stem or "edited-video"
+    new_job_id = uuid4()
+    created = await create_edit_job(
+        session,
+        job_id=new_job_id,
+        owner_id=user.id,
+        filename=f"{stem}-edited.{extension}",
+        source_key=source.output_key,
+        operations=request.stored_operations(),
+    )
+
+    try:
+        await run_in_threadpool(enqueue_job, created.id)
+    except Exception:
+        # The row has no storage of its own yet. Removing it avoids leaving a
+        # permanently queued library entry when Redis refused the delivery.
+        await delete_job(session, created.id, owner_id=user.id)
+        logger.exception("job %s: edit could not be queued", created.id)
+        return JSONResponse(
+            status_code=503,
+            content={"error": "edit could not be queued; please try again"},
+        )
+
+    return {"job_id": str(created.id)}
+
+
 async def _delete_job_and_storage(
     session: AsyncSession,
     storage: StorageService,
@@ -162,7 +219,11 @@ async def _delete_job_and_storage(
     if job is None:
         return None
 
-    keys = list(filter(None, (job.source_key, job.output_key)))
+    # An edit borrows another job's output as its source. Deleting the edit
+    # must not delete that shared object and break the original library item.
+    keys = list(filter(None, (job.output_key,)))
+    if job.operations is None:
+        keys.insert(0, job.source_key)
 
     # An HLS ladder is hundreds of objects under one prefix, so deleting
     # `hls_key` alone would remove the master playlist and orphan every

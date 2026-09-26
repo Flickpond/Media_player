@@ -12,6 +12,7 @@ from app.errors import ApiNotFoundError
 from app.main import create_app
 from app.models.job import Job, JobStatus
 from app.services.output_urls import get_output_url_signer
+from app.services.storage import get_storage_service
 from tests.conftest import authenticate_as
 
 LADDER_KEY = "outputs/abc/hls/master.m3u8"
@@ -36,13 +37,37 @@ class FakeSigner:
         return f"https://media.example.test/{output_key}?signed=true"
 
 
+MASTER_BODY = b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=900000\nv0/index.m3u8\n"
+VARIANT_BODY = b"#EXTM3U\n#EXTINF:6.0,\nseg00000.ts\n"
+
+
+class FakeStorage:
+    def __init__(self) -> None:
+        self.objects = {
+            "outputs/abc/hls/master.m3u8": MASTER_BODY,
+            "outputs/abc/hls/v0/index.m3u8": VARIANT_BODY,
+        }
+        self.reads: list[str] = []
+
+    async def read_object(self, object_key: str) -> bytes:
+        self.reads.append(object_key)
+        if object_key not in self.objects:
+            raise KeyError(object_key)
+        return self.objects[object_key]
+
+
 @pytest_asyncio.fixture
 async def signer():
     return FakeSigner()
 
 
 @pytest_asyncio.fixture
-async def client(test_user, signer: FakeSigner):
+async def storage():
+    return FakeStorage()
+
+
+@pytest_asyncio.fixture
+async def client(test_user, signer: FakeSigner, storage: FakeStorage):
     application = create_app()
 
     async def fake_session():
@@ -50,6 +75,7 @@ async def client(test_user, signer: FakeSigner):
 
     application.dependency_overrides[get_session] = fake_session
     application.dependency_overrides[get_output_url_signer] = lambda: signer
+    application.dependency_overrides[get_storage_service] = lambda: storage
     authenticate_as(application, test_user)
     transport = ASGITransport(app=application)
     async with AsyncClient(transport=transport, base_url="http://test") as test_client:
@@ -81,17 +107,89 @@ def serve(monkeypatch: pytest.MonkeyPatch, job: Job | None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_master_playlist_redirects_to_a_signed_url(
+async def test_the_master_playlist_is_served_not_redirected(
     client: AsyncClient, signer: FakeSigner, monkeypatch: pytest.MonkeyPatch
 ):
+    """The regression test for the bug this route shipped with.
+
+    A player resolves a playlist's relative URIs against the URL it finally
+    fetched it from. A 307 here moved that base onto the object store, so
+    every rendition resolved to an unsigned object URL and got 403 -- in a
+    real browser, while every curl check passed. The body has to come from
+    this route so the base stays here.
+    """
     job = make_job()
     serve(monkeypatch, job)
 
     response = await client.get(f"/jobs/{job.id}/hls/master.m3u8", follow_redirects=False)
 
-    assert response.status_code == 307
-    assert response.headers["location"].startswith("https://media.example.test/")
-    assert signer.inline_keys == ["outputs/abc/hls/master.m3u8"]
+    assert response.status_code == 200
+    assert response.content == MASTER_BODY
+    assert response.headers["content-type"] == "application/vnd.apple.mpegurl"
+    assert signer.inline_keys == [], "a playlist must never be handed off by redirect"
+
+
+@pytest.mark.asyncio
+async def test_a_relative_uri_in_a_served_playlist_resolves_back_to_this_route(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """What a player actually does next, done here with the same URL rules.
+
+    Resolve the playlist's first entry against the URL the playlist came
+    from; the result has to land on this route again, where the owner check
+    and the signing happen -- not on the object store.
+    """
+    from urllib.parse import urljoin
+
+    job = make_job()
+    serve(monkeypatch, job)
+    master_url = f"http://test/jobs/{job.id}/hls/master.m3u8"
+
+    response = await client.get(master_url, follow_redirects=False)
+    first_entry = response.text.strip().splitlines()[-1]
+
+    assert urljoin(str(response.url), first_entry) == f"http://test/jobs/{job.id}/hls/v0/index.m3u8"
+
+
+@pytest.mark.asyncio
+async def test_a_variant_playlist_is_served_too(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    job = make_job()
+    serve(monkeypatch, job)
+
+    response = await client.get(f"/jobs/{job.id}/hls/v0/index.m3u8", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert response.content == VARIANT_BODY
+
+
+@pytest.mark.asyncio
+async def test_playlists_are_not_cacheable_by_shared_caches(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """The body is per-owner. A shared cache keyed on the path alone would
+    hand one user's playlist to the next caller of the same URL.
+    """
+    job = make_job()
+    serve(monkeypatch, job)
+
+    response = await client.get(f"/jobs/{job.id}/hls/master.m3u8", follow_redirects=False)
+
+    assert "no-store" in response.headers["cache-control"]
+    assert "private" in response.headers["cache-control"]
+
+
+@pytest.mark.asyncio
+async def test_a_playlist_missing_from_storage_is_404(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    job = make_job()
+    serve(monkeypatch, job)
+
+    response = await client.get(f"/jobs/{job.id}/hls/v7/index.m3u8", follow_redirects=False)
+
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -118,7 +216,7 @@ async def test_hls_parts_are_signed_inline_not_as_attachments(
     job = make_job()
     serve(monkeypatch, job)
 
-    await client.get(f"/jobs/{job.id}/hls/v0/index.m3u8", follow_redirects=False)
+    await client.get(f"/jobs/{job.id}/hls/v0/seg00000.ts", follow_redirects=False)
 
     assert signer.inline_keys, "the route used the download signer instead of the inline one"
 
@@ -175,7 +273,11 @@ async def test_a_job_with_no_ladder_is_404_rather_than_a_url_to_nothing(
 )
 @pytest.mark.asyncio
 async def test_a_path_outside_the_ladder_is_404_and_signs_nothing(
-    client: AsyncClient, signer: FakeSigner, monkeypatch: pytest.MonkeyPatch, path: str
+    client: AsyncClient,
+    signer: FakeSigner,
+    storage: FakeStorage,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
 ):
     """`path` is interpolated into an object key, which is exactly where the
     unsanitised upload filename sat when sprint 1's review found it. Keys
@@ -192,6 +294,7 @@ async def test_a_path_outside_the_ladder_is_404_and_signs_nothing(
 
     assert response.status_code == 404
     assert signer.inline_keys == []
+    assert storage.reads == []
 
 
 # --- the guard itself, not the client's URL handling ----------------------

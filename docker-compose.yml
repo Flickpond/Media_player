@@ -193,7 +193,13 @@ services:
     restart: unless-stopped
 
   minio:
-    image: quay.io/minio/minio:RELEASE.2024-06-13T22-53-53Z
+    # The exact reference production and every existing checkout already has.
+    # Neither Docker Hub nor Quay serves this image anonymously any more, so
+    # pointing at a registry that looks newer only guarantees a failed pull on
+    # the next deploy. A fresh clone cannot pull it either way -- the durable
+    # fix is building from pinned source, as CI already does with
+    # deploy/dast/minio.Dockerfile.
+    image: minio/minio:RELEASE.2024-06-13T22-53-53Z
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       # Development credentials, and only safe because both ports below are
