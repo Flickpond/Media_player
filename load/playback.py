@@ -1,4 +1,4 @@
-"""Measure the first decoded frame of a completed local job in the real UI."""
+"""Measure the first decoded frame of a completed load-test job in the real UI."""
 
 import argparse
 import json
@@ -6,9 +6,11 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
+from target import checked_target
 
 
 def main():
@@ -16,16 +18,27 @@ def main():
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--mp4-only", action="store_true")
     args = parser.parse_args()
-    origin = os.environ.get("LOAD_BASE_URL", "")
-    target = urlsplit(origin)
-    if (target.scheme, target.hostname, target.port) != ("http", "127.0.0.1", 13000):
-        parser.error("only http://127.0.0.1:13000 is permitted")
+    origin = checked_target()
     fixture = json.loads(args.evidence.read_text(encoding="utf-8"))
+    if os.environ.get("LOAD_MODE") == "production" and (
+        fixture.get("run_id") != os.environ["LOAD_RUN_ID"]
+        or args.evidence.name != "fixture.json"
+        or args.evidence.parent.name != f"cloud-{os.environ['LOAD_RUN_ID']}"
+        or args.evidence.parent.resolve().parent != Path("load/results").resolve()
+    ):
+        parser.error("playback requires evidence from this production run")
     job_id = fixture["job_id"]
+    UUID(job_id)
     network = {"hls_redirects": 0, "object_successes": 0, "object_failures": 0}
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel="msedge", headless=True)
         page = browser.new_page(viewport={"width": 1280, "height": 800})
+        page.route(
+            "**/*",
+            lambda route: route.continue_()
+            if route.request.url.startswith(origin + "/") or route.request.url == origin
+            else route.abort(),
+        )
 
         def record_response(response):
             path = urlsplit(response.url).path
@@ -37,6 +50,8 @@ def main():
 
         page.on("response", record_response)
         page.goto(origin, wait_until="domcontentloaded")
+        if urlsplit(page.url).scheme + "://" + urlsplit(page.url).netloc != origin:
+            raise RuntimeError("browser left the authorized origin before login")
         page.locator("#auth-email").fill(os.environ["LOAD_EMAIL"])
         page.locator("#auth-password").fill(os.environ["LOAD_PASSWORD"])
         page.locator("#auth-submit").click()

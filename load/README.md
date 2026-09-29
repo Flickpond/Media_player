@@ -1,7 +1,9 @@
-# Local load validation
+# Load validation
 
-This workload is restricted to `http://127.0.0.1:13000`. It must not be run
-against flickpond.com. It creates one small, real video job, then exercises
+By default this workload is restricted to `http://127.0.0.1:13000`. The
+explicit production mode below is restricted to `https://flickpond.com` and
+requires an approved, monitored maintenance window. It creates one small,
+real video job, then exercises
 authenticated reads from 10, 25 and 50 virtual users. The video is only a
 fixture; the read load does not submit or transcode 50 videos. All raw results
 under `load/results/` stay on the local machine and are ignored by Git.
@@ -99,3 +101,73 @@ docker compose @compose down -v --remove-orphans
 At 50 users, compare each non-video route's p90 against 2,000 ms. Report
 upload-to-202, processing-to-terminal, and browser first-frame separately;
 the 50-user workload is local and does not establish production capacity.
+
+## Production read test (operator attended)
+
+Do not run this section until the owner approves a specific maintenance
+window, the on-call observer is watching real users and containers, and the
+cloud baseline shows healthy nginx, API, two workers, reaper, PostgreSQL,
+Redis, MinIO, queue depth, CPU, RAM, and disk. Do not infer cloud health from
+local Docker. Save redacted baseline snapshots before and after *each* stage.
+Use one load generator; do not run distributed Locust or multiple instances.
+The production account must already exist; this mode never registers one.
+Only this run's fixture job may be removed. Raw HTML and CSV stay in the
+Git-ignored results directory; review them for sensitive data before sharing.
+
+In a PowerShell terminal on the load generator, from the repo root:
+
+```powershell
+$env:LOAD_MODE = 'production'
+$env:LOAD_BASE_URL = 'https://flickpond.com'
+$env:LOAD_RUN_ID = [guid]::NewGuid().ToString()
+$env:LOAD_CONFIRM = "flickpond-production:$env:LOAD_RUN_ID"
+$env:LOAD_EMAIL = Read-Host 'Approved test account email'
+$env:LOAD_PASSWORD = [System.Net.NetworkCredential]::new('', (Read-Host -AsSecureString 'Test password')).Password
+$runDir = "load/results/cloud-$env:LOAD_RUN_ID"
+$env:LOAD_ALLOW_UPLOAD = '1'
+.\.venv\Scripts\python.exe load/fixture.py prepare --video load/results/20260925-local/fixture.mp4 --evidence "$runDir/fixture.json"
+Remove-Item Env:LOAD_ALLOW_UPLOAD
+$env:LOAD_JOB_ID = (Get-Content "$runDir/fixture.json" -Raw | ConvertFrom-Json).job_id
+```
+
+The original MP4 is a two-second test pattern (under 1 MB). If it is not
+available, create another original MP4 and check its size before the one
+permitted upload. An interrupted prepare may leave a job ID in `fixture.json`;
+inspect that record and clean up the same job rather than retrying upload.
+No read stage should start unless this job reached `done`.
+
+First run a 1-user, 15-second smoke test, then inspect its failures and the
+cloud baseline. For each subsequent stage, set `$users` separately to 10,
+then 25, then 50, running the command once per value. The next stage requires
+the previous stage's CSV and live health to be reviewed by the observer; 50
+users requires explicit approval in the active maintenance window.
+
+```powershell
+$users = 1
+$duration = '15s'
+.\.venv\Scripts\python.exe -m locust -f load/locustfile.py --headless --host $env:LOAD_BASE_URL --users $users --spawn-rate 5 --run-time $duration --csv "$runDir/users-$users" --html "$runDir/users-$users.html" --only-summary --exit-code-on-error 2
+Import-Csv "$runDir/users-$users`_stats.csv" | Select-Object Type,Name,'Request Count','Failure Count','90%','Requests/s'
+```
+
+For each approved 10/25/50 stage use `$duration = '3m'` and set `$users` by
+hand before running the same two lines. Abort immediately on persistent 5xx,
+30 seconds above 1% errors or 2 s non-video p90, degraded health, CPU above
+85% for 60 seconds, memory above 85%, disk free below 20%, a queue growing
+by more than 10 for 30 seconds, or real-user impact. Do not automatically
+continue after a failure. Capture each stage's redacted container and queue
+snapshots on the server; no direct datastore access or deployment commands.
+
+Outside the read phases, inspect HLS first-frame separately (a local test
+previously found a 403 on the variant playlist). Whether it succeeds or not,
+clean up the exact fixture job and verify 404:
+
+```powershell
+.\.venv\Scripts\python.exe load/playback.py --evidence "$runDir/fixture.json"
+.\.venv\Scripts\python.exe load/fixture.py cleanup --evidence "$runDir/fixture.json"
+Remove-Item Env:LOAD_PASSWORD,Env:LOAD_CONFIRM,Env:LOAD_ALLOW_UPLOAD -ErrorAction SilentlyContinue
+```
+
+If playback fails, still run cleanup. Report the 50-user non-video p90 and
+first-frame <5 s criteria independently; a production observation does not
+replace the proposal's staging acceptance test. Rotate test credentials
+afterwards, especially if they were shared through a chat channel.
