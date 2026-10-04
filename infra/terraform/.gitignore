@@ -1,0 +1,8 @@
+# State holds resource IDs and the instance's addresses; variables files
+# hold operator IPs. Neither belongs in the repo.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!example.tfvars
+crash.log
