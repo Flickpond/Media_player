@@ -164,3 +164,42 @@ def test_no_storage_failure_puts_an_object_key_in_the_users_half(call):
     assert LEAKY_KEY not in caught.value.user_message
     assert "holiday-in-crete" not in caught.value.user_message
     assert "AccessDenied" not in caught.value.user_message
+
+
+# --- removing a ladder nobody recorded ---------------------------------------
+
+
+class _Listing(FakeMinio):
+    def __init__(self, names, *, list_error=None):
+        super().__init__()
+        self.names = names
+        self.list_error = list_error
+        self.removed: list[str] = []
+
+    def list_objects(self, bucket, prefix, recursive):
+        if self.list_error:
+            raise self.list_error
+        assert recursive, "a ladder is nested under v0/, v1/..."
+        from types import SimpleNamespace
+
+        return [SimpleNamespace(object_name=name) for name in self.names if name.startswith(prefix)]
+
+    def remove_object(self, bucket, key):
+        self.removed.append(key)
+
+
+def test_delete_prefix_removes_every_object_under_it_and_nothing_else():
+    client = _Listing(["outputs/j/hls/master.m3u8", "outputs/j/hls/v0/seg1.ts", "outputs/j/x.mp4"])
+
+    MinioObjectStore(client, bucket="videos").delete_prefix("outputs/j/hls/")
+
+    assert client.removed == ["outputs/j/hls/master.m3u8", "outputs/j/hls/v0/seg1.ts"]
+
+
+def test_delete_prefix_wraps_s3_failures():
+    client = _Listing([], list_error=s3_error("AccessDenied"))
+
+    with pytest.raises(ObjectStoreError) as caught:
+        MinioObjectStore(client, bucket="videos").delete_prefix("outputs/j/hls/")
+
+    assert "AccessDenied" in str(caught.value)

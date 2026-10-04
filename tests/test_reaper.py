@@ -8,6 +8,10 @@ from app.models.job import JobStatus
 from app.worker import reaper
 
 
+async def _no_stale_ladders(_session, *, before):
+    return []
+
+
 @pytest.mark.asyncio
 async def test_reaper_deletes_only_old_orphan_objects(monkeypatch):
     now = datetime.now(UTC)
@@ -40,6 +44,7 @@ async def test_reaper_deletes_only_old_orphan_objects(monkeypatch):
     ))
     monkeypatch.setattr(reaper, "get_session_factory", lambda: sessions)
     monkeypatch.setattr(reaper, "list_stale", list_stale)
+    monkeypatch.setattr(reaper, "list_stale_ladders", _no_stale_ladders)
     monkeypatch.setattr(reaper, "list_source_keys", list_source_keys)
     monkeypatch.setattr(reaper, "get_storage_service", lambda: storage)
     monkeypatch.setattr(reaper, "get_redis_connection", lambda: object())
@@ -75,6 +80,7 @@ async def test_reaper_marks_stale_processing_job_failed(monkeypatch):
     ))
     monkeypatch.setattr(reaper, "get_session_factory", lambda: sessions)
     monkeypatch.setattr(reaper, "list_stale", list_stale)
+    monkeypatch.setattr(reaper, "list_stale_ladders", _no_stale_ladders)
     monkeypatch.setattr(reaper, "mark_stale_failed", mark_stale_failed)
     monkeypatch.setattr(reaper, "list_source_keys", list_source_keys)
     monkeypatch.setattr(reaper, "get_storage_service", lambda: SimpleNamespace(
@@ -109,6 +115,7 @@ async def test_reaper_requeues_stale_queued_job_missing_from_rq(monkeypatch):
     ))
     monkeypatch.setattr(reaper, "get_session_factory", lambda: sessions)
     monkeypatch.setattr(reaper, "list_stale", list_stale)
+    monkeypatch.setattr(reaper, "list_stale_ladders", _no_stale_ladders)
     monkeypatch.setattr(reaper, "list_source_keys", list_source_keys)
     monkeypatch.setattr(reaper, "get_storage_service", lambda: SimpleNamespace(
         list_objects=list_objects

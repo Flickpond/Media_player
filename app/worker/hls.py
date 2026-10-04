@@ -5,7 +5,8 @@ pointing at the single-file MP4 that every existing job and every existing
 player already uses; `hls_key` points at a master playlist beside it. If
 anything in here fails the MP4 still stands, which is why the caller treats
 a failure as "no ladder" rather than "the job failed" -- see
-`FfmpegProcessor.run`.
+`app.worker.tasks.build_ladder_async`, which runs this as its own job after
+the MP4 job has already marked the video done.
 
 The ladder is capped by what the source actually contains. A 480p upload
 gets two renditions, not three: a 720p rendition of a 480p source costs
@@ -140,12 +141,11 @@ def build_ladder_command(
 
 
 class HlsLadderBuilder:
-    """Produces a ladder from an already-downloaded source and uploads it.
+    """Produces a ladder from a source object and uploads it.
 
-    Takes the local path rather than an object key because the caller has
-    already downloaded the source to transcode it -- fetching it a second
-    time would double the object-store traffic of every upload to save
-    passing one argument.
+    It used to take only a local path, sharing the MP4 job's download. As
+    its own job it fetches the source again: one extra read of the upload,
+    traded for the MP4 no longer waiting on every rendition.
     """
 
     def __init__(
@@ -167,6 +167,20 @@ class HlsLadderBuilder:
 
     def prefix_for(self, job_id: UUID) -> str:
         return f"{self._output_prefix}/{job_id}/hls"
+
+    def run(self, *, job_id: UUID, source_key: str, probe: SourceProbe) -> str:
+        """Download `source_key`, build its ladder, return the master's key."""
+        temp_dir = Path(tempfile.mkdtemp(prefix="flickpond-ladder-src-"))
+        try:
+            source_path = temp_dir / "source"
+            self._store.download_file(key=source_key, destination=str(source_path))
+            return self.build(job_id=job_id, source_path=source_path, probe=probe)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def discard(self, job_id: UUID) -> None:
+        """Remove a ladder nobody will record -- see `build_ladder_async`."""
+        self._store.delete_prefix(self.prefix_for(job_id) + "/")
 
     def build(self, *, job_id: UUID, source_path: Path, probe: SourceProbe) -> str:
         """Build and upload the ladder, returning the master playlist's key."""

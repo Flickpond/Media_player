@@ -19,18 +19,25 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.models.job import HlsStatus, JobStatus
+from app.queue import enqueue_ladder
 from app.repositories.jobs import (
     InvalidJobTransitionError,
     JobNotFoundError,
+    get_job,
     mark_done,
     mark_failed,
+    mark_ladder_ready,
+    mark_ladder_unavailable,
     mark_processing,
 )
 from app.worker.db import get_worker_session_factory
+from app.worker.probe import SourceProbe
 from app.worker.storage import (
     ObjectStoreError,
     ProcessingStep,
     get_edit_processing_step,
+    get_ladder_step,
     get_processing_step,
 )
 
@@ -84,6 +91,7 @@ async def process_job_async(
     session_factory: async_sessionmaker[AsyncSession],
     step: ProcessingStep,
     edit_step_factory=get_edit_processing_step,
+    enqueue_ladder_fn=enqueue_ladder,
 ) -> JobOutcome:
     # 1. Claim the job. The conditional update in `mark_processing` is what
     #    makes this safe with N workers racing on the same queue entry: exactly
@@ -126,7 +134,8 @@ async def process_job_async(
         logger.info("job %s: processing -> failed (%s)", job_id, reason)
         return JobOutcome.FAILED
 
-    # 3. Record success.
+    # 3. Record success. A ladder still to come is `pending`, not absent, so
+    #    the page can say "HD processing" instead of offering nothing.
     async with session_factory() as session:
         try:
             await mark_done(
@@ -134,6 +143,7 @@ async def process_job_async(
                 job_id,
                 output_key=result.output_key,
                 hls_key=result.hls_key,
+                hls_status=HlsStatus.PENDING if result.ladder_pending else None,
                 width=result.width,
                 height=result.height,
                 duration_seconds=result.duration_seconds,
@@ -143,12 +153,89 @@ async def process_job_async(
             return JobOutcome.SKIPPED
 
     logger.info(
-        "job %s: processing -> done (output_key=%s, hls_key=%s)",
+        "job %s: processing -> done (output_key=%s, hls_key=%s, ladder=%s)",
         job_id,
         result.output_key,
         result.hls_key or "none",
+        "queued" if result.ladder_pending else "none",
     )
+
+    # 4. Only after the commit: a ladder job that ran first would find the
+    #    row still `processing` and skip it.
+    if result.ladder_pending:
+        await _hand_off_ladder(job_id, session_factory=session_factory, enqueue=enqueue_ladder_fn)
     return JobOutcome.DONE
+
+
+async def _hand_off_ladder(job_id: UUID, *, session_factory, enqueue) -> None:
+    try:
+        await asyncio.to_thread(enqueue, job_id)
+    except Exception:
+        # The video is already done and playable; a ladder that cannot be
+        # queued is settled now rather than left pending for the reaper.
+        logger.exception("job %s: could not queue the HLS ladder; MP4 only", job_id)
+        async with session_factory() as session:
+            await mark_ladder_unavailable(session, job_id)
+
+
+async def build_ladder_async(
+    job_id: UUID,
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    ladder_step,
+) -> HlsStatus | None:
+    """Build the adaptive ladder for a job that is already `done`.
+
+    Never touches `status`: the video was finished when this was queued, and
+    whatever happens here costs at most the quality selector. Returns the
+    ladder state it settled on, or None if there was nothing to settle.
+    """
+    async with session_factory() as session:
+        job = await get_job(session, job_id)
+    if job is None or job.status != JobStatus.DONE.value or job.hls_status != HlsStatus.PENDING:
+        # Deleted, or already settled by the reaper, since this was queued.
+        logger.info("job %s: no ladder pending, dropping queue entry", job_id)
+        return None
+
+    # Sized from what the MP4 job probed and stored, rather than probing the
+    # same file a second time.
+    if job.height is None or job.width is None:
+        logger.warning("job %s: no stored dimensions, so no ladder", job_id)
+        async with session_factory() as session:
+            await mark_ladder_unavailable(session, job_id)
+        return HlsStatus.UNAVAILABLE
+
+    probe = SourceProbe(
+        width=job.width, height=job.height, duration_seconds=job.duration_seconds or 0.0
+    )
+    # An upload's ladder is cut from the original, not from the 720p MP4, so
+    # a 4K upload keeps its detail. An edit's ladder is cut from the edit.
+    ladder_input = job.source_key if getattr(job, "operations", None) is None else job.output_key
+    logger.info("job %s: ladder pending -> building", job_id)
+    try:
+        hls_key = await asyncio.to_thread(
+            ladder_step.run, job_id=job_id, source_key=ladder_input, probe=probe
+        )
+    except Exception:
+        logger.exception("job %s: HLS ladder failed; the MP4 stands", job_id)
+        async with session_factory() as session:
+            await mark_ladder_unavailable(session, job_id)
+        return HlsStatus.UNAVAILABLE
+
+    async with session_factory() as session:
+        settled = await mark_ladder_ready(session, job_id, hls_key=hls_key)
+    if settled is None:
+        # Deleted, or given up on by the reaper, while this was building. The delete route
+        # only finds segments through `hls_key`, which was never written, so
+        # nobody else will ever remove these.
+        logger.warning("job %s: ladder built but the job moved on; discarding it", job_id)
+        try:
+            await asyncio.to_thread(ladder_step.discard, job_id)
+        except Exception:
+            logger.exception("job %s: could not discard the unrecorded ladder", job_id)
+        return None
+    logger.info("job %s: ladder ready (hls_key=%s)", job_id, hls_key)
+    return HlsStatus.READY
 
 
 def process_job(job_id: str) -> str:
@@ -166,3 +253,15 @@ def process_job(job_id: str) -> str:
         )
     )
     return outcome.value
+
+
+def build_ladder(job_id: str) -> str:
+    """RQ entrypoint for the ladder queue. Enqueued by `process_job_async`."""
+    settled = asyncio.run(
+        build_ladder_async(
+            UUID(job_id),
+            session_factory=get_worker_session_factory(),
+            ladder_step=get_ladder_step(),
+        )
+    )
+    return settled.value if settled is not None else "skipped"

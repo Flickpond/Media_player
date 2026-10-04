@@ -111,20 +111,8 @@ def test_the_timeout_tells_the_user_the_limit_in_minutes_and_the_log_in_seconds(
     assert "870 seconds" in str(caught.value), "the log keeps the exact configured value"
 
 
-# --- the HLS ladder is additive: it must never cost the MP4 ---------------
 
-
-class FakeLadder:
-    def __init__(self, *, hls_key: str = "outputs/x/hls/master.m3u8", raises=None) -> None:
-        self.hls_key = hls_key
-        self.raises = raises
-        self.calls: list[Path] = []
-
-    def build(self, *, job_id, source_path, probe):
-        self.calls.append(source_path)
-        if self.raises is not None:
-            raise self.raises
-        return self.hls_key
+# --- the ladder is its own job: the MP4 job only says one is due -----------
 
 
 def _mp4_writing_runner(commands: list):
@@ -136,76 +124,59 @@ def _mp4_writing_runner(commands: list):
     return runner
 
 
-def test_a_successful_ladder_is_returned_alongside_the_mp4():
-    store = FakeStore()
-    ladder = FakeLadder(hls_key="outputs/abc/hls/master.m3u8")
+def _probe_1080(_path):
+    return SourceProbe(width=1920, height=1080, duration_seconds=10.0)
+
+
+def test_a_probed_source_finishes_with_its_ladder_still_to_come():
+    """The MP4 no longer waits for every rendition: one FFmpeg run, then done."""
+    commands: list = []
     processor = FfmpegProcessor(
-        store,
+        FakeStore(),
         output_prefix="outputs",
-        runner=_mp4_writing_runner([]),
-        ladder=ladder,
-        prober=lambda path: SourceProbe(width=1920, height=1080, duration_seconds=10.0),
+        runner=_mp4_writing_runner(commands),
+        builds_ladder=True,
+        prober=_probe_1080,
     )
 
     result = processor.run(job_id=uuid4(), source_key="uploads/demo.mp4")
 
-    assert result.hls_key == "outputs/abc/hls/master.m3u8"
-    # Built from the already-downloaded file rather than a second fetch.
-    assert ladder.calls and ladder.calls[0].name == "source"
-
-
-def test_a_failing_ladder_leaves_the_mp4_and_reports_no_ladder():
-    """The contract HLS is built on: it is additive. By the time the ladder
-    runs the MP4 is uploaded and the job is going to reach `done`, so a
-    broken ladder costs a quality selector, never the video.
-    """
-    store = FakeStore()
-    processor = FfmpegProcessor(
-        store,
-        output_prefix="outputs",
-        runner=_mp4_writing_runner([]),
-        ladder=FakeLadder(raises=ObjectStoreError("ffmpeg blew up", user_message="unusable")),
-        prober=lambda path: SourceProbe(width=1920, height=1080, duration_seconds=10.0),
-    )
-    job_id = uuid4()
-
-    result = processor.run(job_id=job_id, source_key="uploads/demo.mp4")
-
-    assert result.output_key == f"outputs/{job_id}/demo.mp4"
+    assert result.ladder_pending is True
     assert result.hls_key is None
-    assert store.uploads[0][0] == result.output_key
+    assert len(commands) == 1, "only the MP4 encode runs inside this job"
 
 
-def test_a_failing_probe_also_only_costs_the_ladder():
-    store = FakeStore()
+def test_an_unprobed_source_gets_no_ladder_because_nothing_could_size_it():
+    """The ladder job sizes its rungs from the stored height. Without one
+    there is nothing to build from, so none is promised.
+    """
 
     def exploding_prober(_path):
         raise ObjectStoreError("ffprobe failed", user_message="unusable")
 
     processor = FfmpegProcessor(
-        store,
+        FakeStore(),
         output_prefix="outputs",
         runner=_mp4_writing_runner([]),
-        ladder=FakeLadder(),
+        builds_ladder=True,
         prober=exploding_prober,
     )
 
     result = processor.run(job_id=uuid4(), source_key="uploads/demo.mp4")
 
-    assert result.hls_key is None
+    assert result.ladder_pending is False
     assert result.output_key.endswith("demo.mp4")
 
 
-def test_no_ladder_injected_means_no_ladder_built():
-    """The pre-HLS behaviour, still reachable -- CopyProcessor and every
-    existing test rely on a processor that produces only an MP4.
-    """
+def test_a_processor_not_asked_for_ladders_promises_none():
+    """The pre-HLS behaviour, still reachable for anything that only wants an MP4."""
     processor = FfmpegProcessor(
-        FakeStore(), output_prefix="outputs", runner=_mp4_writing_runner([])
+        FakeStore(), output_prefix="outputs", runner=_mp4_writing_runner([]), prober=_probe_1080
     )
 
     result = processor.run(job_id=uuid4(), source_key="uploads/demo.mp4")
 
+    assert result.ladder_pending is False
     assert result.hls_key is None
 
 
@@ -213,11 +184,8 @@ def test_no_ladder_injected_means_no_ladder_built():
 
 
 def test_the_source_is_probed_once_before_encoding_and_its_dimensions_returned():
-    """Probed first so the result can be stored and reused; once, because the
-    ladder used to probe the same file again after the MP4 was encoded.
-    """
+    """Probed first so the result can be stored for the ladder job to reuse."""
     calls: list[str] = []
-    commands: list = []
 
     def prober(path):
         calls.append("probe")
@@ -225,17 +193,16 @@ def test_the_source_is_probed_once_before_encoding_and_its_dimensions_returned()
 
     def runner(command, **_kwargs):
         calls.append("encode")
-        commands.append(command)
         Path(command[-1]).write_bytes(b"mp4")
         return SimpleNamespace(returncode=0, stderr="")
 
     processor = FfmpegProcessor(
-        FakeStore(), output_prefix="outputs", runner=runner, ladder=FakeLadder(), prober=prober
+        FakeStore(), output_prefix="outputs", runner=runner, builds_ladder=True, prober=prober
     )
 
     result = processor.run(job_id=uuid4(), source_key="uploads/demo.mp4")
 
-    assert calls[0] == "probe" and calls.count("probe") == 1
+    assert calls == ["probe", "encode"]
     assert (result.width, result.height, result.duration_seconds) == (3840, 2160, 41.2)
 
 
@@ -252,7 +219,7 @@ def test_an_unreadable_source_still_produces_the_mp4_without_dimensions():
         FakeStore(),
         output_prefix="outputs",
         runner=_mp4_writing_runner([]),
-        ladder=FakeLadder(),
+        builds_ladder=True,
         prober=exploding_prober,
     )
 
@@ -260,4 +227,3 @@ def test_an_unreadable_source_still_produces_the_mp4_without_dimensions():
 
     assert result.output_key.endswith("demo.mp4")
     assert (result.width, result.height, result.duration_seconds) == (None, None, None)
-    assert result.hls_key is None

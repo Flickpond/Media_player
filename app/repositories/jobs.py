@@ -193,11 +193,15 @@ async def mark_done(
     *,
     output_key: str,
     hls_key: str | None = None,
+    hls_status: HlsStatus | None = None,
     width: int | None = None,
     height: int | None = None,
     duration_seconds: float | None = None,
 ) -> Job:
     """`hls_key` is optional because the adaptive ladder is best-effort.
+
+    `hls_status=PENDING` says the ladder has been handed to its own job;
+    `mark_ladder_ready` or `mark_ladder_unavailable` settles it later.
 
     A `done` job with no ladder is a legitimate state, not a missing write:
     the MP4 in `output_key` is the fallback, and the database deliberately
@@ -212,10 +216,63 @@ async def mark_done(
         next_status=JobStatus.DONE,
         output_key=output_key,
         hls_key=hls_key,
+        hls_status=hls_status,
         width=width,
         height=height,
         duration_seconds=duration_seconds,
     )
+
+
+async def _settle_ladder(
+    session: AsyncSession, job_id: UUID, *, hls_status: HlsStatus, hls_key: str | None
+) -> Job | None:
+    # Conditional on the row still being a done job waiting for its ladder:
+    # once the reaper has given up on a ladder, a late one must not flip it
+    # back, and a deleted job has nothing to write to.
+    statement = (
+        update(Job)
+        .where(
+            Job.id == job_id,
+            Job.status == JobStatus.DONE.value,
+            Job.hls_status == HlsStatus.PENDING.value,
+        )
+        .values(hls_status=hls_status.value, hls_key=hls_key, updated_at=func.now())
+        .returning(Job)
+    )
+    result = await session.execute(statement)
+    job = result.scalar_one_or_none()
+    if job is None:
+        await session.rollback()
+        return None
+    await session.commit()
+    return job
+
+
+async def mark_ladder_ready(session: AsyncSession, job_id: UUID, *, hls_key: str) -> Job | None:
+    """Record a finished ladder. `None` if the job is no longer waiting for one."""
+    if not hls_key.strip():
+        raise ValueError("hls_key must not be empty")
+    return await _settle_ladder(session, job_id, hls_status=HlsStatus.READY, hls_key=hls_key)
+
+
+async def mark_ladder_unavailable(session: AsyncSession, job_id: UUID) -> Job | None:
+    """Give up on a ladder; the MP4 stands. `None` if it was already settled."""
+    return await _settle_ladder(session, job_id, hls_status=HlsStatus.UNAVAILABLE, hls_key=None)
+
+
+async def list_stale_ladders(session: AsyncSession, *, before: datetime) -> list[Job]:
+    """Done jobs whose ladder has been pending since before `before`."""
+    statement = (
+        select(Job)
+        .where(
+            Job.status == JobStatus.DONE.value,
+            Job.hls_status == HlsStatus.PENDING.value,
+            Job.updated_at < before,
+        )
+        .order_by(Job.updated_at)
+    )
+    result = await session.execute(statement)
+    return list(result.scalars().all())
 
 
 async def mark_failed(session: AsyncSession, job_id: UUID, *, error: str) -> Job:

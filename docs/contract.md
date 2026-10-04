@@ -171,8 +171,12 @@ create_edit_job(session, *, owner_id, filename, source_key, operations, job_id=N
 get_job(session, job_id, *, owner_id=None)  # None = any owner (worker, reaper)
 list_jobs(session, *, owner_id=None, limit=50, offset=0)  # None = every owner
 mark_processing(session, job_id)
-mark_done(session, job_id, *, output_key, hls_key=None)
+mark_done(session, job_id, *, output_key, hls_key=None, hls_status=None,
+          width=None, height=None, duration_seconds=None)
 mark_failed(session, job_id, *, error)
+mark_ladder_ready(session, job_id, *, hls_key)   # -> Job, or None if not waiting
+mark_ladder_unavailable(session, job_id)         # -> Job, or None if not waiting
+list_stale_ladders(session, *, before)           # reaper
 prepare_retry(session, job_id, *, owner_id)  # API: enqueue, then commit; rollback on failure
 ```
 
@@ -182,7 +186,18 @@ constraint tying the two together. It is written on every transition, so a
 retry that produces no ladder clears a stale key rather than leaving it
 pointing at segments the new run has overwritten.
 
-The worker is the sole caller of the three processing `mark_*` functions.
+**The ladder is its own job** (sprint 4). The MP4 job finishes with
+`mark_done(..., hls_status=PENDING)`, commits, and only then queues
+`app.worker.tasks.build_ladder` on the `<REDIS_QUEUE>-ladder` queue, under
+the RQ id `<job id>-ladder`. Workers listen to the main queue first, so a
+ladder never delays somebody else's MP4. The ladder job settles the row with
+`mark_ladder_ready` or `mark_ladder_unavailable`; both only match a `done`
+job whose ladder is still `pending`, and neither touches `status`. If the
+ladder cannot be queued it is settled `unavailable` at once. The reaper
+re-queues a pending ladder that Redis has lost and gives up on one whose
+queue entry failed, once it has been pending longer than the lease.
+
+The worker is the sole caller of the processing `mark_*` functions.
 Each transition is a conditional update. `mark_processing` first locks the
 row by ID so it waits for a pending retry transaction, even while the
 committed snapshot still says `failed`.
