@@ -43,8 +43,8 @@ code that split is `ObjectStoreError`: `str(exc)` is the operator's half,
 | `hls_key` | Text, nullable | MinIO key of the HLS master playlist. Null when no ladder was built — including on a `done` job, since the ladder is best-effort and `output_key` is the fallback |
 | `operations` | JSONB, nullable | Null on an upload. On an edit job, the operations requested. **The array's order is not execution order** — the worker runs clip → crop → scale → convert regardless |
 | `hls_status` | Text, NOT NULL, default `pending` | `pending`, `ready` or `unavailable`. **`ready` exactly when `hls_key` exists** — enforced by `ck_jobs_hls_ready_has_key`, so the two are always written together. Always returned by `GET /jobs/{id}` |
-| `width`, `height` | Integer, nullable | The source's real dimensions, once the worker has probed it. Positive when set |
-| `duration_seconds` | Float, nullable | The source's real duration, once probed. Positive when set |
+| `width`, `height` | Integer, nullable | The real dimensions of what this job plays: the upload for an upload, the edited output for an edit (a crop or scale changes them). Set once the worker has probed it. Positive when set |
+| `duration_seconds` | Float, nullable | The real duration, on the same rule as `width` and `height`. Positive when set |
 | `thumbnail_key` | Text, nullable | Object key of the poster frame, once extracted. The API returns it as a signed `thumbnail_url` |
 | `error` | Text, nullable | Present only for `failed` jobs. **User-facing** — see the rule above |
 | `created_at` | Timestamp with time zone | Set when the API creates the job |
@@ -237,3 +237,6 @@ responsibility. See [C's handoff](c-recovery-input-safety.md) for the required
 | `MINIO_BUCKET` | Bucket containing video objects |
 | `MINIO_REGION` | Object-storage region used when signing URLs |
 | `MINIO_USE_SSL` | Whether the MinIO connection uses TLS |
+| `STORAGE_USE_INSTANCE_ROLE` | `true` on AWS: S3 credentials come from the instance role, and the two keys above are ignored |
+| `WORKER_FFMPEG_MAX_HEIGHT` | Tallest MP4 fallback, default `1080` |
+| `WORKER_HLS_MAX_HEIGHT` | Tallest ladder rung, default `1080`; `2160` on a host that can encode 4K inside the job timeout. Never above the source |

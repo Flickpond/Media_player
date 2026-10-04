@@ -61,12 +61,38 @@ def ladder_writing_runner(*, variant_count: int = 3, returncode: int = 0, stderr
 # --- which rungs a source gets -------------------------------------------
 
 
-def test_a_1080p_source_gets_all_three_rungs():
-    assert variants_for(1080) == (360, 480, 720)
+def test_a_4k_source_gets_every_rung_up_to_its_own_height():
+    assert variants_for(2160) == (360, 480, 720, 1080, 1440, 2160)
 
 
-def test_a_720p_source_gets_all_three_rungs():
+def test_a_1080p_source_stops_at_1080():
+    assert variants_for(1080) == (360, 480, 720, 1080)
+
+
+def test_a_720p_source_stops_at_720():
     assert variants_for(720) == (360, 480, 720)
+
+
+def test_the_host_cap_limits_a_4k_source():
+    """The current server cannot encode a 4K ladder inside the job timeout;
+    capping there is what keeps a 4K upload from failing its ladder outright.
+    """
+    assert variants_for(2160, max_height=1080) == (360, 480, 720, 1080)
+
+
+def test_the_cap_never_raises_a_source_above_its_own_height():
+    assert variants_for(720, max_height=2160) == (360, 480, 720)
+
+
+def test_a_source_taller_than_every_rung_tops_out_at_2160():
+    """A 9:16 4K phone video is 3840 tall: it gets 2160, not a 3840 rung."""
+    assert variants_for(3840)[-1] == 2160
+
+
+def test_every_rung_has_its_own_bitrate():
+    from app.worker.hls import BITRATES, LADDER_HEIGHTS
+
+    assert set(LADDER_HEIGHTS) <= set(BITRATES)
 
 
 def test_a_480p_source_is_never_given_a_720p_rendition():

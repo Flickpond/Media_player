@@ -25,12 +25,23 @@ read T-19 and the S2-05 history first.
 from functools import lru_cache
 
 from minio import Minio
+from minio.credentials import IamAwsProvider
 
 from app.config import get_settings
 
 
 def _build(*, endpoint: str, secure: bool) -> Minio:
     settings = get_settings()
+    if settings.storage_use_instance_role:
+        # S3 on AWS. Presigned URLs then carry the role's session token, so
+        # they stop working when that session expires -- hours away, far
+        # beyond `output_url_expiry_seconds`.
+        return Minio(
+            endpoint,
+            credentials=IamAwsProvider(),
+            secure=secure,
+            region=settings.minio_region,
+        )
     return Minio(
         endpoint,
         access_key=settings.minio_access_key,

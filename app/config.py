@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     minio_bucket: str = "videos"
     minio_region: str = "us-east-1"
     minio_use_ssl: bool = False
+    # On AWS the instance role supplies short-lived credentials, so no access
+    # key exists to put in `.env` or to leak from it. Explicit rather than
+    # inferred from an empty key: the key defaults to MinIO's, and silently
+    # switching credential source on a blank value is how a misconfigured
+    # host ends up talking to the wrong store.
+    storage_use_instance_role: bool = False
     # Separate from minio_use_ssl on purpose. The internal client talks to
     # minio:9000 over plain HTTP inside the compose network and always will;
     # the presigned URLs handed to a browser must be https once the site is,
@@ -68,7 +74,14 @@ class Settings(BaseSettings):
     api_public_prefix: str = "/api"
     worker_ffmpeg_preset: str = "veryfast"
     worker_ffmpeg_crf: int = 23
-    worker_ffmpeg_max_height: int = 720
+    # The single-file MP4 is the fallback every player can open, so it stays
+    # at a size that plays and downloads anywhere. Quality above it comes
+    # from the ladder.
+    worker_ffmpeg_max_height: int = 1080
+    # The tallest ladder rung. 1080 by default because that is what the
+    # current two-core server can encode inside the job timeout; a host that
+    # can encode 4K in time sets 2160. Never above the source either way.
+    worker_hls_max_height: int = 1080
     worker_ffmpeg_timeout_seconds: int = 870
     reaper_interval_seconds: int = 60
     reaper_lease_seconds: int = 1800
