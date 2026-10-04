@@ -41,10 +41,14 @@ class ProcessingResult:
     `output_key`. A step that does not build ladders at all simply leaves it
     `None`, which is why this is a dataclass with a default rather than a
     tuple every caller has to unpack in the right order.
+
+    `ladder_pending` says a ladder should be built afterwards, as its own
+    queued job, so the MP4 reaches the uploader without waiting for it.
     """
 
     output_key: str
     hls_key: str | None = None
+    ladder_pending: bool = False
     # What the source actually is, when it could be probed. Stored on the job
     # by `mark_done`; the step itself never touches the database.
     width: int | None = None
@@ -82,6 +86,8 @@ class ObjectStore(Protocol):
     def download_file(self, *, key: str, destination: str) -> None: ...
 
     def upload_file(self, *, key: str, source: str, content_type: str = ...) -> None: ...
+
+    def delete_prefix(self, prefix: str) -> None: ...
 
 
 class MinioObjectStore:
@@ -146,6 +152,19 @@ class MinioObjectStore:
             ) from exc
 
 
+    def delete_prefix(self, prefix: str) -> None:
+        from minio.error import S3Error
+
+        try:
+            for item in self._client.list_objects(self._bucket, prefix=prefix, recursive=True):
+                self._client.remove_object(self._bucket, item.object_name)
+        except S3Error as exc:
+            raise ObjectStoreError(
+                f"cleanup failed under {prefix}: {exc.code}",
+                user_message="storage could not be reached; please try again",
+            ) from exc
+
+
 class ProcessingStep(Protocol):
     def run(self, *, job_id: UUID, source_key: str) -> ProcessingResult:
         """Process the source object and return what it produced."""
@@ -165,7 +184,7 @@ class FfmpegProcessor:
         max_height: int = 720,
         timeout_seconds: int = 870,
         runner=subprocess.run,
-        ladder=None,
+        builds_ladder: bool = False,
         prober=None,
     ) -> None:
         self._store = store
@@ -176,13 +195,12 @@ class FfmpegProcessor:
         self._max_height = max_height
         self._timeout_seconds = timeout_seconds
         self._runner = runner
-        # Both injected rather than imported: `app.worker.probe` and
-        # `app.worker.hls` each import this module, so importing them back
-        # here at module level would be a cycle. Injection also means the
-        # MP4 path can be tested without either of them existing.
-        # Leaving them None produces an MP4 and no ladder, which is exactly
-        # what the pre-HLS behaviour was.
-        self._ladder = ladder
+        # The prober is injected rather than imported: `app.worker.probe`
+        # imports this module, so importing it back at module level would be
+        # a cycle. Injection also means the MP4 path is testable without it.
+        # The ladder itself is no longer built here -- it is its own job (see
+        # `app.worker.tasks.build_ladder_async`); this only says one is due.
+        self._builds_ladder = builds_ladder
         self._prober = prober
 
     def output_key_for(self, *, job_id: UUID, source_key: str) -> str:
@@ -204,25 +222,6 @@ class FfmpegProcessor:
             return self._prober(source_path)
         except Exception:
             logger.exception("job %s: could not probe the source", job_id)
-            return None
-
-    def _build_ladder(self, *, job_id: UUID, source_path: Path, probe) -> str | None:
-        """The adaptive ladder, or None if it could not be built.
-
-        Every failure in here is swallowed on purpose. The contract it keeps
-        is that HLS is additive: by the time this runs the MP4 is already
-        uploaded and the job is going to reach `done` whatever happens next,
-        so a broken ladder costs the viewer a quality selector, never the
-        video itself. The diagnostic goes to the log, which is the audience
-        that can act on it.
-        """
-        if self._ladder is None or probe is None:
-            return None
-
-        try:
-            return self._ladder.build(job_id=job_id, source_path=source_path, probe=probe)
-        except Exception:
-            logger.exception("job %s: HLS ladder failed; the MP4 output stands", job_id)
             return None
 
     def run(self, *, job_id: UUID, source_key: str) -> ProcessingResult:
@@ -290,12 +289,11 @@ class FfmpegProcessor:
                     user_message=UNPROCESSABLE_VIDEO,
                 )
             self._store.upload_file(key=output_key, source=str(output_path))
-            # Only after the MP4 is safely uploaded, and from the source we
-            # already have on disk rather than downloading it a second time.
-            hls_key = self._build_ladder(job_id=job_id, source_path=source_path, probe=probe)
             return ProcessingResult(
                 output_key=output_key,
-                hls_key=hls_key,
+                # The ladder job sizes its rungs from the stored height, so an
+                # unprobed source gets no ladder, exactly as before.
+                ladder_pending=self._builds_ladder and probe is not None,
                 width=probe.width if probe else None,
                 height=probe.height if probe else None,
                 duration_seconds=probe.duration_seconds if probe else None,
@@ -334,7 +332,6 @@ def get_processing_step() -> ProcessingStep:
     # so a top-level import would be a cycle.
     from functools import partial
 
-    from app.worker.hls import HlsLadderBuilder
     from app.worker.probe import probe_source
 
     settings = get_settings()
@@ -348,18 +345,27 @@ def get_processing_step() -> ProcessingStep:
         crf=settings.worker_ffmpeg_crf,
         max_height=settings.worker_ffmpeg_max_height,
         timeout_seconds=settings.worker_ffmpeg_timeout_seconds,
-        ladder=HlsLadderBuilder(
-            store,
-            output_prefix=settings.worker_output_prefix,
-            ffmpeg_binary=settings.worker_ffmpeg_binary,
-            preset=settings.worker_ffmpeg_preset,
-            timeout_seconds=settings.worker_ffmpeg_timeout_seconds,
-        ),
+        builds_ladder=True,
         prober=partial(
             probe_source,
             ffprobe_binary=settings.worker_ffprobe_binary,
             timeout_seconds=settings.worker_ffprobe_timeout_seconds,
         ),
+    )
+
+
+@lru_cache
+def get_ladder_step():
+    """The HLS ladder builder, for `app.worker.tasks.build_ladder`."""
+    from app.worker.hls import HlsLadderBuilder
+
+    settings = get_settings()
+    return HlsLadderBuilder(
+        MinioObjectStore(internal_client(), bucket=bucket()),
+        output_prefix=settings.worker_output_prefix,
+        ffmpeg_binary=settings.worker_ffmpeg_binary,
+        preset=settings.worker_ffmpeg_preset,
+        timeout_seconds=settings.worker_ffmpeg_timeout_seconds,
     )
 
 

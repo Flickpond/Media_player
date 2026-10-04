@@ -68,6 +68,7 @@ class FakeJobStore:
         *,
         output_key: str,
         hls_key: str | None = None,
+        hls_status=None,
         width: int | None = None,
         height: int | None = None,
         duration_seconds: float | None = None,
@@ -77,6 +78,7 @@ class FakeJobStore:
         job = self._transition(job_id, JobStatus.PROCESSING, JobStatus.DONE)
         job.output_key = output_key
         job.hls_key = hls_key
+        job.hls_status = hls_status
         job.width, job.height, job.duration_seconds = width, height, duration_seconds
         return job
 

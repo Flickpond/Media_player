@@ -31,7 +31,9 @@ def fake_connection(monkeypatch: pytest.MonkeyPatch):
 def test_worker_listens_on_the_configured_queue(fake_connection):
     worker = entrypoint.build_worker()
 
-    assert [q.name for q in worker.queues] == ["video_jobs"]
+    # Main queue first: RQ takes from the first non-empty queue, so an MP4
+    # is never stuck behind somebody's ladder.
+    assert [q.name for q in worker.queues] == ["video_jobs", "video_jobs-ladder"]
 
 
 def test_windows_falls_back_to_the_in_process_worker(fake_connection):

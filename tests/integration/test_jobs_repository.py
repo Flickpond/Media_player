@@ -18,8 +18,11 @@ from app.repositories.jobs import (
     delete_job,
     get_job,
     list_jobs,
+    list_stale_ladders,
     mark_done,
     mark_failed,
+    mark_ladder_ready,
+    mark_ladder_unavailable,
     mark_processing,
 )
 from app.repositories.users import create_user
@@ -556,3 +559,109 @@ async def test_finishing_a_job_stores_what_the_source_is(session_factory, owner)
         async with session_factory() as cleanup:
             await cleanup.execute(delete(Job).where(Job.id == job_id))
             await cleanup.commit()
+
+
+# --- the ladder as its own job: pending until settled, settled once ---------
+
+
+async def _done_with_ladder_pending(session_factory, owner):
+    job_id = await _make(session_factory, owner)
+    async with session_factory() as session:
+        await mark_processing(session, job_id)
+        await mark_done(
+            session,
+            job_id,
+            output_key=f"outputs/{job_id}/demo.mp4",
+            hls_status=HlsStatus.PENDING,
+            width=1920,
+            height=1080,
+            duration_seconds=10.0,
+        )
+    return job_id
+
+
+async def _cleanup(session_factory, job_id):
+    async with session_factory() as cleanup:
+        await cleanup.execute(delete(Job).where(Job.id == job_id))
+        await cleanup.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_done_job_can_wait_for_its_ladder(session_factory, owner) -> None:
+    job_id = await _done_with_ladder_pending(session_factory, owner)
+    try:
+        async with session_factory() as session:
+            job = await get_job(session, job_id)
+        assert (job.status, job.hls_status, job.hls_key) == ("done", "pending", None)
+    finally:
+        await _cleanup(session_factory, job_id)
+
+
+@pytest.mark.asyncio
+async def test_a_finished_ladder_is_recorded_with_its_key(session_factory, owner) -> None:
+    job_id = await _done_with_ladder_pending(session_factory, owner)
+    key = f"outputs/{job_id}/hls/master.m3u8"
+    try:
+        async with session_factory() as session:
+            job = await mark_ladder_ready(session, job_id, hls_key=key)
+        assert (job.status, job.hls_status, job.hls_key) == ("done", "ready", key)
+        # Dimensions and output survive: settling the ladder touches nothing else.
+        assert (job.output_key, job.height) == (f"outputs/{job_id}/demo.mp4", 1080)
+    finally:
+        await _cleanup(session_factory, job_id)
+
+
+@pytest.mark.asyncio
+async def test_a_ladder_given_up_on_cannot_be_flipped_back_by_a_late_one(
+    session_factory, owner
+) -> None:
+    """The reaper settled it; the worker it gave up on finishes afterwards."""
+    job_id = await _done_with_ladder_pending(session_factory, owner)
+    try:
+        async with session_factory() as session:
+            assert await mark_ladder_unavailable(session, job_id) is not None
+            late = await mark_ladder_ready(
+                session, job_id, hls_key=f"outputs/{job_id}/hls/master.m3u8"
+            )
+            assert late is None
+            job = await get_job(session, job_id)
+        assert (job.hls_status, job.hls_key) == ("unavailable", None)
+    finally:
+        await _cleanup(session_factory, job_id)
+
+
+@pytest.mark.asyncio
+async def test_a_ladder_is_never_settled_on_a_job_that_is_not_done(
+    session_factory, owner
+) -> None:
+    job_id = await _make(session_factory, owner)
+    try:
+        async with session_factory() as session:
+            assert await mark_ladder_unavailable(session, job_id) is None
+            assert await mark_ladder_unavailable(session, uuid4()) is None
+    finally:
+        await _cleanup(session_factory, job_id)
+
+
+@pytest.mark.asyncio
+async def test_an_empty_ladder_key_is_refused(session_factory) -> None:
+    async with session_factory() as session:
+        with pytest.raises(ValueError):
+            await mark_ladder_ready(session, uuid4(), hls_key="  ")
+
+
+@pytest.mark.asyncio
+async def test_only_ladders_pending_since_before_the_cutoff_are_stale(
+    session_factory, owner
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    job_id = await _done_with_ladder_pending(session_factory, owner)
+    try:
+        async with session_factory() as session:
+            future = datetime.now(UTC) + timedelta(minutes=5)
+            past = datetime.now(UTC) - timedelta(minutes=5)
+            assert job_id in {job.id for job in await list_stale_ladders(session, before=future)}
+            assert job_id not in {job.id for job in await list_stale_ladders(session, before=past)}
+    finally:
+        await _cleanup(session_factory, job_id)
