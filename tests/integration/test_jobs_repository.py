@@ -561,6 +561,51 @@ async def test_finishing_a_job_stores_what_the_source_is(session_factory, owner)
             await cleanup.commit()
 
 
+@pytest.mark.asyncio
+async def test_finishing_a_job_stores_its_poster_frame(session_factory, owner) -> None:
+    job_id = await _make(session_factory, owner)
+    try:
+        async with session_factory() as session:
+            await mark_processing(session, job_id)
+            done = await mark_done(
+                session,
+                job_id,
+                output_key=f"outputs/{job_id}/demo.mp4",
+                thumbnail_key=f"outputs/{job_id}/thumbnail.jpg",
+            )
+        async with session_factory() as session:
+            stored = await get_job(session, job_id)
+        assert done.thumbnail_key == stored.thumbnail_key == f"outputs/{job_id}/thumbnail.jpg"
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_run_never_leaves_a_poster_frame_on_the_row(session_factory, owner) -> None:
+    """Only `mark_done` writes it; every other transition clears it, so a
+    retried job never shows the previous run's picture while it reprocesses.
+    """
+    job_id = await _make(session_factory, owner)
+    try:
+        async with session_factory() as session:
+            await mark_processing(session, job_id)
+            failed = await mark_failed(session, job_id, error="the video could not be processed")
+        assert failed.thumbnail_key is None
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.commit()
+
+
+@pytest.mark.asyncio
+async def test_an_empty_poster_frame_key_is_refused(session_factory) -> None:
+    async with session_factory() as session:
+        with pytest.raises(ValueError, match="thumbnail_key"):
+            await mark_done(session, uuid4(), output_key="outputs/x.mp4", thumbnail_key="  ")
+
+
 # --- the ladder as its own job: pending until settled, settled once ---------
 
 

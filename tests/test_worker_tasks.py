@@ -72,6 +72,7 @@ class FakeJobStore:
         width: int | None = None,
         height: int | None = None,
         duration_seconds: float | None = None,
+        thumbnail_key: str | None = None,
     ) -> FakeJob:
         if not output_key.strip():
             raise ValueError("output_key must not be empty")
@@ -80,6 +81,7 @@ class FakeJobStore:
         job.hls_key = hls_key
         job.hls_status = hls_status
         job.width, job.height, job.duration_seconds = width, height, duration_seconds
+        job.thumbnail_key = thumbnail_key
         return job
 
     async def mark_failed(self, _session, job_id: UUID, *, error: str) -> FakeJob:
@@ -140,6 +142,23 @@ async def test_happy_path_walks_queued_processing_done(store, session_factory):
     assert job.error is None
     assert store.transitions == [(job.id, "processing"), (job.id, "done")]
     assert step.calls == [(job.id, "uploads/abc/demo.mp4")]
+
+
+async def test_the_poster_frame_is_recorded_with_the_rest_of_the_result(store, session_factory):
+    """Stored in the same `mark_done` as the MP4: a job is never done with a
+    thumbnail_key from a previous run, nor has one before it is done.
+    """
+    job = store.add(source_key="uploads/abc/demo.mp4")
+
+    class _ThumbnailStep:
+        def run(self, *, job_id, source_key):
+            return ProcessingResult(
+                output_key="outputs/abc/demo.mp4", thumbnail_key="outputs/abc/thumbnail.jpg"
+            )
+
+    await process_job_async(job.id, session_factory=session_factory, step=_ThumbnailStep())
+
+    assert job.thumbnail_key == "outputs/abc/thumbnail.jpg"
 
 
 async def test_an_edit_job_uses_a_fresh_processor_built_from_its_operations(
