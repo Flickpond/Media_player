@@ -72,6 +72,9 @@ async def failed_job(session_factory, owner):
             .values(
                 operations=[{"operation": "clip", "params": {"start": 0, "end": 1}}],
                 hls_key=f"outputs/{job_id}/hls/master.m3u8",
+                # A key implies a ready ladder (ck_jobs_hls_ready_has_key), so
+                # the seeded stale ladder has to say so for the row to exist.
+                hls_status="ready",
                 updated_at=datetime(2020, 1, 1, tzinfo=UTC),
             )
         )

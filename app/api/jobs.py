@@ -13,7 +13,7 @@ from app.api.deps import CurrentUser, OperatorUser
 from app.config import get_settings
 from app.database import get_session
 from app.errors import ApiNotFoundError
-from app.models.job import Job, JobStatus
+from app.models.job import HlsStatus, Job, JobStatus
 from app.queue import enqueue_job
 from app.repositories.jobs import (
     DEFAULT_PAGE_SIZE,
@@ -65,6 +65,10 @@ async def _to_response(job: Job, signer: OutputUrlSigner) -> JobResponse:
         status=JobStatus(job.status),
         output_url=output_url,
         hls_url=hls_url,
+        hls_status=HlsStatus(job.hls_status),
+        width=job.width,
+        height=job.height,
+        duration_seconds=job.duration_seconds,
         error=error,
     )
 

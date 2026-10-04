@@ -10,7 +10,7 @@ from app.api.hls import safe_hls_path
 from app.database import get_session
 from app.errors import ApiNotFoundError
 from app.main import create_app
-from app.models.job import Job, JobStatus
+from app.models.job import HlsStatus, Job, JobStatus
 from app.services.output_urls import get_output_url_signer
 from app.services.storage import get_storage_service
 from tests.conftest import authenticate_as
@@ -91,6 +91,7 @@ def make_job(*, hls_key: str | None = LADDER_KEY) -> Job:
         source_key="uploads/demo.mp4",
         output_key="outputs/abc/demo.mp4",
         hls_key=hls_key,
+        hls_status=(HlsStatus.READY if hls_key else HlsStatus.UNAVAILABLE).value,
         created_at=now,
         updated_at=now,
     )

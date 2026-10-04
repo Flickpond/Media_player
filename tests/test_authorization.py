@@ -16,7 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from app.api import jobs as jobs_api
 from app.database import get_session
 from app.main import create_app
-from app.models.job import Job, JobStatus
+from app.models.job import HlsStatus, Job, JobStatus
 from app.services.output_urls import get_output_url_signer
 from app.services.storage import get_storage_service
 from tests.conftest import authenticate_as
@@ -45,6 +45,7 @@ def make_job(owner_id, *, status: JobStatus = JobStatus.QUEUED) -> Job:
         source_key="uploads/demo.mp4",
         output_key=None,
         error=None,
+        hls_status=HlsStatus.PENDING.value,
         created_at=now,
         updated_at=now,
     )
