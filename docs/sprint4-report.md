@@ -37,8 +37,22 @@
 - It stored 3840×2160 and got ladder rungs 360–1080 under the default cap.
 - A 720p edit of it stored 1280×720 and got a ladder topped at 720.
 
+**4K on AWS staging** (4 Oct; `c7g.2xlarge`, 8 vCPU / 16 GB; two workers):
+
+| Stage | Time |
+|---|---|
+| Upload → playable (1080p MP4 `done`) | 11 s |
+| Ladder, six rungs 360p → 2160p | 28 s |
+| Upload → 4K ready | 41 s |
+
+The source was a synthetic 20 s 3840×2160 clip at 35 Mbps (89 MB) with
+per-frame grain, so that every frame costs the encoder something, as real
+footage does. The ladder ran at about 1.4× real time, so the 1770 s timeout
+covers about 20 minutes of 4K. Today the 100 MB upload cap binds first, at
+about 20 s of phone 4K; B's direct upload is what lifts that.
+
 **TODO (Track A):**
-- 4K timing on staging, from runbook step 4: MP4 time, ladder time and total, for a 60 s phone clip.
+- The same run with a real phone clip, to confirm the synthetic figure.
 - Whether the admin password was rotated, and on which server.
 
 ### Tracks B, C, D, E
