@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.job import Job, JobStatus
+from app.models.job import HlsStatus, Job, JobStatus
 
 # Page sizes for `list_jobs`. A default rather than "everything" because the
 # endpoint's cost grows with the table: each row returned is a signed URL to
@@ -107,6 +107,20 @@ async def list_jobs(
     return list(result.scalars().all())
 
 
+def _derived_hls_status(next_status: JobStatus, hls_key: str | None) -> HlsStatus:
+    """The ladder's state implied by a transition, when the caller doesn't say.
+
+    While the ladder is still built inside the MP4 job, finishing the job
+    settles it: there is a ladder or there isn't one. A caller that queues the
+    ladder separately passes `HlsStatus.PENDING` explicitly instead.
+    """
+    if hls_key is not None:
+        return HlsStatus.READY
+    if next_status in (JobStatus.DONE, JobStatus.FAILED):
+        return HlsStatus.UNAVAILABLE
+    return HlsStatus.PENDING
+
+
 async def _transition(
     session: AsyncSession,
     *,
@@ -115,6 +129,7 @@ async def _transition(
     next_status: JobStatus,
     output_key: str | None = None,
     hls_key: str | None = None,
+    hls_status: HlsStatus | None = None,
     error: str | None = None,
 ) -> Job:
     values: dict[str, object | None] = {
@@ -124,6 +139,9 @@ async def _transition(
         # produces no ladder clears a stale key rather than leaving it
         # pointing at segments the new run has already overwritten.
         "hls_key": hls_key,
+        # In the same statement as hls_key, always: the database rejects a row
+        # where the two disagree (ck_jobs_hls_ready_has_key).
+        "hls_status": (hls_status or _derived_hls_status(next_status, hls_key)).value,
         "error": error,
         "updated_at": func.now(),
     }
@@ -217,6 +235,7 @@ async def prepare_retry(session: AsyncSession, job_id: UUID, *, owner_id: UUID) 
             error=None,
             output_key=None,
             hls_key=None,
+            hls_status=HlsStatus.PENDING.value,
             updated_at=func.now(),
         )
         .returning(Job)
@@ -295,6 +314,7 @@ async def mark_stale_failed(session: AsyncSession, job_id: UUID) -> Job | None:
         .values(
             status=JobStatus.FAILED.value,
             error="worker stopped responding; job was not completed",
+            hls_status=HlsStatus.UNAVAILABLE.value,
             updated_at=func.now(),
         )
         .returning(Job)

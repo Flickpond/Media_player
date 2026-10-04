@@ -46,6 +46,7 @@ async def test_status_endpoints_read_real_postgres_data(owner) -> None:
             "id": str(job_id),
             "filename": "integration.mp4",
             "status": "queued",
+            "hls_status": "pending",
         }
         assert list_response.status_code == 200
         assert str(job_id) in {item["id"] for item in list_response.json()}

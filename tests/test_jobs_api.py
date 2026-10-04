@@ -8,7 +8,7 @@ from httpx import ASGITransport, AsyncClient
 from app.api import jobs as jobs_api
 from app.database import get_session
 from app.main import create_app
-from app.models.job import Job, JobStatus
+from app.models.job import HlsStatus, Job, JobStatus
 from app.repositories.jobs import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.services.output_urls import get_output_url_signer
 from app.services.storage import get_storage_service
@@ -74,6 +74,11 @@ def make_job(
         source_key="uploads/demo.mp4",
         output_key=output_key,
         error=error,
+        hls_status=(
+            HlsStatus.PENDING
+            if status in (JobStatus.QUEUED, JobStatus.PROCESSING)
+            else HlsStatus.UNAVAILABLE
+        ).value,
         created_at=now,
         updated_at=now,
     )
@@ -101,10 +106,14 @@ async def test_get_queued_job_omits_internal_and_empty_fields(
     response = await client.get(f"/jobs/{job.id}")
 
     assert response.status_code == 200
+    # `hls_status` is always present -- the page reads it to say whether HD
+    # versions are still coming. Dimensions are omitted until the worker has
+    # probed the file, like every other optional field here.
     assert response.json() == {
         "id": str(job.id),
         "filename": "demo.mp4",
         "status": "queued",
+        "hls_status": "pending",
     }
 
 
@@ -476,3 +485,43 @@ async def test_a_done_job_without_a_ladder_omits_hls_url_entirely(
     assert response.status_code == 200
     assert "hls_url" not in response.json()
     assert response.json()["output_url"]
+
+
+# --- sprint 4: what the job tells the UI about the source and its ladder ---
+
+
+@pytest.mark.asyncio
+async def test_a_probed_job_exposes_its_dimensions_and_duration(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The editor builds its options from these -- downscale only below the
+    source, upscale only above it -- so they have to reach the page.
+    """
+    job = make_job(status=JobStatus.DONE, output_key="outputs/demo.mp4")
+    job.width, job.height, job.duration_seconds = 3840, 2160, 41.2
+
+    async def fake_get_job(_session, _job_id: UUID, *, owner_id=None):
+        return job
+
+    monkeypatch.setattr(jobs_api, "get_job", fake_get_job)
+    body = (await client.get(f"/jobs/{job.id}")).json()
+
+    assert (body["width"], body["height"], body["duration_seconds"]) == (3840, 2160, 41.2)
+
+
+@pytest.mark.asyncio
+async def test_a_job_with_a_ladder_reports_it_ready(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = make_job(status=JobStatus.DONE, output_key="outputs/demo.mp4")
+    job.hls_key = "outputs/abc/hls/master.m3u8"
+    job.hls_status = HlsStatus.READY.value
+
+    async def fake_get_job(_session, _job_id: UUID, *, owner_id=None):
+        return job
+
+    monkeypatch.setattr(jobs_api, "get_job", fake_get_job)
+    body = (await client.get(f"/jobs/{job.id}")).json()
+
+    assert body["hls_status"] == "ready"
+    assert "hls_url" in body

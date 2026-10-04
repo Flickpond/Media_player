@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.config import get_settings
-from app.models.job import Job, JobStatus
+from app.models.job import HlsStatus, Job, JobStatus
 from app.models.user import User
 from app.repositories.jobs import (
     InvalidJobTransitionError,
@@ -396,3 +396,139 @@ async def test_owner_id_none_deletes_regardless_of_owner(session_factory, owner)
 
     async with session_factory() as session:
         assert await get_job(session, job_id) is None
+
+
+# --- hls_status: the ladder's state, kept in step with hls_key -------------
+
+
+async def _make(session_factory, owner):
+    job_id = uuid4()
+    async with session_factory() as session:
+        await create_job(
+            session,
+            owner_id=owner.id,
+            job_id=job_id,
+            filename="demo.mp4",
+            source_key=f"uploads/{job_id}/demo.mp4",
+        )
+    return job_id
+
+
+@pytest.mark.asyncio
+async def test_a_new_job_starts_with_its_ladder_pending(session_factory, owner) -> None:
+    job_id = await _make(session_factory, owner)
+    try:
+        async with session_factory() as session:
+            job = await get_job(session, job_id)
+        assert job.hls_status == HlsStatus.PENDING.value
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.commit()
+
+
+@pytest.mark.asyncio
+async def test_finishing_with_a_ladder_marks_it_ready_and_without_one_unavailable(
+    session_factory, owner
+) -> None:
+    """While the ladder is built inside the MP4 job, finishing the job settles
+    the ladder's state in the same write as `hls_key` -- the database rejects
+    a row where the two disagree.
+    """
+    with_ladder = await _make(session_factory, owner)
+    without = await _make(session_factory, owner)
+    try:
+        async with session_factory() as session:
+            await mark_processing(session, with_ladder)
+            done = await mark_done(
+                session,
+                with_ladder,
+                output_key=f"outputs/{with_ladder}/demo.mp4",
+                hls_key=f"outputs/{with_ladder}/hls/master.m3u8",
+            )
+            assert done.hls_status == HlsStatus.READY.value
+
+            await mark_processing(session, without)
+            plain = await mark_done(session, without, output_key=f"outputs/{without}/demo.mp4")
+            assert plain.hls_status == HlsStatus.UNAVAILABLE.value
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id.in_([with_ladder, without])))
+            await cleanup.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_job_has_no_ladder_coming(session_factory, owner) -> None:
+    job_id = await _make(session_factory, owner)
+    try:
+        async with session_factory() as session:
+            await mark_processing(session, job_id)
+            failed = await mark_failed(session, job_id, error="the video could not be read")
+        assert failed.hls_status == HlsStatus.UNAVAILABLE.value
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.commit()
+
+
+@pytest.mark.parametrize(
+    ("hls_status", "hls_key"),
+    [
+        (HlsStatus.READY.value, None),  # ready, but no ladder to point at
+        (HlsStatus.PENDING.value, "outputs/x/hls/master.m3u8"),  # a key on a ladder still pending
+        ("almost", None),  # not a state at all
+    ],
+)
+@pytest.mark.asyncio
+async def test_the_database_rejects_a_ladder_state_that_disagrees_with_its_key(
+    session_factory, owner, hls_status, hls_key
+) -> None:
+    """`ck_jobs_hls_status` and `ck_jobs_hls_ready_has_key`, proven against real
+    SQL -- the same posture as `ck_jobs_output_key`: the database is the last
+    line of defence against the two drifting apart.
+    """
+    job_id = uuid4()
+    try:
+        async with session_factory() as session:
+            session.add(
+                Job(
+                    id=job_id,
+                    owner_id=owner.id,
+                    filename="bad.mp4",
+                    status=JobStatus.QUEUED.value,
+                    source_key=f"uploads/{job_id}/bad.mp4",
+                    hls_status=hls_status,
+                    hls_key=hls_key,
+                )
+            )
+            with pytest.raises(IntegrityError):
+                await session.commit()
+            await session.rollback()
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.commit()
+
+
+@pytest.mark.parametrize("field", ["width", "height", "duration_seconds"])
+@pytest.mark.asyncio
+async def test_the_database_rejects_a_non_positive_dimension(session_factory, owner, field) -> None:
+    job_id = uuid4()
+    try:
+        async with session_factory() as session:
+            job = Job(
+                id=job_id,
+                owner_id=owner.id,
+                filename="bad.mp4",
+                status=JobStatus.QUEUED.value,
+                source_key=f"uploads/{job_id}/bad.mp4",
+            )
+            setattr(job, field, 0)
+            session.add(job)
+            with pytest.raises(IntegrityError):
+                await session.commit()
+            await session.rollback()
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.commit()

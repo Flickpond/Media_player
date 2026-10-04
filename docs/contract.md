@@ -42,6 +42,10 @@ code that split is `ObjectStoreError`: `str(exc)` is the operator's half,
 | `output_key` | Text, nullable | MinIO output object key; null until `done` |
 | `hls_key` | Text, nullable | MinIO key of the HLS master playlist. Null when no ladder was built — including on a `done` job, since the ladder is best-effort and `output_key` is the fallback |
 | `operations` | JSONB, nullable | Null on an upload. On an edit job, the operations requested. **The array's order is not execution order** — the worker runs clip → crop → scale → convert regardless |
+| `hls_status` | Text, NOT NULL, default `pending` | `pending`, `ready` or `unavailable`. **`ready` exactly when `hls_key` exists** — enforced by `ck_jobs_hls_ready_has_key`, so the two are always written together. Always returned by `GET /jobs/{id}` |
+| `width`, `height` | Integer, nullable | The source's real dimensions, once the worker has probed it. Positive when set |
+| `duration_seconds` | Float, nullable | The source's real duration, once probed. Positive when set |
+| `thumbnail_key` | Text, nullable | Object key of the poster frame, once extracted. The API returns it as a signed `thumbnail_url` |
 | `error` | Text, nullable | Present only for `failed` jobs. **User-facing** — see the rule above |
 | `created_at` | Timestamp with time zone | Set when the API creates the job |
 | `updated_at` | Timestamp with time zone | Updated on every worker transition |
@@ -82,7 +86,8 @@ POST /upload
   415 { "error": "file content is not a recognized video format" }   // sniffed bytes disagree
 
 GET /jobs/{id}
-  200 { "id", "filename", "status", "output_url"?, "error"? }
+  200 { "id", "filename", "status", "hls_status",
+        "output_url"?, "hls_url"?, "width"?, "height"?, "duration_seconds"?, "error"? }
   404 { "error": "not found" }
 
 POST /jobs/{id}/retry

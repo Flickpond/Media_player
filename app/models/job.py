@@ -2,7 +2,17 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Text, func, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -15,6 +25,19 @@ class JobStatus(StrEnum):
     PROCESSING = "processing"
     DONE = "done"
     FAILED = "failed"
+
+
+class HlsStatus(StrEnum):
+    """Where a job's adaptive ladder stands, as the player needs to know it.
+
+    `READY` exactly when `hls_key` exists -- the database enforces that.
+    `UNAVAILABLE` covers every way of having no ladder: finished without
+    one, failed, or uploaded before ladders existed.
+    """
+
+    PENDING = "pending"
+    READY = "ready"
+    UNAVAILABLE = "unavailable"
 
 
 class Job(Base):
@@ -42,6 +65,21 @@ class Job(Base):
             "(jsonb_typeof(operations) = 'array' AND jsonb_array_length(operations) > 0)",
             name="ck_jobs_operations_nonempty_array",
         ),
+        CheckConstraint(
+            "hls_status IN ('pending', 'ready', 'unavailable')",
+            name="ck_jobs_hls_status",
+        ),
+        # The two can't drift apart: a ladder is ready exactly when its key
+        # exists.
+        CheckConstraint(
+            "(hls_status = 'ready') = (hls_key IS NOT NULL)",
+            name="ck_jobs_hls_ready_has_key",
+        ),
+        CheckConstraint(
+            "(width IS NULL OR width > 0) AND (height IS NULL OR height > 0) "
+            "AND (duration_seconds IS NULL OR duration_seconds > 0)",
+            name="ck_jobs_media_dimensions_positive",
+        ),
         Index("ix_jobs_status", "status"),
         Index("ix_jobs_owner_id", "owner_id"),
         Index("ix_jobs_created_at", "created_at"),
@@ -64,6 +102,18 @@ class Job(Base):
     # Null on an upload; on an edit job, what the caller asked for. The
     # array's order is not execution order -- the worker has a fixed one.
     operations: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
+    hls_status: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default=HlsStatus.PENDING.value,
+        server_default=text("'pending'"),
+    )
+    # What the source actually is, once the worker has probed it. Null until
+    # then -- and on every job from before sprint 4.
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    thumbnail_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
