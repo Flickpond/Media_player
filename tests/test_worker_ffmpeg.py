@@ -46,7 +46,8 @@ def test_ffmpeg_processor_transcodes_and_uploads_mp4():
     assert store.downloads[0][0] == "uploads/demo.webm"
     assert store.uploads[0][0] == result.output_key
     assert commands[0][0] == "ffmpeg"
-    assert "scale=-2:min(720\\,ih)" in commands[0]
+    # The MP4 is the fallback, capped at 1080p; 4K comes from the ladder.
+    assert "scale=-2:min(1080\\,ih)" in commands[0]
 
 
 def test_ffmpeg_processor_reports_stderr_on_failure():

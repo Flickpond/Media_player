@@ -9,8 +9,9 @@ a failure as "no ladder" rather than "the job failed" -- see
 the MP4 job has already marked the video done.
 
 The ladder is capped by what the source actually contains. A 480p upload
-gets two renditions, not three: a 720p rendition of a 480p source costs
-encode time and storage to carry no additional detail.
+gets two renditions, not six: a 720p rendition of a 480p source costs
+encode time and storage to carry no additional detail. It is also capped by
+`worker_hls_max_height`, which is what the host can encode in time.
 """
 
 import logging
@@ -27,12 +28,19 @@ logger = logging.getLogger("app.worker.hls")
 
 # The rungs we offer, shortest first. A source is never given a rung taller
 # than itself.
-LADDER_HEIGHTS: tuple[int, ...] = (360, 480, 720)
+LADDER_HEIGHTS: tuple[int, ...] = (360, 480, 720, 1080, 1440, 2160)
 
 # Video bitrate per rung. Not a formula: these are the conventional ladder
-# figures for H.264 at these heights, and a formula fitted to three points
-# would be a worse kind of magic.
-BITRATES: dict[int, str] = {360: "800k", 480: "1400k", 720: "2800k"}
+# figures for H.264 at these heights, and a formula fitted to a handful of
+# points would be a worse kind of magic.
+BITRATES: dict[int, str] = {
+    360: "800k",
+    480: "1400k",
+    720: "2800k",
+    1080: "5000k",
+    1440: "8000k",
+    2160: "14000k",
+}
 FALLBACK_BITRATE = "800k"
 
 PLAYLIST_CONTENT_TYPE = "application/vnd.apple.mpegurl"
@@ -42,14 +50,15 @@ MASTER_PLAYLIST_NAME = "master.m3u8"
 SEGMENT_SECONDS = 6
 
 
-def variants_for(height: int) -> tuple[int, ...]:
+def variants_for(height: int, *, max_height: int = 2160) -> tuple[int, ...]:
     """The rungs a source of this height should get, shortest first.
 
-    Never taller than the source. A source shorter than the lowest rung
-    still gets exactly one rendition, at its own height, rather than being
-    upscaled into the 360p rung or being given no ladder at all.
+    Never taller than the source, nor than `max_height`. A source shorter
+    than the lowest rung still gets exactly one rendition, at its own
+    height, rather than being upscaled into the 360p rung or being given no
+    ladder at all.
     """
-    rungs = {rung for rung in LADDER_HEIGHTS if rung <= height}
+    rungs = {rung for rung in LADDER_HEIGHTS if rung <= min(height, max_height)}
     return tuple(sorted(rungs)) if rungs else (height,)
 
 
@@ -156,6 +165,7 @@ class HlsLadderBuilder:
         ffmpeg_binary: str = "ffmpeg",
         preset: str = "veryfast",
         timeout_seconds: int = 870,
+        max_height: int = 2160,
         runner=subprocess.run,
     ) -> None:
         self._store = store
@@ -163,6 +173,7 @@ class HlsLadderBuilder:
         self._ffmpeg_binary = ffmpeg_binary
         self._preset = preset
         self._timeout_seconds = timeout_seconds
+        self._max_height = max_height
         self._runner = runner
 
     def prefix_for(self, job_id: UUID) -> str:
@@ -184,7 +195,7 @@ class HlsLadderBuilder:
 
     def build(self, *, job_id: UUID, source_path: Path, probe: SourceProbe) -> str:
         """Build and upload the ladder, returning the master playlist's key."""
-        heights = variants_for(probe.height)
+        heights = variants_for(probe.height, max_height=self._max_height)
         logger.info(
             "job %s: building HLS ladder %s from a %dx%d source",
             job_id,

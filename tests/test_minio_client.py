@@ -73,3 +73,22 @@ def test_each_client_is_built_once():
 
 def test_the_bucket_is_read_from_settings():
     assert bucket() == "videos"
+
+
+# --- on AWS: credentials from the instance role, never from .env ------------
+
+
+def test_the_instance_role_supplies_credentials_when_asked(pinned, monkeypatch):
+    from minio.credentials import IamAwsProvider
+
+    monkeypatch.setattr(pinned, "storage_use_instance_role", True)
+
+    for client in (internal_client(), public_client()):
+        assert isinstance(client._provider, IamAwsProvider)
+
+
+def test_static_keys_stay_the_default(pinned):
+    """A blank or default key must not silently switch credential source."""
+    from minio.credentials import IamAwsProvider
+
+    assert not isinstance(internal_client()._provider, IamAwsProvider)
