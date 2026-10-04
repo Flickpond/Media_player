@@ -130,7 +130,13 @@ async def process_job_async(
     async with session_factory() as session:
         try:
             await mark_done(
-                session, job_id, output_key=result.output_key, hls_key=result.hls_key
+                session,
+                job_id,
+                output_key=result.output_key,
+                hls_key=result.hls_key,
+                width=result.width,
+                height=result.height,
+                duration_seconds=result.duration_seconds,
             )
         except (JobNotFoundError, InvalidJobTransitionError) as write_exc:
             logger.error("job %s: could not record completion: %s", job_id, write_exc)

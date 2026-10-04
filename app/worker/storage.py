@@ -45,6 +45,11 @@ class ProcessingResult:
 
     output_key: str
     hls_key: str | None = None
+    # What the source actually is, when it could be probed. Stored on the job
+    # by `mark_done`; the step itself never touches the database.
+    width: int | None = None
+    height: int | None = None
+    duration_seconds: float | None = None
 
 
 class ObjectStoreError(RuntimeError):
@@ -184,7 +189,24 @@ class FfmpegProcessor:
         stem = PurePosixPath(source_key).stem or str(job_id)
         return f"{self._output_prefix}/{job_id}/{stem}.mp4"
 
-    def _build_ladder(self, *, job_id: UUID, source_path: Path) -> str | None:
+    def _probe(self, *, job_id: UUID, source_path: Path):
+        """What the source is, or None if it couldn't be read.
+
+        Runs first, before any encoding, so the result can be stored on the job
+        and reused by the ladder instead of probing twice. A failure is logged,
+        not raised: whether an unreadable source should fail the job outright
+        is the probe-first rejection rule, which belongs to the validation
+        step, not to this one.
+        """
+        if self._prober is None:
+            return None
+        try:
+            return self._prober(source_path)
+        except Exception:
+            logger.exception("job %s: could not probe the source", job_id)
+            return None
+
+    def _build_ladder(self, *, job_id: UUID, source_path: Path, probe) -> str | None:
         """The adaptive ladder, or None if it could not be built.
 
         Every failure in here is swallowed on purpose. The contract it keeps
@@ -194,11 +216,10 @@ class FfmpegProcessor:
         video itself. The diagnostic goes to the log, which is the audience
         that can act on it.
         """
-        if self._ladder is None or self._prober is None:
+        if self._ladder is None or probe is None:
             return None
 
         try:
-            probe = self._prober(source_path)
             return self._ladder.build(job_id=job_id, source_path=source_path, probe=probe)
         except Exception:
             logger.exception("job %s: HLS ladder failed; the MP4 output stands", job_id)
@@ -217,6 +238,7 @@ class FfmpegProcessor:
         output_path = temp_dir / "output.mp4"
         try:
             self._store.download_file(key=source_key, destination=str(source_path))
+            probe = self._probe(job_id=job_id, source_path=source_path)
             command = [
                 self._ffmpeg_binary,
                 "-hide_banner",
@@ -270,8 +292,14 @@ class FfmpegProcessor:
             self._store.upload_file(key=output_key, source=str(output_path))
             # Only after the MP4 is safely uploaded, and from the source we
             # already have on disk rather than downloading it a second time.
-            hls_key = self._build_ladder(job_id=job_id, source_path=source_path)
-            return ProcessingResult(output_key=output_key, hls_key=hls_key)
+            hls_key = self._build_ladder(job_id=job_id, source_path=source_path, probe=probe)
+            return ProcessingResult(
+                output_key=output_key,
+                hls_key=hls_key,
+                width=probe.width if probe else None,
+                height=probe.height if probe else None,
+                duration_seconds=probe.duration_seconds if probe else None,
+            )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

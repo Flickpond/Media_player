@@ -207,3 +207,57 @@ def test_no_ladder_injected_means_no_ladder_built():
     result = processor.run(job_id=uuid4(), source_key="uploads/demo.mp4")
 
     assert result.hls_key is None
+
+
+# --- sprint 4: probe once, first, and report what the source is -----------
+
+
+def test_the_source_is_probed_once_before_encoding_and_its_dimensions_returned():
+    """Probed first so the result can be stored and reused; once, because the
+    ladder used to probe the same file again after the MP4 was encoded.
+    """
+    calls: list[str] = []
+    commands: list = []
+
+    def prober(path):
+        calls.append("probe")
+        return SourceProbe(width=3840, height=2160, duration_seconds=41.2)
+
+    def runner(command, **_kwargs):
+        calls.append("encode")
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"mp4")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    processor = FfmpegProcessor(
+        FakeStore(), output_prefix="outputs", runner=runner, ladder=FakeLadder(), prober=prober
+    )
+
+    result = processor.run(job_id=uuid4(), source_key="uploads/demo.mp4")
+
+    assert calls[0] == "probe" and calls.count("probe") == 1
+    assert (result.width, result.height, result.duration_seconds) == (3840, 2160, 41.2)
+
+
+def test_an_unreadable_source_still_produces_the_mp4_without_dimensions():
+    """Whether an unreadable source should fail the job is the validation
+    step's rule. Until that lands, a probe failure costs only the
+    dimensions and the ladder -- never the video.
+    """
+
+    def exploding_prober(_path):
+        raise ObjectStoreError("ffprobe failed", user_message="unusable")
+
+    processor = FfmpegProcessor(
+        FakeStore(),
+        output_prefix="outputs",
+        runner=_mp4_writing_runner([]),
+        ladder=FakeLadder(),
+        prober=exploding_prober,
+    )
+
+    result = processor.run(job_id=uuid4(), source_key="uploads/demo.mp4")
+
+    assert result.output_key.endswith("demo.mp4")
+    assert (result.width, result.height, result.duration_seconds) == (None, None, None)
+    assert result.hls_key is None
