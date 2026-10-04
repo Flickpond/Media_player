@@ -70,11 +70,13 @@ resource "aws_vpc_security_group_egress_rule" "web" {
   for_each = toset(["80", "443"])
 
   security_group_id = aws_security_group.app.id
-  description       = "Image pulls, S3, Let's Encrypt, package updates"
-  cidr_ipv4         = "0.0.0.0/0"
-  ip_protocol       = "tcp"
-  from_port         = tonumber(each.value)
-  to_port           = tonumber(each.value)
+  # No apostrophe: AWS rejects rule descriptions outside a small character
+  # set, and only at apply time -- validate and plan both pass.
+  description = "Image pulls, S3, Lets Encrypt, package updates"
+  cidr_ipv4   = "0.0.0.0/0"
+  ip_protocol = "tcp"
+  from_port   = tonumber(each.value)
+  to_port     = tonumber(each.value)
 }
 
 resource "aws_instance" "app" {
