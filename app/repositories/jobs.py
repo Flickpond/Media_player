@@ -130,6 +130,9 @@ async def _transition(
     output_key: str | None = None,
     hls_key: str | None = None,
     hls_status: HlsStatus | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    duration_seconds: float | None = None,
     error: str | None = None,
 ) -> Job:
     values: dict[str, object | None] = {
@@ -142,6 +145,11 @@ async def _transition(
         # In the same statement as hls_key, always: the database rejects a row
         # where the two disagree (ck_jobs_hls_ready_has_key).
         "hls_status": (hls_status or _derived_hls_status(next_status, hls_key)).value,
+        # Cleared on every other transition, so a retried job never shows the
+        # previous run's dimensions while it is being probed again.
+        "width": width,
+        "height": height,
+        "duration_seconds": duration_seconds,
         "error": error,
         "updated_at": func.now(),
     }
@@ -180,7 +188,14 @@ async def mark_processing(session: AsyncSession, job_id: UUID) -> Job:
 
 
 async def mark_done(
-    session: AsyncSession, job_id: UUID, *, output_key: str, hls_key: str | None = None
+    session: AsyncSession,
+    job_id: UUID,
+    *,
+    output_key: str,
+    hls_key: str | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    duration_seconds: float | None = None,
 ) -> Job:
     """`hls_key` is optional because the adaptive ladder is best-effort.
 
@@ -197,6 +212,9 @@ async def mark_done(
         next_status=JobStatus.DONE,
         output_key=output_key,
         hls_key=hls_key,
+        width=width,
+        height=height,
+        duration_seconds=duration_seconds,
     )
 
 

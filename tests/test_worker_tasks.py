@@ -18,6 +18,9 @@ class FakeJob:
         self.status = status
         self.output_key: str | None = None
         self.hls_key: str | None = None
+        self.width: int | None = None
+        self.height: int | None = None
+        self.duration_seconds: float | None = None
         self.error: str | None = None
         self.filename = "demo.mp4"
 
@@ -59,13 +62,22 @@ class FakeJobStore:
         return self._transition(job_id, JobStatus.QUEUED, JobStatus.PROCESSING)
 
     async def mark_done(
-        self, _session, job_id: UUID, *, output_key: str, hls_key: str | None = None
+        self,
+        _session,
+        job_id: UUID,
+        *,
+        output_key: str,
+        hls_key: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        duration_seconds: float | None = None,
     ) -> FakeJob:
         if not output_key.strip():
             raise ValueError("output_key must not be empty")
         job = self._transition(job_id, JobStatus.PROCESSING, JobStatus.DONE)
         job.output_key = output_key
         job.hls_key = hls_key
+        job.width, job.height, job.duration_seconds = width, height, duration_seconds
         return job
 
     async def mark_failed(self, _session, job_id: UUID, *, error: str) -> FakeJob:
@@ -347,7 +359,7 @@ async def test_losing_the_row_before_recording_completion_is_logged_not_raised(
 ):
     job = store.add()
 
-    async def stolen(_session, job_id, *, output_key, hls_key=None):
+    async def stolen(_session, job_id, *, output_key, hls_key=None, **_dimensions):
         raise InvalidJobTransitionError(f"job {job_id} is failed, not processing")
 
     monkeypatch.setattr(tasks, "mark_done", stolen)

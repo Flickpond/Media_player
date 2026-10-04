@@ -532,3 +532,27 @@ async def test_the_database_rejects_a_non_positive_dimension(session_factory, ow
         async with session_factory() as cleanup:
             await cleanup.execute(delete(Job).where(Job.id == job_id))
             await cleanup.commit()
+
+
+# --- the source's dimensions, stored when the job finishes ------------------
+
+
+@pytest.mark.asyncio
+async def test_finishing_a_job_stores_what_the_source_is(session_factory, owner) -> None:
+    job_id = await _make(session_factory, owner)
+    try:
+        async with session_factory() as session:
+            await mark_processing(session, job_id)
+            done = await mark_done(
+                session,
+                job_id,
+                output_key=f"outputs/{job_id}/demo.mp4",
+                width=3840,
+                height=2160,
+                duration_seconds=41.2,
+            )
+        assert (done.width, done.height, done.duration_seconds) == (3840, 2160, 41.2)
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.commit()
