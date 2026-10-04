@@ -3,8 +3,9 @@
 **Written:** end of sprint 3, 27 September 2026 · against `main` @ `b042c86`
 **Rendered version:** <https://claude.ai/artifact/7EBv6ybhgN9fVy34ajiVuS>
 
-Sprint 3 made video adaptive and editable. Sprint 4 brings **4K**, a move to
-**AWS**, and a faster upload pipeline. After that the work shifts to
+Sprint 3 made video adaptive and editable, and sprint 4 measured how it holds
+up under load. Sprint 5 brings **4K**, a move to **AWS**, and a faster upload
+pipeline. After that the work shifts to
 **scaling out**: more workers when they're needed, and long videos split
 across all of them.
 
@@ -30,12 +31,13 @@ with owners, acceptance criteria and effort, written at its planning session.
 - The crop box and clip scrubber have no user interface yet.
 - Library cards have no thumbnails.
 - Security scans report findings but **cannot block a merge** (`continue-on-error` on SonarCloud; ZAP accepts exit code 1).
-- No load-test numbers recorded; no Terraform.
+- No Terraform.
+- Load tested in sprint 4 (#49): reads meet the 2-second target at 50 users, but **login p90 is 5.8 s**.
 - **A fresh clone cannot start the stack**: neither Docker Hub nor Quay serves the pinned MinIO image anonymously any more. Existing machines and production work because it is cached.
 
 ---
 
-## Sprint 4 — 4K, AWS, and a faster pipeline
+## Sprint 5 — 4K, AWS, and a faster pipeline
 
 **Done when:** a phone's 4K video uploads with a progress bar, plays in 4K
 when the connection allows, and the editor offers only the edits that make
@@ -56,18 +58,26 @@ Size the instance by timing a real 4K clip through the full ladder in the
 first week — resizing is a stop, a type change, and a start. Stop the
 instance whenever nobody is using it; that is the largest saving available.
 
-### Who does what
+### The work
 
-| Track | Sprint 4 work |
-|---|---|
-| **A** — Ibrahim | HLS ladder up to 2160p, never taller than the source. Save the source's width, height and duration on the job. **★ Build the ladder as its own job**, so a video is watchable as soon as the MP4 exists. Encode 720p once instead of twice (FFmpeg `tee`) — about a third less encoding work. **★ Thumbnails**: one poster frame per video. |
-| **B** — Zhang Jizhang | Edit from the **original upload** instead of the 720p copy. Reject impossible scale requests immediately (422), using the stored dimensions. |
-| **C** — Yang Dongwei | Source-aware rules: downscale must go below the source, upscale above it, 2160p at most. Limit uploads by **duration** instead of megabytes. Probe first, and reject corrupt, too-long or video-less files in seconds. |
-| **D** — Jiang Yibai | The AWS move, with Terraform. **★ Direct multipart upload to S3**, resumable. Make SAST and DAST able to fail a merge. Record the load-test numbers in `scaling-notes.md`. |
-| **E** — Lu Jingxing | Edit options built from the video's real height; hide Upscale for 4K. The crop box. **★ Upload progress bar** (percent, speed, time left). Processing stages instead of a spinner, and playback before HD finishes. Show thumbnails; state limits in minutes; notify when a video is ready. |
+Owners, days and contracts are in [`sprint5-plan.md`](sprint5-plan.md); this
+list is the scope.
+
+- **★ The HLS ladder as its own job**, so a video is watchable as soon as the MP4 exists. Ladder up to 2160p, never taller than the source.
+- Save the source's width, height and duration on the job.
+- **★ Thumbnails**: one poster frame per video.
+- **★ Direct multipart upload to storage**, resumable, with an upload progress bar.
+- Source-aware edit rules, an immediate 422 for impossible scale requests, and limits by **duration** instead of megabytes. Probe first, and reject corrupt, too-long or video-less files in seconds.
+- Edit from the **original upload** instead of the 720p copy — only together with the crop box.
+- Edit options built from the video's real height; processing stages instead of a spinner.
+- The AWS move with Terraform; security scans that can fail a merge.
 
 ★ marks the top three: together they remove the long-video timeout risk, lift
 the size limit, start playback sooner, and make the Library look finished.
+
+Encoding 720p once (FFmpeg `tee`) was on this list, but it conflicts with the
+ladder running as its own job — separate jobs can't share an encode — so it
+moved to sprint 6.
 
 > **Two items must ship together.** Once edits start from the original
 > upload, the crop box has to measure its rectangle in the original's pixels,
@@ -83,9 +93,9 @@ the size limit, start playback sooner, and make the Library look finished.
 
 ---
 
-## Sprint 5 and later — scaling out
+## Sprint 6 and later — scaling out
 
-Sprint 4 keeps everything on one machine. These items spread the encoding
+Sprint 5 keeps everything on one machine. These items spread the encoding
 work across many, which is where the horizontal-scaling story for the course
 becomes visible.
 
@@ -121,7 +131,8 @@ keeps a floor during the day and drops it at night:
 
 What it requires:
 
-- **S3**, so workers on different machines share storage (done in sprint 4).
+- **Groundwork, prepared in sprint 5:** a queue-length metric, the worker image in ECR, and the autoscaling module written and `terraform plan`ned against the sprint 5 base. Sprint 6 applies it.
+- **S3**, so workers on different machines share storage (done in sprint 5).
 - **Postgres and Redis reachable on the private network**, only from the
   worker group's security group. This changes the sprint 1 rule that every
   datastore binds to `127.0.0.1`, so it needs its own write-up.
