@@ -138,16 +138,19 @@ to disk, then copy the folder to AWS and upload it with the role:
 
 ```bash
 # on the current server
-docker run --rm --network media_player_default -v /root/minio-export:/out minio/mc \
-  sh -c 'mc alias set old http://minio:9000 "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" && mc mirror old/videos /out'
+# --env-file hands the container this server's MinIO keys; single quotes keep
+# them unexpanded until they are inside it.
+docker run --rm --network media_player_default --env-file .env \
+  -v /root/minio-export:/out --entrypoint sh minio/mc \
+  -c 'mc alias set old http://minio:9000 "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" && mc mirror old/videos /out'
 # copy /root/minio-export to /srv/minio-export on AWS (scp -r, or rsync -e ssh), then on AWS:
 aws s3 sync /srv/minio-export "s3://$(grep ^MINIO_BUCKET .env | cut -d= -f2)/"
 ```
 
 The object keys (`uploads/…`, `outputs/…`) are the same in both stores, so
 the restored rows point at the right objects without any rewriting.
-Set the network name and the `$MINIO_*` values from that server's own
-`docker network ls` and `.env`.
+If the network is named differently, `docker network ls` on that server
+shows it.
 
 **e. Bring the certificate across** so HTTPS works the moment DNS moves:
 copy `deploy/certbot/conf/` from the current server into the same path on
