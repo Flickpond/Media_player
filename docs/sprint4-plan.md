@@ -1,4 +1,4 @@
-# Sprint 5 — Plan
+# Sprint 4 — Plan
 
 **Window:** Sunday 4 October – Sunday 11 October 2026
 **Freeze:** Friday 9 · **Deploy and verify:** Saturday 10 · **Report:** Sunday 11
@@ -20,7 +20,7 @@ working days. **Read [`known-traps.md`](known-traps.md) before writing code.**
 | **A** | Ibrahim Mammadov (@1brahim74) | Processing and AWS | The HLS ladder as its own job and up to 2160p; AWS staging via Terraform; the cutover |
 | **B** | Zhang Jizhang (@zhanj384) | Upload path | Direct, resumable multipart upload to storage |
 | **C** | Yang Dongwei (@ttydw-ch) | Media rules and thumbnails | Thumbnails, duration limits, source-aware edit rules, editing from the original |
-| **D** | Jiang Yibai (@JiangYibai666) | Infrastructure | Security gates that can fail; groundwork for sprint 6's autoscaling workers |
+| **D** | Jiang Yibai (@JiangYibai666) | Infrastructure | Security gates that can fail; groundwork for sprint 5's autoscaling workers |
 | **E** | Lu Jingxing (@Dilute-l) | The UI | Upload progress bar, thumbnails, options that fit the video, crop box |
 
 **Track A is the heaviest track.** If it slips, the AWS cutover is what waits:
@@ -34,14 +34,14 @@ the fallback is the current server, which already works.
   listed both, but they conflict: once the MP4 and the ladder run in separate
   jobs, they can't share one 720p encode. The separate job wins this sprint —
   it lets people watch sooner and gives each half its own timeout. The shared
-  encode moves to sprint 6.
+  encode moves to sprint 5.
 - **The MP4 fallback stays at most 1080p.** The ladder goes up to 2160p, but
   the single-file MP4 is for compatibility and download, and doesn't need 4K.
 - **Everything is built against the S3 API.** MinIO speaks the same API, so
   every track works locally with MinIO and nothing waits for AWS. Moving to
   S3 is a configuration change.
 - **If there's no AWS account with credits by Monday**, the AWS move becomes
-  sprint 6 and everything else still ships, on the current server. On that
+  sprint 5 and everything else still ships, on the current server. On that
   server, set the ladder cap to 1080p — two CPUs can't encode 4K ladders
   within the timeouts.
 - **The worker autoscaling group is prepared this sprint and applied next.**
@@ -114,7 +114,7 @@ security group ID, the bucket name) so D can write against them all week.
 **Editing from the original upload (C) and the crop box (E) ship together, or
 neither ships.** Once edits start from the original, the crop rectangle has to
 be measured in the original's pixels, not the 720p player's. **Decide on
-Wednesday:** if the crop box won't be ready by Friday, both move to sprint 6
+Wednesday:** if the crop box won't be ready by Friday, both move to sprint 5
 and edits keep using the current source.
 
 ---
@@ -129,7 +129,7 @@ and merges that evening. Small daily PRs, not one branch that lands on Friday.
 | **A** Ibrahim | Migration: dimensions, `thumbnail_key`, `hls_status`. Post contract 2.1. Confirm the AWS account; agree the Terraform split with D. | Probe and store dimensions. Terraform: S3 with CORS exposing `ETag`, IAM role. | Ladder as its own job (`hls_status` pending → ready / unavailable). Terraform: security group, EC2, Elastic IP → staging up. | Ladder up to 2160p, never above the source; rung cap as a setting; MP4 ≤ 1080p; edits get a ladder. Staging runs on S3. | Time a real 4K clip on staging. Write the cutover steps. Rotate the admin password. | PR complete | **12:00 cutover decision**: AWS if staging passed, else the current server. Deploy; verify a 4K upload plays in 4K. | Sprint report |
 | **B** Zhang Jizhang | Read contract 2.2; agree it with E. | `POST /uploads` and part signing, against local MinIO. | `complete`: content sniff via range read, then create the job and enqueue. | Resume (`GET /uploads/{id}`), abort, local MinIO CORS. | Tests; help E switch over. | PR complete | Verify a 1 GB upload end to end | Slack |
 | **C** Yang Dongwei | Agree the scale rules with A and E. | Duration limit and probe-first rejection: too long, corrupt, no video stream — fails in seconds. | Thumbnail: one frame right after the probe; `thumbnail_url` in the API. | Source-aware scale rules; `/edit` returns 422 at once using stored dimensions. **Go / no-go** on edit-from-original with E. | If go: edit from the original. Tests across the edit path. | PR complete | Verify on production | Slack |
-| **D** Jiang Yibai | Get #49 merged. Agree the Terraform split with A. | Local Compose builds MinIO from source, so a fresh clone starts. | SAST and DAST able to fail a merge. Add trap T-25. | *Sprint 6 groundwork:* queue-length metric publisher (RQ → CloudWatch, tested with a stub); CI builds and pushes the worker image to ECR. | *Sprint 6 groundwork:* autoscaling module — spot, scaled by queue length, scheduled minimum. `terraform plan` only. Investigate the 5.8 s login on staging. | PR complete | Verify on production; login findings written up | Write-up: what sprint 6 needs to apply the group |
+| **D** Jiang Yibai | Get #49 merged. Agree the Terraform split with A. | Local Compose builds MinIO from source, so a fresh clone starts. | SAST and DAST able to fail a merge. Add trap T-25. | *Sprint 5 groundwork:* queue-length metric publisher (RQ → CloudWatch, tested with a stub); CI builds and pushes the worker image to ECR. | *Sprint 5 groundwork:* autoscaling module — spot, scaled by queue length, scheduled minimum. `terraform plan` only. Investigate the 5.8 s login on staging. | PR complete | Verify on production; login findings written up | Write-up: what sprint 5 needs to apply the group |
 | **E** Lu Jingxing | Agree contracts 2.1 and 2.2. | Thumbnails in the Library, against a stub until C lands. | Upload progress bar on the multipart API: percent, speed, time left. | Resume after a refresh or dropped connection. **Go / no-go** on the crop box with C. | Options from the video's real height (hide Upscale at 2160p); "HD processing" from `hls_status`; limits in minutes; crop box if go. | PR complete | Verify on production | Stretch: notify when a video is ready |
 
 ### Handoffs
@@ -146,7 +146,7 @@ and merges that evening. Small daily PRs, not one branch that lands on Friday.
 
 | By the end of | This is true, or we have a problem |
 |---|---|
-| Mon 5 | Migration merged; all three contracts posted; #49 merged; the AWS account confirmed or AWS moved to sprint 6. |
+| Mon 5 | Migration merged; all three contracts posted; #49 merged; the AWS account confirmed or AWS moved to sprint 5. |
 | Tue 6 | A local upload shows a thumbnail. A multipart upload completes against local MinIO using only `curl`. A fresh clone starts the stack. |
 | Wed 7 | The ladder runs as its own job. The crop-pair decision is posted. A failing security finding blocks a test PR. |
 | Thu 8 | `terraform apply` from nothing builds staging, and one upload plays there. `terraform plan` for the autoscaling module runs clean against it. |
@@ -157,7 +157,7 @@ and merges that evening. Small daily PRs, not one branch that lands on Friday.
 
 ## 5. Carried over, folded in above
 
-- Load-test numbers — **#49** (sprint 4), merge on day 1.
+- Load-test numbers — **#49** (last week), merge on day 1.
 - Login p90 of 5.8 s at 50 users, found by that load test — D, Thursday.
 - Security gates that can't fail (sprint 3) — D, Tuesday.
 - A fresh clone can't pull MinIO (sprint 3) — D, Monday.
@@ -166,10 +166,10 @@ and merges that evening. Small daily PRs, not one branch that lands on Friday.
 
 ## 6. Not this sprint
 
-- **Encoding 720p once** — conflicts with the ladder as its own job (§1). Sprint 6.
-- **Applying the worker autoscaling group** — D prepares it this sprint; it goes live in sprint 6, together with opening Postgres and Redis to the private network.
+- **Encoding 720p once** — conflicts with the ladder as its own job (§1). Sprint 5.
+- **Applying the worker autoscaling group** — D prepares it this sprint; it goes live in sprint 5, together with opening Postgres and Redis to the private network.
 - **Clip scrubber UI** — the crop box is this sprint's one new interactive component.
-- **Chunked encoding, CloudFront** — sprint 6 and later, per the roadmap.
+- **Chunked encoding, CloudFront** — sprint 5 and later, per the roadmap.
 
 ## 7. Rules that have not changed
 
