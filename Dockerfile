@@ -10,7 +10,9 @@ COPY app ./app
 COPY alembic.ini ./
 COPY migrations ./migrations
 
+# Pick up Debian security fixes the slim base image has not been rebuilt with yet.
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
