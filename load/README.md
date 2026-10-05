@@ -51,7 +51,7 @@ $env:MINIO_CONSOLE_PORT = '19001'
 $env:LOAD_BASE_URL = 'http://127.0.0.1:13000'
 $env:LOAD_EMAIL = 'load-local-001@example.com'
 $env:LOAD_PASSWORD = 'local-load-password-2026'
-$compose = @('-f', 'docker-compose.yml', '-f', 'deploy/dast/compose.yml', '-f', 'load/compose.yml')
+$compose = @('-f', 'docker-compose.yml', '-f', 'load/compose.yml')
 docker compose @compose config | Out-Null
 docker compose @compose up --build -d --wait --scale worker=2 frontend reaper
 ```
