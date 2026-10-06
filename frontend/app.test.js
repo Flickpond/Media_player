@@ -788,6 +788,55 @@ describe("library", () => {
     expect(names).toEqual(["holiday.mp4", "recap.mov", "broken.mkv"]);
   });
 
+  it("shows the poster frame the API handed back, behind the badge and overlay", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([{ ...JOBS[0], thumbnail_url: "http://minio/thumbs/1.jpg" }]),
+    );
+
+    el.navLibrary.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    const frame = el.libraryGrid.querySelector(".thumb-image");
+    expect(frame.getAttribute("src")).toBe("http://minio/thumbs/1.jpg");
+    // Decorative: the filename below it already names the video.
+    expect(frame.getAttribute("alt")).toBe("");
+    expect(frame.getAttribute("loading")).toBe("lazy");
+    // A sibling inside the thumb, so the badge and the play overlay survive.
+    expect(frame.closest(".video-thumb").querySelector(".badge")).not.toBeNull();
+  });
+
+  it("keeps the placeholder for a job with no poster frame yet", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse(JOBS));
+
+    el.navLibrary.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.libraryGrid.querySelectorAll(".video-thumb")).toHaveLength(3);
+    expect(el.libraryGrid.querySelector(".thumb-image")).toBeNull();
+  });
+
+  it("falls back to the placeholder when a poster frame will not load", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([{ ...JOBS[0], thumbnail_url: "http://minio/thumbs/expired.jpg" }]),
+    );
+
+    el.navLibrary.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    el.libraryGrid.querySelector(".thumb-image").dispatchEvent(new Event("error"));
+
+    expect(el.libraryGrid.querySelector(".thumb-image")).toBeNull();
+    // Only the frame goes: the card, its badge and its name are untouched.
+    expect(el.libraryGrid.querySelector(".video-thumb .badge")).not.toBeNull();
+    expect(el.libraryGrid.querySelector(".video-filename").textContent).toBe("holiday.mp4");
+  });
+
   it("shows the empty state when there are no jobs at all", async () => {
     const el = await loadApp();
     fetchMock.mockResolvedValueOnce(jsonResponse([]));
