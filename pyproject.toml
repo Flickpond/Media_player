@@ -25,6 +25,9 @@ dependencies = [
   # Declared explicitly. argon2-cffi is already importable as a transitive
   # dependency of minio, but relying on that breaks the day minio drops it.
   "bcrypt>=4.2,<5",
+  # CloudWatch, for the queue-depth publisher. The S3 path keeps using the
+  # minio client; this is not a second storage client.
+  "boto3>=1.35,<2",
 ]
 
 [project.optional-dependencies]

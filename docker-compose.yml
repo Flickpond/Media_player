@@ -145,6 +145,38 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Queue depth to CloudWatch, for sprint 5's worker autoscaling. Behind a
+  # profile because it needs AWS: a host that publishes sets
+  # COMPOSE_PROFILES=metrics (plus METRICS_ENVIRONMENT and METRICS_REGION)
+  # in .env. Locally, `docker compose run --rm queue-metrics --once --dry-run`
+  # prints what it would send. Exactly one per Redis -- two would double-count.
+  queue-metrics:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flickpond-worker:dev
+    profiles: ["metrics"]
+    entrypoint: ["python", "-m", "app.metrics.queue_depth"]
+    environment:
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-flickpond_dev_redis_password}
+      REDIS_SSL: ${REDIS_SSL:-false}
+      REDIS_QUEUE: video_jobs
+      METRICS_NAMESPACE: ${METRICS_NAMESPACE:-Flickpond}
+      METRICS_ENVIRONMENT: ${METRICS_ENVIRONMENT:-local}
+      METRICS_REGION: ${METRICS_REGION:-}
+      METRICS_INTERVAL_SECONDS: ${METRICS_INTERVAL_SECONDS:-60}
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "from app.queue import get_redis_connection; get_redis_connection().ping()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     environment:
