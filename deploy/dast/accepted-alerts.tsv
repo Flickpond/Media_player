@@ -1,0 +1,9 @@
+# ZAP rules whose Medium or High findings may merge anyway. Read by gate.jq.
+#
+# One rule per line: the ZAP plugin id, a tab, and why it is accepted -- a
+# false positive, or a risk the team has decided to carry. A line without a
+# reason fails the gate. Fixing the finding is preferred; an entry here
+# accepts every future instance of that rule, not just today's.
+#
+# Example:
+# 10038	CSP is set by nginx on HTML; JSON API responses are never rendered

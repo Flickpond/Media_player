@@ -30,7 +30,7 @@ with owners, acceptance criteria and effort, written at its planning session.
 - **Uploads are capped at 100 MB**, about 20 seconds of phone 4K.
 - The crop box and clip scrubber have no user interface yet.
 - Library cards have no thumbnails.
-- Security scans report findings but **cannot block a merge** (`continue-on-error` on SonarCloud; ZAP accepts exit code 1).
+- Security scans report findings but **cannot block a merge** (`continue-on-error` on SonarCloud; ZAP accepts exit code 1). *Fixed in sprint 4: a failed Quality Gate and any unaccepted Medium or High ZAP finding fail their jobs.*
 - No Terraform.
 - Load tested after sprint 3 (#49): reads meet the 2-second target at 50 users, but **login p90 is 5.8 s**.
 - **A fresh clone cannot start the stack**: neither Docker Hub nor Quay serves the pinned MinIO image anonymously any more. Existing machines and production work because it is cached. *Fixed in sprint 4: Compose builds the same release from source.*

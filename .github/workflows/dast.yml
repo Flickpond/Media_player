@@ -4,17 +4,10 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "0 3 * * 1"
+  # No `paths:` filter, so this scan can be a required check: a required
+  # check whose workflow never starts leaves the PR waiting for it forever.
+  # The `changes` job below decides instead, and a skipped job counts as passed.
   pull_request:
-    paths:
-      - ".github/workflows/dast.yml"
-      - "app/**"
-      - "deploy/nginx/**"
-      - "deploy/minio/**"
-      - "migrations/**"
-      - "docker-compose.yml"
-      - "Dockerfile"
-      - "nginx.conf"
-      - "pyproject.toml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,8 +17,40 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Decide whether DAST is needed
+    runs-on: ubuntu-latest
+    outputs:
+      scan: ${{ steps.diff.outputs.scan }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+        with:
+          # The PR merged into its base, plus both parents.
+          fetch-depth: 2
+      - id: diff
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
+            echo "scan=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          # deploy/dast/ holds the gate and its accepted findings, so editing
+          # either has to run the gate it changes.
+          pattern='^(\.github/workflows/dast\.yml|app/|deploy/(nginx|minio|dast)/|migrations/|docker-compose\.yml|Dockerfile|nginx\.conf|pyproject\.toml)'
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          printf '%s\n' "${changed}"
+          if printf '%s\n' "${changed}" | grep -Eq "${pattern}"; then
+            echo "scan=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "scan=false" >> "${GITHUB_OUTPUT}"
+          fi
+
   dast:
     name: OWASP ZAP API scan
+    needs: changes
+    # Scan when the diff calls for it, and also when the diff could not be
+    # worked out: a broken `changes` job must not turn into a passed gate.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.scan == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -125,8 +150,36 @@ jobs:
             echo "| Low | ${low} |"
             echo "| Informational | ${informational} |"
             echo
-            echo "ZAP exit code: ${ZAP_EXIT_CODE:-unknown}. Findings are report-only; exit code 3 still fails because it means the scan did not run."
+            echo "ZAP exit code: ${ZAP_EXIT_CODE:-unknown}. Medium and High findings block the merge unless deploy/dast/accepted-alerts.tsv accepts the rule; Low and Informational are report-only."
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      # Blocking. ZAP's own exit code only says whether the scan ran: every
+      # rule defaults to WARN, so it never reports a failure by itself.
+      - name: Fail on unaccepted Medium or High findings
+        run: |
+          if [ ! -s zap-reports/zap-report.json ]; then
+            echo "::error::ZAP wrote no JSON report, so nothing was checked."
+            exit 1
+          fi
+          blocking="$(jq -r --rawfile accepted deploy/dast/accepted-alerts.tsv \
+            -f deploy/dast/gate.jq zap-reports/zap-report.json)"
+          if [ -z "${blocking}" ]; then
+            echo "No unaccepted Medium or High findings."
+            exit 0
+          fi
+          {
+            echo
+            echo "### Blocking findings"
+            echo
+            echo "| Risk | Rule | Alert | Instances | Example |"
+            echo "| --- | --- | --- | ---: | --- |"
+            printf '%s\n' "${blocking}" \
+              | awk -F'\t' '{ printf "| %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5 }'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          printf '%s\n' "${blocking}" | while IFS=$'\t' read -r risk rule name count uri; do
+            echo "::error::ZAP ${risk} [${rule}] ${name}: ${count} instance(s), e.g. ${uri}"
+          done
+          exit 1
 
       - name: Capture application logs
         if: always()

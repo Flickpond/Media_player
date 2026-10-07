@@ -6,3 +6,5 @@
 Dockerfile text eol=lf
 *.yml text eol=lf
 nginx.conf text eol=lf
+# Parsed by jq on the CI runner (the DAST merge gate).
+deploy/dast/* text eol=lf

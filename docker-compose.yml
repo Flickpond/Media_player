@@ -267,6 +267,13 @@ services:
     depends_on:
       api:
         condition: service_healthy
+        # nginx resolves `api` once, at startup. A deploy that recreates the
+        # API can hand it a new address, and nginx keeps proxying to the old
+        # one -- 502 on every /api/ call while every container reports healthy
+        # (T-25). Restarting nginx whenever Compose recreates the API makes it
+        # resolve again. Not triggered when `api` is created from scratch or
+        # brought up on its own -- see T-25 for those cases.
+        restart: true
     healthcheck:
       # /healthz, not /index.html: a cheap endpoint that stays reachable
       # regardless of what the app requires of real callers.

@@ -87,11 +87,26 @@ jobs:
           name: frontend-coverage
           path: frontend/coverage
       - name: Check SonarCloud configuration
-        if: env.SONAR_TOKEN == '' || env.SONAR_PROJECT_KEY == '' || env.SONAR_ORGANIZATION == ''
-        run: echo "::warning::SonarCloud scan skipped; configure SONAR_TOKEN and the SONAR_PROJECT_KEY and SONAR_ORGANIZATION repository variables."
+        id: sonar-config
+        env:
+          # GitHub withholds secrets from pull requests opened from forks, so
+          # those are the one case where a missing token is expected.
+          FROM_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          if [ -n "${SONAR_TOKEN}" ] && [ -n "${SONAR_PROJECT_KEY}" ] && [ -n "${SONAR_ORGANIZATION}" ]; then
+            echo "run=true" >> "${GITHUB_OUTPUT}"
+          elif [ "${FROM_FORK}" = "true" ]; then
+            echo "::warning::SonarCloud scan skipped: pull requests from forks get no secrets."
+            echo "run=false" >> "${GITHUB_OUTPUT}"
+          else
+            # Fail rather than skip: a gate that quietly stops running when its
+            # token is removed or expires looks exactly like a gate that passed.
+            echo "::error::SonarCloud is not configured; set the SONAR_TOKEN secret and the SONAR_PROJECT_KEY and SONAR_ORGANIZATION repository variables."
+            exit 1
+          fi
+      # Blocking: a failed Quality Gate (sonar.qualitygate.wait) fails this job.
       - name: Run SonarCloud analysis
-        if: env.SONAR_TOKEN != '' && env.SONAR_PROJECT_KEY != '' && env.SONAR_ORGANIZATION != ''
-        continue-on-error: true
+        if: steps.sonar-config.outputs.run == 'true'
         uses: SonarSource/sonarqube-scan-action@ba9859eae8dd6bd29e412f25ddbbef3d032000f4 # v8.2.2
         with:
           args: >-
