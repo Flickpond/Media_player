@@ -409,14 +409,8 @@ source-aware crop/clip validation. See the [C handoff](docs/c-recovery-input-saf
 for usage, transaction behaviour, and the B/E integration still required before
 claiming the complete editing feature works in the browser.
 
-Sprint 4 track B adds the authenticated `/uploads` multipart API: 16 MiB
-presigned parts, resume, cancellation and validated completion. The legacy
-`POST /upload` remains available. Apply the new migration before starting the
-API or reaper. See [B's frontend handoff](docs/b-direct-uploads.md) for the
-contract and [verification record](docs/b-upload-verification.md) for checks
-run and the remaining live-service/browser acceptance.
-
-Still out of scope here: quotas and instant session revocation (the JWT is
+Still out of scope here: format selection, quotas, resumable or multipart
+upload, cloud orchestration, and instant session revocation (the JWT is
 stateless and stays valid until it expires — see
 [`docs/s2-03-auth-design.md`](docs/s2-03-auth-design.md) §1).
 
