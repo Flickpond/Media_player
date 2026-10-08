@@ -160,9 +160,10 @@ on the 8-vCPU staging host (≈ 1 minute for 20 s of 4K instead of 28 s). More
 workers means more videos encoding at once. Splitting one video across
 machines is chunked encoding, below.
 
-Until this lands, a sprint 4 move to AWS runs everything on **one
-`c7g.xlarge`** (`instance_type` in `staging.tfvars`): half the cost of the
-staging host, no code change, and 4K still well inside the timeout.
+**Decided 8 October: production moves to AWS when this is done, in sprint 5**,
+straight onto the split design rather than onto one big host first. Until
+then it stays on the current server, with the ladder capped at 1080p; the
+sprint 4 staging host stays stopped except for testing.
 
 ### Re-queue a job when its worker is told to stop (Track A)
 
