@@ -33,7 +33,8 @@ def test_the_seek_happens_before_the_input_so_a_long_file_is_not_decoded_to_it()
 
     assert command.index("-ss") < command.index("-i")
     assert command[command.index("-frames:v") + 1] == "1"
-    assert command[-1] == "/tmp/out.jpg"
+    # Compared as the platform renders the path, so this passes on Windows too.
+    assert command[-1] == str(Path("/tmp/out.jpg"))
 
 
 def test_the_box_bounds_the_frame_without_enlarging_or_distorting_it():

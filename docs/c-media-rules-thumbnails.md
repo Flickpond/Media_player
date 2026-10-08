@@ -78,10 +78,12 @@ All in files track A owns, so flagged here for review:
 2. **Scale rungs: 240, 360, 480, 720, 1080, 1440, 2160.** Arbitrary heights
    are refused -- an odd height fails inside libx264 mid-encode, and the
    dropdowns can only offer fixed values anyway.
-3. **The MP4 cap is read from `WORKER_FFMPEG_MAX_HEIGHT`.** When A raises it
-   to 1080 this week, `edit_options` follow automatically. An MP4 encoded
-   under the old cap is caught by the worker's own check against the real
-   file.
+3. **The MP4 cap is read from `WORKER_FFMPEG_MAX_HEIGHT`** -- now 1080 after
+   #56, and `edit_options` follow it. An MP4 encoded under the old 720 cap is
+   caught by the worker's own check against the real file. An edit job's
+   options come from its own probed output (#56 stores those dimensions).
+4. **Editing from the original: no-go for sprint 4.** Moves to sprint 5 with
+   E's crop box, per the pairing rule.
 
 ## Tests
 
