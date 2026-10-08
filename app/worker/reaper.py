@@ -20,6 +20,7 @@ from app.repositories.jobs import (
     mark_stale_failed,
 )
 from app.services.storage import get_storage_service
+from app.services.upload_cleanup import cleanup_expired
 from app.worker.__main__ import configure_logging
 
 logger = logging.getLogger("app.worker.reaper")
@@ -103,6 +104,7 @@ async def main() -> None:
     while True:
         try:
             reaped, requeued, deleted = await run_once()
+            await cleanup_expired()
             logger.info(
                 "reaper pass complete: reaped=%s requeued=%s deleted=%s",
                 reaped,
