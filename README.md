@@ -114,6 +114,7 @@ Media_player/
 |   |-- sprint2-report.md         # Sprint 2 record: contributions, bugs, evidence
 |   |-- s2-03-auth-design.md      # Why auth is shaped the way it is
 |   |-- known-traps.md            # Traps already hit here -- read before coding
+|   |-- login-latency-investigation.md  # Why login p90 was 5.8 s, and the fix
 |   |-- a-worker.md               # Worker and state machine notes
 |   |-- proposal.md               # Full module proposal
 |   `-- sprint1-plan.md           # Sprint 1 plan
@@ -122,6 +123,7 @@ Media_player/
 |-- deploy/                       # nginx config, TLS, certbot renewal
 |-- infra/terraform/              # AWS base: S3, IAM, EC2 (track A)
 |-- infra/registry/               # ECR and the CI push role (track D)
+|-- infra/workers/                # Spot worker autoscaling, plan only (track D)
 |-- alembic.ini                   # Migration configuration
 |-- pyproject.toml                # Runtime and development dependencies
 `-- .env.example                  # Safe local configuration template

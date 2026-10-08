@@ -8,3 +8,5 @@ Dockerfile text eol=lf
 nginx.conf text eol=lf
 # Parsed by jq on the CI runner (the DAST merge gate).
 deploy/dast/* text eol=lf
+# Terraform renders these into EC2 user data, which bash runs as written.
+*.tftpl text eol=lf
