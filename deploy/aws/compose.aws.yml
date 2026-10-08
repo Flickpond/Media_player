@@ -1,0 +1,52 @@
+# AWS overlay: what changes when the stack runs on the Terraform host in
+# infra/terraform. Layered over docker-compose.yml, never instead of it:
+#
+#   docker compose -f docker-compose.yml -f deploy/aws/compose.aws.yml \
+#     up -d --build --scale worker=2
+#
+# A separate file rather than edits to docker-compose.yml, so the stack every
+# developer runs is untouched and nobody's MinIO setup depends on AWS.
+#
+# Storage endpoints, the bucket and the region come from .env -- see
+# deploy/aws/env.aws.example.
+
+x-instance-role: &instance-role
+  # Credentials from the EC2 instance role. MINIO_ACCESS_KEY and
+  # MINIO_SECRET_KEY are ignored when this is on.
+  STORAGE_USE_INSTANCE_ROLE: "true"
+
+services:
+  # S3 replaces MinIO here, but the `minio` name must still resolve: nginx's
+  # /videos/ location names it as an upstream, and nginx refuses to start
+  # when one does not resolve. A placeholder answers to the name and holds
+  # nothing. It also sidesteps the MinIO image no registry will serve
+  # anonymously any more -- a fresh AWS host could not pull it.
+  minio:
+    image: busybox:1.36
+    command: ["sleep", "infinity"]
+    healthcheck:
+      test: ["CMD", "true"]
+
+  api:
+    environment:
+      <<: *instance-role
+
+  worker:
+    environment:
+      <<: *instance-role
+      # The reason for the move: this host can encode a 4K ladder in time.
+      WORKER_HLS_MAX_HEIGHT: ${WORKER_HLS_MAX_HEIGHT:-2160}
+      WORKER_FFMPEG_MAX_HEIGHT: ${WORKER_FFMPEG_MAX_HEIGHT:-1080}
+      # A 4K ladder is six renditions in one FFmpeg run; the 15-minute
+      # budget sized for 720p is too tight. FFmpeg's own limit stays under
+      # RQ's so the worker records a readable failure instead of being
+      # killed mid-write.
+      WORKER_FFMPEG_TIMEOUT_SECONDS: ${WORKER_FFMPEG_TIMEOUT_SECONDS:-1770}
+      WORKER_JOB_TIMEOUT_SECONDS: ${WORKER_JOB_TIMEOUT_SECONDS:-1800}
+
+  reaper:
+    environment:
+      <<: *instance-role
+      # Must outlast the longest job, or the reaper fails a job that is
+      # still legitimately encoding.
+      REAPER_LEASE_SECONDS: ${REAPER_LEASE_SECONDS:-2400}

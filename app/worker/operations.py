@@ -1,5 +1,6 @@
 """Per-job editing registry and the fixed clip -> crop -> scale -> convert pipeline."""
 
+import logging
 import shutil
 import subprocess
 import tempfile
@@ -18,6 +19,8 @@ from app.worker.storage import (
 from app.worker.validation import validate_clip, validate_crop, validate_edit_rules
 
 INVALID_EDIT = "the edit request is invalid; please submit it again"
+
+logger = logging.getLogger("app.worker.operations")
 
 
 def _params(item) -> dict:
@@ -112,6 +115,15 @@ class EditProcessor:
                 "invalid persisted edit operations", user_message=INVALID_EDIT
             ) from exc
 
+    def _probe_output(self, *, job_id: UUID, output_path: Path):
+        """The finished edit's size, or None. The edit is already uploaded,
+        so a probe failure costs the ladder, not the job."""
+        try:
+            return self._prober(output_path)
+        except Exception:
+            logger.exception("job %s: could not probe the edit output; no ladder", job_id)
+            return None
+
     def run(self, *, job_id: UUID, source_key: str) -> ProcessingResult:
         if not self._store.object_exists(source_key):
             raise ObjectStoreError(
@@ -192,6 +204,20 @@ class EditProcessor:
                 source=str(output_path),
                 content_type=content_type,
             )
-            return ProcessingResult(output_key=output_key)
+            # The edit's own size, not the source's: a crop or a scale changes
+            # it, and this is what the ladder is cut from and what the page
+            # offers options against. An MP3 has no picture, so no ladder.
+            if extension == "mp3":
+                return ProcessingResult(output_key=output_key)
+            produced = self._probe_output(job_id=job_id, output_path=output_path)
+            if produced is None:
+                return ProcessingResult(output_key=output_key)
+            return ProcessingResult(
+                output_key=output_key,
+                ladder_pending=True,
+                width=produced.width,
+                height=produced.height,
+                duration_seconds=produced.duration_seconds,
+            )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)

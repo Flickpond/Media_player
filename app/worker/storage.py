@@ -184,7 +184,7 @@ class FfmpegProcessor:
         ffmpeg_binary: str = "ffmpeg",
         preset: str = "veryfast",
         crf: int = 23,
-        max_height: int = 720,
+        max_height: int = 1080,
         timeout_seconds: int = 870,
         runner=subprocess.run,
         builds_ladder: bool = False,
@@ -443,6 +443,7 @@ def get_ladder_step():
         ffmpeg_binary=settings.worker_ffmpeg_binary,
         preset=settings.worker_ffmpeg_preset,
         timeout_seconds=settings.worker_ffmpeg_timeout_seconds,
+        max_height=settings.worker_hls_max_height,
     )
 
 
