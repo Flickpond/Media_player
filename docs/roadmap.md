@@ -103,21 +103,42 @@ becomes visible.
 
 The workers are already stateless: any worker can take any job (sprint 1,
 N5). That makes them the part of the system that can scale. Postgres and
-Redis hold state, so they stay on one always-on machine.
+Redis hold state, so they move to AWS's managed services, which every
+machine reaches over the private network.
 
 ```text
                     ┌───────────────────────────────┐
   users ──────────▶ │ core instance, always on      │
-                    │ nginx · API · Postgres · Redis│
-                    │ reaper                        │
+                    │ nginx · API · reaper          │
                     └───────────────┬───────────────┘
                                     │ private network only
-                    ┌───────────────▼───────────────┐
-                    │ worker Auto Scaling Group     │──▶ S3
-                    │ spot instances, 0 … N         │
-                    │ scaled by queue length        │
-                    └───────────────────────────────┘
+          ┌─────────────────────────┼─────────────────────────┐
+          ▼                         ▼                         ▼
+  ┌───────────────┐       ┌───────────────────┐       ┌───────────────┐
+  │ RDS Postgres  │       │ ElastiCache Valkey│       │ worker Auto   │──▶ S3
+  │ db.t4g.micro  │       │ cache.t4g.micro   │       │ Scaling Group │
+  │ (accounts,    │       │ (job queue)       │       │ spot, 0 … N   │
+  │  jobs)        │       │                   │       │               │
+  └───────────────┘       └───────────────────┘       └───────────────┘
 ```
+
+**Decided 8 October: managed datastores.**
+
+- **RDS for PostgreSQL, `db.t4g.micro`, single zone.** Automatic daily
+  backups with point-in-time restore, patching by AWS, TLS enforced
+  (`rds.force_ssl`), and `publicly_accessible = false`. The data we cannot
+  lose — accounts and the record of every video — stops depending on
+  backups we take by hand.
+- **ElastiCache for Valkey, `cache.t4g.micro`.** Valkey is the open-source
+  continuation of Redis; RQ and the `redis` client work against it
+  unchanged. ElastiCache **cannot be given a public address at all**, which
+  closes the worst way to get this wrong: anything that can write to the
+  queue can make a worker run code of its choosing, because RQ jobs are
+  serialised Python calls. In-transit encryption and an AUTH token on;
+  the app already supports both (`REDIS_SSL`, `REDIS_PASSWORD`).
+- Both reachable only from the core's and the workers' security groups.
+  The setup is still written up and its `terraform plan` read by a second
+  person before the first apply — see the review note below.
 
 **Decided: a scheduled minimum.** With zero workers, the first upload after a
 quiet period waits one to three minutes for an instance to boot. So the group
@@ -133,9 +154,18 @@ What it requires:
 
 - **Groundwork, prepared in sprint 4:** a queue-length metric, the worker image in ECR, and the autoscaling module written and `terraform plan`ned against the sprint 4 base. Sprint 5 applies it.
 - **S3**, so workers on different machines share storage (done in sprint 4).
-- **Postgres and Redis reachable on the private network**, only from the
-  worker group's security group. This changes the sprint 1 rule that every
-  datastore binds to `127.0.0.1`, so it needs its own write-up.
+- **RDS and ElastiCache in the base Terraform** (Track A), with their own
+  security groups admitting only the core and worker groups, and their
+  endpoints as outputs. The worker module's datastore rules then point at
+  those groups instead of the core host's (Track D). This retires the
+  sprint 1 rule that every datastore binds to `127.0.0.1`, so CLAUDE.md
+  rule 2 is rewritten in the same change.
+- **A one-page review note before the first apply:** which ports, from
+  which groups, TLS and passwords on, and the test that proves both are
+  unreachable from outside AWS. Read by someone other than whoever applies.
+- **Moving the data:** `pg_dump` from the current server restored into RDS
+  at the cutover, as in [`aws-cutover.md`](aws-cutover.md). The queue needs
+  no moving — jobs left queued are re-queued from Postgres by the reaper.
 - **Worker images in a registry (ECR)**, because new instances pull an image
   at boot instead of building one.
 - **Workers that disappear mid-job** — see the next section.
@@ -146,13 +176,23 @@ What it requires:
 |---|---|
 | One `c7g.2xlarge`, always on (sprint 4 staging) | ≈ $250 |
 | One `c7g.xlarge`, always on | ≈ $125 |
-| **Core `t4g.medium` always on + spot `c7g.xlarge` workers only while busy** | **≈ $40–65** |
+| Core `t4g.medium` with Postgres and Redis on it + spot workers | ≈ $40–65 |
+| **Decided: core `t4g.small` + RDS + ElastiCache + spot workers** | **≈ $70–90** |
 
-The core runs nothing CPU-heavy, so a `t4g.medium` (2 vCPU, 4 GB, ≈ $31 a
-month) holds it. A spot `c7g.xlarge` was ≈ $0.09 an hour, against $0.17 on
-demand; two workers busy two hours a day cost ≈ $11 a month, and the daytime
-floor of one worker adds ≈ $22. Video traffic out of S3 (≈ $0.12/GB) is on
-top in every setup.
+The decided setup, item by item:
+
+| Item | Per month |
+|---|---|
+| Core `t4g.small` (2 vCPU, 2 GB): nginx, API, reaper — nothing CPU-heavy | ≈ $15 |
+| RDS PostgreSQL `db.t4g.micro` + 20 GB gp3 | ≈ $21 |
+| ElastiCache Valkey `cache.t4g.micro` | ≈ $14 |
+| Spot `c7g.xlarge` workers: two busy two hours a day, plus a daytime floor of one | ≈ $11–33 |
+| Disks and the public address | ≈ $7 |
+
+About $30 a month more than keeping the datastores on the core, for backups
+nobody has to remember and a queue that cannot be exposed. A spot
+`c7g.xlarge` was ≈ $0.09 an hour, against $0.17 on demand. Video traffic out
+of S3 (≈ $0.12/GB) is on top in every setup.
 
 Smaller workers don't make one video faster — one video is one FFmpeg run on
 one machine, so a 4K ladder on a 4-vCPU worker takes about twice as long as
