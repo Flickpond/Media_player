@@ -13,7 +13,7 @@
 
 | | |
 |---|---|
-| Deployed at | **TODO** — AWS `47.128.86.77` or Alibaba `47.238.64.156`, per Saturday's 12:00 decision |
+| Deployed at | **<https://flickpond.com>** — Alibaba ECS `47.238.64.156`. **Decided 8 Oct: production stays here for sprint 4 and moves to AWS in sprint 5**, onto the split core + spot-worker design (see [`roadmap.md`](roadmap.md)) rather than onto one large host first. AWS staging is built and proven, and stays stopped between tests |
 | Commit live | **TODO** |
 | Tests | **TODO** at freeze. Track A's last branch: 419 Python unit tests pass, 59 Postgres integration tests pass |
 | 4K end to end on production | **TODO** — the Saturday checkpoint |
