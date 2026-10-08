@@ -7,6 +7,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.api import multipart_uploads as api
+from app.config import Settings, get_settings
 from app.database import get_session
 from app.main import create_app
 from app.models.upload import UploadSession
@@ -49,6 +50,9 @@ async def setup(monkeypatch, test_user):
     enqueue = Mock()
     monkeypatch.setattr(api, "enqueue_job", enqueue)
     app = create_app()
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        _env_file=None, max_upload_bytes=2 * 1024**3
+    )
     app.dependency_overrides[get_session] = lambda: session
     app.dependency_overrides[get_multipart_storage] = lambda: store
     authenticate_as(app, test_user)
@@ -92,6 +96,33 @@ async def test_large_upload_is_only_metadata_and_can_sign_parts(setup):
     result = await s.client.post(f"/uploads/{uid}/parts", json={"part_numbers": [1, 64]})
     assert result.status_code == 200
     assert result.json()["urls"]["1"] == "http://storage/part"
+
+
+@pytest.mark.parametrize("limit", [2 * 1024**3, 32 * 1024**2])
+async def test_upload_over_limit_is_rejected_before_creating_session(setup, limit):
+    setup.app.dependency_overrides[get_settings] = lambda: Settings(
+        _env_file=None, max_upload_bytes=limit
+    )
+    response = await setup.client.post(
+        "/uploads",
+        json={"filename": "video.mp4", "size": limit + 1, "content_type": "video/mp4"},
+    )
+    assert response.status_code == 413
+    assert str(limit) in response.json()["error"]
+    assert not setup.rows
+    assert not setup.jobs
+    setup.store.initiate.assert_not_awaited()
+    setup.session.commit.assert_not_awaited()
+
+
+@pytest.mark.parametrize("limit", [2 * 1024**3, 32 * 1024**2])
+async def test_upload_at_limit_is_accepted(setup, limit):
+    setup.app.dependency_overrides[get_settings] = lambda: Settings(
+        _env_file=None, max_upload_bytes=limit
+    )
+    await begin(setup, limit)
+    assert next(iter(setup.rows.values())).size == limit
+    setup.store.initiate.assert_awaited_once()
 
 
 async def test_complete_is_idempotent_and_creates_only_one_job(setup):

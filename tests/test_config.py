@@ -6,6 +6,9 @@ async engine. Both are pure functions of config, and both are silent when
 wrong -- you find out by watching a worker fail to connect.
 """
 
+import pytest
+from pydantic import ValidationError
+
 from app.config import Settings
 
 
@@ -59,3 +62,19 @@ def test_dsn_that_already_names_a_driver_is_left_alone():
     dsn = "postgresql+asyncpg://u:p@postgres:5432/flickpond"
 
     assert make(postgres_dsn=dsn).postgres_dsn == dsn
+
+
+def test_max_upload_bytes_defaults_to_two_gib(monkeypatch):
+    monkeypatch.delenv("MAX_UPLOAD_BYTES", raising=False)
+    assert Settings(_env_file=None).max_upload_bytes == 2 * 1024**3
+
+
+def test_max_upload_bytes_can_be_configured_from_environment(monkeypatch):
+    monkeypatch.setenv("MAX_UPLOAD_BYTES", "1073741824")
+    assert Settings(_env_file=None).max_upload_bytes == 1024**3
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_max_upload_bytes_must_be_positive(limit):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, max_upload_bytes=limit)

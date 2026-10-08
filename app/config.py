@@ -1,7 +1,7 @@
 from functools import lru_cache
 from urllib.parse import quote
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     # or the page blocks them as mixed content. One flag cannot be both.
     minio_public_use_ssl: bool = False
     output_url_expiry_seconds: int = 3600
+    # Bound each multipart upload before creating a session or storage object.
+    max_upload_bytes: int = Field(default=2 * 1024**3, gt=0)
 
     redis_host: str = "127.0.0.1"
     redis_port: int = 6379

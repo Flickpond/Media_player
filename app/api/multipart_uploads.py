@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import CurrentUser, SessionDependency
 from app.api.uploads import ALLOWED_CONTENT_TYPES, safe_filename
+from app.config import Settings, get_settings
 from app.errors import ApiForbiddenError, ApiNotFoundError, ApiUnauthorizedError
 from app.models.upload import UploadSession
 from app.queue import enqueue_job
@@ -80,8 +81,16 @@ def active(upload):
 
 @router.post("", status_code=201, response_model=UploadStarted)
 async def start(
-    request: StartUpload, user: CurrentUser, session: SessionDependency, store: Storage
+    request: StartUpload,
+    user: CurrentUser,
+    session: SessionDependency,
+    store: Storage,
+    settings: Annotated[Settings, Depends(get_settings)],
 ):
+    if request.size > settings.max_upload_bytes:
+        raise HTTPException(
+            413, f"upload exceeds maximum size of {settings.max_upload_bytes} bytes"
+        )
     if request.content_type.split(";")[0].strip().lower() not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(415, "unsupported media type")
     now = datetime.now(UTC)
