@@ -149,6 +149,15 @@ jobs:
           done
           docker logs minio
           exit 1
+      - name: Initialize storage bucket
+        run: |
+          python - <<'PY'
+          import asyncio
+
+          from app.services.storage import get_storage_service
+
+          asyncio.run(get_storage_service().ensure_bucket())
+          PY
       - name: Apply migrations
         run: python -m alembic upgrade head
       - name: Run integration tests
