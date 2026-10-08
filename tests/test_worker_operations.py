@@ -34,7 +34,7 @@ def test_edit_runs_one_ffmpeg_command_in_fixed_order_and_uploads_the_right_type(
     operations = [
         {"operation": "convert", "params": {"format": "mkv"}},
         {"operation": "downscale", "params": {"height": 480}},
-        {"operation": "crop", "params": {"x": 10, "y": 20, "w": 640, "h": 360}},
+        {"operation": "crop", "params": {"x": 10, "y": 20, "w": 1280, "h": 720}},
         {"operation": "clip", "params": {"start": 1, "end": 5}},
     ]
     store = FakeStore()
@@ -51,7 +51,7 @@ def test_edit_runs_one_ffmpeg_command_in_fixed_order_and_uploads_the_right_type(
     assert len(commands) == 1
     command = commands[0]
     assert command.index("-ss") < command.index("-i")
-    assert command[command.index("-vf") + 1] == "crop=640:360:10:20,scale=-2:480"
+    assert command[command.index("-vf") + 1] == "crop=1280:720:10:20,scale=-2:480"
     assert "-c:v" in command
     assert "copy" not in command
     assert result.output_key.endswith("movie.mkv")

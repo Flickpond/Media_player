@@ -147,6 +147,7 @@ async def process_job_async(
                 width=result.width,
                 height=result.height,
                 duration_seconds=result.duration_seconds,
+                thumbnail_key=result.thumbnail_key,
             )
         except (JobNotFoundError, InvalidJobTransitionError) as write_exc:
             logger.error("job %s: could not record completion: %s", job_id, write_exc)

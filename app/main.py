@@ -8,6 +8,7 @@ from app.api.auth import router as auth_router
 from app.api.hls import router as hls_router
 from app.api.jobs import admin_router
 from app.api.jobs import router as jobs_router
+from app.api.limits import router as limits_router
 from app.api.multipart_uploads import router as multipart_router
 from app.api.uploads import MAX_FILE_SIZE
 from app.api.uploads import router as uploads_router
@@ -67,6 +68,7 @@ def create_app() -> FastAPI:
     application.include_router(admin_router)
     application.include_router(uploads_router)
     application.include_router(multipart_router)
+    application.include_router(limits_router)
 
     @application.exception_handler(ApiNotFoundError)
     async def not_found_handler(_request: Request, exception: ApiNotFoundError) -> JSONResponse:

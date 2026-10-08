@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.worker.probe import probe_source
+from app.worker.probe import NO_VIDEO_STREAM, probe_source
 from app.worker.storage import UNPROCESSABLE_VIDEO, ObjectStoreError
 
 SOURCE = Path("/tmp/source.mp4")
@@ -84,7 +84,9 @@ def test_probe_asks_for_one_combined_entry_spec():
 
     assert runner.command.count("-show_entries") == 1
     spec = runner.command[runner.command.index("-show_entries") + 1]
-    assert spec == "stream=width,height:format=duration"
+    assert spec == (
+        "stream=width,height:stream_side_data=rotation:stream_tags=rotate:format=duration"
+    )
 
 
 def test_probe_selects_only_the_first_video_stream():
@@ -182,3 +184,60 @@ def test_the_user_message_never_carries_the_path_or_ffprobe_output():
     assert "source.mp4" in str(caught.value)
     assert "source.mp4" not in caught.value.user_message
     assert "Invalid data" not in caught.value.user_message
+
+
+# --- sprint 4 (Track C): a phone video, the right way up --------------------
+
+# Captured from ffprobe 6.1 against a 1920x1080 H.264 file carrying a 90°
+# display matrix -- what an upright phone recording looks like to ffprobe.
+REAL_ROTATED_FFPROBE_OUTPUT = """{
+    "programs": [],
+    "streams": [
+        {"width": 1920, "height": 1080, "tags": {}, "side_data_list": [{"rotation": 90}]}
+    ],
+    "format": {"duration": "3.000000"}
+}"""
+
+
+def test_an_upright_phone_video_reports_the_size_it_is_shown_at():
+    """FFmpeg rotates before any filter runs, so the encode, the ladder, the
+    thumbnail and the editor all see 1080x1920. So must everything sized
+    from this probe.
+    """
+    probe = probe_source(SOURCE, runner=runner_returning(REAL_ROTATED_FFPROBE_OUTPUT))
+
+    assert (probe.width, probe.height) == (1080, 1920)
+
+
+@pytest.mark.parametrize(
+    ("stream_extra", "expected"),
+    [
+        ({"side_data_list": [{"rotation": -90}]}, (1080, 1920)),
+        ({"side_data_list": [{"rotation": 270}]}, (1080, 1920)),
+        ({"side_data_list": [{"rotation": -180}]}, (1920, 1080)),
+        ({"side_data_list": [{"displaymatrix": "..."}]}, (1920, 1080)),
+        ({"side_data_list": [{"rotation": "sideways"}]}, (1920, 1080)),
+        ({"tags": {"rotate": "90"}}, (1080, 1920)),
+        ({"tags": {"rotate": "not a number"}}, (1920, 1080)),
+    ],
+)
+def test_every_way_a_rotation_is_recorded_is_honoured(stream_extra, expected):
+    payload = json.dumps(
+        {
+            "streams": [{"width": 1920, "height": 1080, **stream_extra}],
+            "format": {"duration": "5.0"},
+        }
+    )
+
+    probe = probe_source(SOURCE, runner=runner_returning(payload))
+
+    assert (probe.width, probe.height) == expected
+
+
+def test_a_file_with_no_video_stream_tells_the_uploader_what_to_do_about_it():
+    payload = json.dumps({"streams": [], "format": {"duration": "10.0"}})
+
+    with pytest.raises(ObjectStoreError) as caught:
+        probe_source(SOURCE, runner=runner_returning(payload))
+
+    assert caught.value.user_message == NO_VIDEO_STREAM

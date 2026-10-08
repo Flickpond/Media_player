@@ -27,7 +27,13 @@ from app.repositories.jobs import (
     prepare_retry,
 )
 from app.schemas.edit import EditRequest
-from app.schemas.job import ErrorResponse, JobResponse
+from app.schemas.job import EditOptions, ErrorResponse, JobResponse
+from app.services.media_rules import (
+    MediaRuleError,
+    check_edit_operations,
+    editable_height,
+    scale_options,
+)
 from app.services.output_urls import OutputUrlSigner, get_output_url_signer
 from app.services.storage import StorageService, get_storage_service
 
@@ -43,10 +49,32 @@ SignerDependency = Annotated[OutputUrlSigner, Depends(get_output_url_signer)]
 StorageDependency = Annotated[StorageService, Depends(get_storage_service)]
 
 
+def _editable_height(job: Job) -> int | None:
+    """How tall the copy an edit of `job` starts from is, if that is known."""
+    return editable_height(
+        height=job.height,
+        is_edit=job.operations is not None,
+        mp4_max_height=get_settings().worker_ffmpeg_max_height,
+    )
+
+
+def _edit_options(job: Job) -> EditOptions | None:
+    if job.status != JobStatus.DONE.value:
+        return None
+    options = scale_options(_editable_height(job))
+    return EditOptions(**options) if options is not None else None
+
+
 async def _to_response(job: Job, signer: OutputUrlSigner) -> JobResponse:
     output_url = None
     if job.status == JobStatus.DONE.value and job.output_key:
         output_url = await signer.create_url(job.output_key)
+
+    # Signed like the MP4, with its forced-download disposition: an <img>
+    # ignores that header, and it keeps the URL harmless if opened directly.
+    thumbnail_url = None
+    if job.status == JobStatus.DONE.value and job.thumbnail_key:
+        thumbnail_url = await signer.create_url(job.thumbnail_key)
 
     # Not a presigned object URL like `output_url`: a ladder is hundreds of
     # objects, so this points at the API route that signs each part on
@@ -69,6 +97,8 @@ async def _to_response(job: Job, signer: OutputUrlSigner) -> JobResponse:
         width=job.width,
         height=job.height,
         duration_seconds=job.duration_seconds,
+        thumbnail_url=thumbnail_url,
+        edit_options=_edit_options(job),
         error=error,
     )
 
@@ -156,6 +186,7 @@ async def retry_job_by_id(
     responses={
         404: {"model": ErrorResponse},
         409: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
         503: {"model": ErrorResponse},
     },
 )
@@ -174,6 +205,18 @@ async def edit_job_by_id(
             status_code=409,
             content={"error": "only completed jobs can be edited"},
         )
+
+    # Track C's source-aware rules, against the dimensions already stored on
+    # the job: a scale the video cannot take is refused now, not by a worker
+    # a minute from now. With no stored dimensions only the rules that need
+    # none are applied here; the worker re-checks against the real file.
+    requested = [
+        (item.operation, item.params.model_dump(mode="python")) for item in request.operations
+    ]
+    try:
+        check_edit_operations(requested, input_height=_editable_height(source))
+    except MediaRuleError as exc:
+        return JSONResponse(status_code=422, content={"error": str(exc)})
 
     convert = request.operation("convert")
     extension = convert.params.format if convert is not None else "mp4"
@@ -225,7 +268,7 @@ async def _delete_job_and_storage(
 
     # An edit borrows another job's output as its source. Deleting the edit
     # must not delete that shared object and break the original library item.
-    keys = list(filter(None, (job.output_key,)))
+    keys = list(filter(None, (job.output_key, job.thumbnail_key)))
     if job.operations is None:
         keys.insert(0, job.source_key)
 
