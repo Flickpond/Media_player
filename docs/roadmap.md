@@ -138,10 +138,64 @@ What it requires:
   datastore binds to `127.0.0.1`, so it needs its own write-up.
 - **Worker images in a registry (ECR)**, because new instances pull an image
   at boot instead of building one.
-- **Workers that disappear mid-job.** Scale-in and spot reclaims will
-  interrupt encodes. The reaper already recovers abandoned jobs, but its
-  30-minute lease is too slow — either shorten it or have workers re-queue
-  their job on shutdown.
+- **Workers that disappear mid-job** — see the next section.
+
+**Sizing and cost** (Singapore, on-demand and spot prices on 8 October 2026):
+
+| Setup | Per month |
+|---|---|
+| One `c7g.2xlarge`, always on (sprint 4 staging) | ≈ $250 |
+| One `c7g.xlarge`, always on | ≈ $125 |
+| **Core `t4g.medium` always on + spot `c7g.xlarge` workers only while busy** | **≈ $40–65** |
+
+The core runs nothing CPU-heavy, so a `t4g.medium` (2 vCPU, 4 GB, ≈ $31 a
+month) holds it. A spot `c7g.xlarge` was ≈ $0.09 an hour, against $0.17 on
+demand; two workers busy two hours a day cost ≈ $11 a month, and the daytime
+floor of one worker adds ≈ $22. Video traffic out of S3 (≈ $0.12/GB) is on
+top in every setup.
+
+Smaller workers don't make one video faster — one video is one FFmpeg run on
+one machine, so a 4K ladder on a 4-vCPU worker takes about twice as long as
+on the 8-vCPU staging host (≈ 1 minute for 20 s of 4K instead of 28 s). More
+workers means more videos encoding at once. Splitting one video across
+machines is chunked encoding, below.
+
+Until this lands, a sprint 4 move to AWS runs everything on **one
+`c7g.xlarge`** (`instance_type` in `staging.tfvars`): half the cost of the
+staging host, no code change, and 4K still well inside the timeout.
+
+### Re-queue a job when its worker is told to stop (Track A)
+
+A spot instance gets **two minutes' warning** before AWS takes it back, and
+scale-in stops workers the same way. Today the job that worker was running
+stays `processing` until the reaper's lease runs out — 40 minutes on AWS —
+and is then marked **failed**. The uploader sees an error for something that
+was never wrong with their video. With spot workers, that is routine, not
+rare.
+
+What changes:
+
+- **The worker catches the stop signal** (`SIGTERM`, which Docker sends on
+  shutdown and the instance's spot-interruption handling triggers), kills its
+  FFmpeg, and puts the job back: `processing → queued` for an MP4 job, or the
+  ladder back on its queue with `hls_status` still `pending`. A one-way
+  transition rule is relaxed for exactly this case, through
+  `app/repositories/jobs.py` like every other write, conditional on the job
+  still being this worker's.
+- **A bound on retries,** so a video that crashes FFmpeg every time cannot
+  loop forever: an attempt count on the job, failed with a readable error
+  after the third interruption.
+- **The reaper stays the safety net** for a worker that dies without warning
+  (a kernel panic, a reclaim that beats the signal). Its lease should drop
+  from 40 minutes to a few minutes past the job timeout once workers
+  heartbeat, which RQ already supports.
+- **Partial output is discarded:** the job's `outputs/{id}/` prefix is cleared
+  before the retry, so a half-written ladder is never served.
+
+Acceptance: `docker stop` on a worker mid-encode puts the job back in the
+queue within seconds, another worker finishes it, and the uploader never
+sees `failed`. The same on a spot worker using AWS FIS's spot-interruption
+test action.
 
 ### Chunked parallel encoding
 
