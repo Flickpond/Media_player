@@ -240,3 +240,26 @@ responsibility. See [C's handoff](c-recovery-input-safety.md) for the required
 | `STORAGE_USE_INSTANCE_ROLE` | `true` on AWS: S3 credentials come from the instance role, and the two keys above are ignored |
 | `WORKER_FFMPEG_MAX_HEIGHT` | Tallest MP4 fallback, default `1080` |
 | `WORKER_HLS_MAX_HEIGHT` | Tallest ladder rung, default `1080`; `2160` on a host that can encode 4K inside the job timeout. Never above the source |
+
+## Sprint 4: direct uploads (B/E)
+
+The legacy `POST /upload` contract stays unchanged. New owner-scoped endpoints:
+
+| Method | Path | Request | Success |
+| --- | --- | --- | --- |
+| POST | `/uploads` | `{filename, size, content_type}` | 201 `{upload_id, part_size, part_count}` |
+| POST | `/uploads/{id}/parts` | `{part_numbers: [1, 2]}` | 200 `{urls: {"1": "...", "2": "..."}}` |
+| GET | `/uploads/{id}` | none | 200 `{parts_done: [{n, etag}], state, part_size, part_count, job_id}` |
+| POST | `/uploads/{id}/complete` | `{parts: [{n, etag}]}` | 202 `{job_id}` |
+| DELETE | `/uploads/{id}` | none | 204 |
+
+Parts are 16 MiB except the final part. Upload sessions live for 24 hours;
+signed PUT URLs live for at most 15 minutes. Job creation happens only after
+completion and content validation; repeating completion returns the same job ID.
+The server reserves that ID early without creating a job row. Jobs' existing
+state transitions and worker ownership are unchanged.
+
+See [B's handoff](b-direct-uploads.md) for error statuses, frozen completion
+manifests, queue recovery, CORS, cancellation and frontend resume behavior.
+Migration `20261008_05` creates a separate `upload_sessions` table; deploy it
+before the new API/reaper. Existing job metadata is unchanged by this migration.
