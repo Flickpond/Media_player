@@ -10,6 +10,11 @@
 //
 //   docker compose up -d --wait
 //   RUN_LIVE_TESTS=1 npx vitest run app.live.test.js
+//
+// The stack publishes the API on `.env`'s API_PORT, which is not always 8000,
+// so the base is overridable rather than assumed:
+//
+//   LIVE_API_BASE=http://127.0.0.1:8080 RUN_LIVE_TESTS=1 npx vitest run app.live.test.js
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -18,8 +23,42 @@ import { JSDOM } from "jsdom";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const API = "http://127.0.0.1:8000";
+const API = process.env.LIVE_API_BASE ?? "http://127.0.0.1:8000";
 const live = process.env.RUN_LIVE_TESTS === "1";
+
+// app.js talks to a same-origin `/api`, because in a deployment nginx serves
+// this page and proxies that path. Nothing is serving the page here, so the
+// two things a browser does for free have to be supplied: resolve the relative
+// path against the live API, and carry the session cookie from one request to
+// the next. Node's fetch does neither on its own, and without the second the
+// page is signed out the moment it registers.
+const realFetch = globalThis.fetch;
+const sessionCookies = new Map();
+
+globalThis.fetch = async (input, init = {}) => {
+  // nginx proxies `location /api/` with a trailing slash, which drops that
+  // prefix -- the API itself serves `/auth/me`, not `/api/auth/me`.
+  const url =
+    typeof input === "string" && input.startsWith("/api/")
+      ? `${API}${input.slice("/api".length)}`
+      : String(input);
+  const headers = new Headers(init.headers ?? {});
+
+  // Only the API gets the cookie. The part PUTs go to storage on another
+  // origin, and app.js asks for exactly that with `credentials: "omit"` -- a
+  // jar that ignored the origin would quietly leak the session to MinIO.
+  if (url.startsWith(API) && sessionCookies.size > 0 && !headers.has("cookie")) {
+    headers.set("cookie", [...sessionCookies].map(([k, v]) => `${k}=${v}`).join("; "));
+  }
+
+  const res = await realFetch(url, { ...init, headers });
+  for (const raw of res.headers.getSetCookie?.() ?? []) {
+    const pair = raw.split(";")[0];
+    const split = pair.indexOf("=");
+    if (split > 0) sessionCookies.set(pair.slice(0, split), pair.slice(split + 1));
+  }
+  return res;
+};
 
 let dom;
 let el;
@@ -69,7 +108,8 @@ describe.skipIf(!live)("frontend against the live stack", () => {
     // account and signs in through the page's own form -- the same path a
     // person takes. The session cookie is HttpOnly, so nothing here holds a
     // token; jsdom's cookie jar carries it exactly as a browser would.
-    el.authEmail.value = `live-${Date.now()}@example.test`;
+    // example.test is a reserved name and the API's email validator refuses it.
+    el.authEmail.value = `live-${Date.now()}@example.com`;
     el.authPassword.value = "live-test-password";
     el.authToggle.dispatchEvent(new dom.window.Event("click"));
     el.authForm.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
@@ -83,16 +123,13 @@ describe.skipIf(!live)("frontend against the live stack", () => {
   it("uploads a real file and plays the processed result", async () => {
     // A real multipart upload, driven by clicking the form -- not by calling
     // fetch directly. Everything app.js does, it does for real here.
-    // The API sniffs the head of every upload and refuses anything that is not
-    // a recognised video container, so filler bytes alone no longer pass. This
-    // is a real 32-byte ISO base media `ftyp` box in front of the padding.
-    const bytes = new Uint8Array(256 * 1024).fill(7);
-    bytes.set([
-      0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, // box length, "ftyp"
-      0x69, 0x73, 0x6f, 0x6d, 0x00, 0x00, 0x02, 0x00, // major brand "isom", minor version
-      0x69, 0x73, 0x6f, 0x6d, 0x69, 0x73, 0x6f, 0x32, // compatible brands "isom", "iso2"
-      0x61, 0x76, 0x63, 0x31, 0x6d, 0x70, 0x34, 0x31, // "avc1", "mp41"
-    ]);
+    //
+    // It has to be a real video, too. The API only sniffs the container, but
+    // the worker then probes the streams and fails the job if there are none,
+    // so filler bytes behind an `ftyp` header stopped passing when the probe
+    // became mandatory this sprint. Plyr's blank clip is a genuine H.264 MP4
+    // and the smallest one already in the tree.
+    const bytes = readFileSync(join(here, "vendor", "blank.mp4"));
     const file = new File([bytes], "live-clip.mp4", { type: "video/mp4" });
     Object.defineProperty(el.fileInput, "files", { value: [file], configurable: true });
 
@@ -116,8 +153,9 @@ describe.skipIf(!live)("frontend against the live stack", () => {
     const played = await fetch(src);
     expect(played.ok).toBe(true);
     const body = new Uint8Array(await played.arrayBuffer());
-    expect(body.length).toBe(bytes.length);
-    expect(body).toEqual(bytes);
+    expect(body.length).toBeGreaterThan(0);
+    // A real MP4, but not the bytes we sent: the worker transcoded it.
+    expect(String.fromCharCode(...body.subarray(4, 8))).toBe("ftyp");
   }, 60000);
 
   it("the live API returns the shapes app.js is written against", async () => {

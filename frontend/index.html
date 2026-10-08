@@ -210,6 +210,31 @@
 
           <p id="status" class="status" hidden></p>
 
+          <!-- The direct upload's own progress, which exists before any job
+               does. The job card's .progress-track below is the indeterminate
+               sweep shown while the worker transcodes; this one is determinate
+               and belongs to the transfer. -->
+          <div id="upload-progress" class="upload-progress" hidden>
+            <div
+              id="upload-progress-track"
+              class="progress-track"
+              role="progressbar"
+              aria-label="Upload progress"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+            >
+              <div id="upload-progress-fill" class="progress-fill"></div>
+            </div>
+            <!-- The bar above is the accessible control; this line is the same
+                 number spelled out, so it does not need announcing twice. -->
+            <div class="upload-progress-line" aria-hidden="true">
+              <span id="upload-progress-percent" class="upload-progress-percent">0%</span>
+              <span id="upload-progress-rate"></span>
+              <span id="upload-progress-eta"></span>
+            </div>
+          </div>
+
           <div id="active-job" class="job-card" hidden>
             <div class="job-card-body">
               <div class="job-thumb">

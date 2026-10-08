@@ -663,6 +663,42 @@ main {
   animation: sweep 1.6s ease-in-out infinite;
 }
 
+/* --- direct upload progress -------------------------------------------------
+   The determinate bar for the transfer itself, as opposed to the sweep above,
+   which only says "the worker is still going". It gets its width from app.js
+   and is the one the reader hears, so the line under it is decorative. */
+.upload-progress {
+  margin-top: 12px;
+}
+.progress-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  /* Parts land in 16 MiB steps, so the transition is what keeps the bar from
+     jumping. Short enough to still read as the number changing. */
+  transition: width 0.25s ease-out;
+}
+.upload-progress-line {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-top: 7px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.upload-progress-percent {
+  min-width: 34px;
+  font-weight: 600;
+  color: var(--text);
+  /* Digits that do not change width keep the rate and the time left from
+     sliding sideways on every percent. */
+  font-variant-numeric: tabular-nums;
+}
+
 video {
   width: 100%;
   /* A real uploaded video's own aspect ratio is unknown until it plays, and
