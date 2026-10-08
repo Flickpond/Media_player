@@ -153,19 +153,36 @@ class _LadderStore:
         pass
 
 
-def test_an_edit_reports_its_own_size_and_asks_for_a_ladder():
-    """A 4K source downscaled to 720p must get a 720p-topped ladder, so the
-    size probed is the output's, not the source's.
+def _probes(*, source, output):
+    """A prober that tells the source from the output, as ffprobe would.
+
+    One answer for both made these tests depend on the edit never probing its
+    source -- and source-aware rules (a downscale must go below the source,
+    a corrupt source fails at once) rightly probe it.
     """
     probed: list[str] = []
 
     def prober(path):
         probed.append(path.name)
-        return SourceProbe(1280, 720, 8.0)
+        answer = source if path.name == "source" else output
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    return prober, probed
+
+
+def test_an_edit_reports_its_own_size_and_asks_for_a_ladder():
+    """A 4K source downscaled to 720p must get a 720p-topped ladder, so the
+    size stored is the output's, not the source's.
+    """
+    prober, probed = _probes(
+        source=SourceProbe(3840, 2160, 8.0), output=SourceProbe(1280, 720, 8.0)
+    )
 
     result = _edit([{"operation": "downscale", "params": {"height": 720}}], prober=prober)
 
-    assert probed == ["output.mp4"]
+    assert probed[-1] == "output.mp4", "the size reported is probed from the output"
     assert result.ladder_pending is True
     assert (result.width, result.height, result.duration_seconds) == (1280, 720, 8.0)
 
@@ -189,8 +206,9 @@ def test_an_mp3_edit_gets_no_ladder_and_is_never_probed():
 
 
 def test_an_unreadable_edit_output_still_finishes_without_a_ladder():
-    def prober(_path):
-        raise RuntimeError("ffprobe failed")
+    prober, _ = _probes(
+        source=SourceProbe(3840, 2160, 8.0), output=RuntimeError("ffprobe failed")
+    )
 
     result = _edit([{"operation": "downscale", "params": {"height": 720}}], prober=prober)
 
