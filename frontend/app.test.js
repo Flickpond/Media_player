@@ -24,7 +24,7 @@ let fetchMock;
  * index from its own first request rather than from the identity check.
  * `loadSignedOut` is for the tests that care about the signed-out half.
  */
-async function loadApp({ signedIn = true, role = "user" } = {}) {
+async function loadApp({ signedIn = true, role = "user", limits = null } = {}) {
   document.body.innerHTML = BODY;
   vi.resetModules();
   fetchMock.mockResolvedValueOnce(
@@ -32,12 +32,17 @@ async function loadApp({ signedIn = true, role = "user" } = {}) {
       ? jsonResponse({ id: "u-1", email: "maya@example.test", role })
       : jsonResponse({ error: "not authenticated" }, false, 401),
   );
+  // app.js reads the public /limits right after it asks who it is talking to.
+  // A server from before sprint 4 has no such route, which is the default
+  // here; `limits` lets a test say what this deployment allows.
+  fetchMock.mockResolvedValueOnce(limits ? jsonResponse(limits) : jsonResponse({ error: "not found" }, false, 404));
   await import("./app.js");
   await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/auth/me"));
   await vi.advanceTimersByTimeAsync(0);
   fetchMock.mockClear();
   return {
     dropzone: document.getElementById("dropzone"),
+    dropzoneHint: document.getElementById("dropzone-hint"),
     fileInput: document.getElementById("file-input"),
     browseButton: document.getElementById("browse-button"),
     status: document.getElementById("status"),
@@ -180,6 +185,11 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  // jsdom has no object URLs at all. The one test that needs them adds them,
+  // and this puts the environment back so every other upload test keeps
+  // taking the "the browser cannot measure this file" path.
+  URL.createObjectURL = undefined;
+  URL.revokeObjectURL = undefined;
 });
 
 describe("upload", () => {
@@ -357,6 +367,48 @@ describe("upload", () => {
     expect(el.status.textContent).toContain("larger than");
     expect(fetchMock).not.toHaveBeenCalled();
     expect(el.dropzone.classList.contains("busy")).toBe(false);
+  });
+
+  it("says the duration limit the API reports, next to the picker", async () => {
+    const el = await loadApp({ limits: { max_duration_seconds: 300, max_edit_height: 2160 } });
+
+    expect(el.dropzoneHint.textContent).toBe("MP4, MOV, WebM, MKV, or AVI, up to 5 minutes.");
+  });
+
+  it("refuses an over-long video before spending the upload on it", async () => {
+    const el = await loadApp({ limits: { max_duration_seconds: 300, max_edit_height: 2160 } });
+
+    // The browser half of this check is a <video> reading the file's own
+    // metadata. jsdom has no demuxer, so the element is stood in for: what is
+    // under test is what the page does with the number, not how it got it.
+    URL.createObjectURL = () => "blob:probe";
+    URL.revokeObjectURL = () => {};
+    const listeners = {};
+    const probe = document.createElement("video");
+    Object.defineProperty(probe, "duration", { value: 754.2, configurable: true });
+    probe.addEventListener = (name, handler) => {
+      listeners[name] = handler;
+    };
+    const realCreate = document.createElement.bind(document);
+    let served = false;
+    vi.spyOn(document, "createElement").mockImplementation((tag, ...rest) => {
+      if (tag === "video" && !served) {
+        served = true;
+        return probe;
+      }
+      return realCreate(tag, ...rest);
+    });
+
+    chooseFile(el.fileInput, fileNamed("long.mp4"));
+    el.fileInput.dispatchEvent(new Event("change"));
+    listeners.loadedmetadata();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // 12:34 against a 5 minute limit, and nothing was sent to find that out.
+    expect(el.status.textContent).toContain("longer than 5 minutes");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(el.dropzone.classList.contains("busy")).toBe(false);
+    expect(el.uploadProgress.hidden).toBe(true);
   });
 
   it("names the CORS rule when storage does not expose the ETag", async () => {

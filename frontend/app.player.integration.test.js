@@ -73,6 +73,10 @@ async function loadPage({ role = "user" } = {}) {
   fetchMock.mockResolvedValueOnce(
     jsonResponse({ id: "u-1", email: "maya@example.test", role }),
   );
+  // app.js reads the public /limits right after it asks who it is talking to.
+  // This stand-in stack predates that route, which is the case the page has to
+  // survive anyway.
+  fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not found" }, false, 404));
   await import("./app.js");
   await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/auth/me"));
   await vi.advanceTimersByTimeAsync(0);

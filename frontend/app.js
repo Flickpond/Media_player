@@ -10,6 +10,7 @@
 //   POST /uploads                    -> 201 { upload_id, part_size, part_count }
 //   POST /uploads/{id}/parts         -> 200 { urls: { "1": "...", ... } }
 //   POST /uploads/{id}/complete      -> 202 { job_id }
+//   GET  /limits         -> 200 { max_duration_seconds, max_edit_height }
 //   GET  /jobs/{id}      -> { id, filename, status, output_url?, hls_url?,
 //                             hls_status, thumbnail_url?, error? }
 //   GET  /jobs?limit&offset       -> [ ...job shape... ]   (caller's own jobs)
@@ -79,6 +80,7 @@ const el = {
 
   viewUpload: document.getElementById("view-upload"),
   dropzone: document.getElementById("dropzone"),
+  dropzoneHint: document.getElementById("dropzone-hint"),
   fileInput: document.getElementById("file-input"),
   browseButton: document.getElementById("browse-button"),
   status: document.getElementById("status"),
@@ -478,6 +480,77 @@ async function deleteActiveJob() {
   }
 }
 
+// --- what the API will and will not take -----------------------------------
+
+let limits = null;
+let limitsPromise = null;
+
+/** The API's limits, fetched once per page load.
+ *
+ * `/limits` is public and changes only when the deployment does. Null means
+ * the server has no such route -- anything from before sprint 4 -- and the
+ * page then says nothing about a limit it cannot know, rather than inventing
+ * one.
+ */
+function loadLimits() {
+  limitsPromise ??= fetch(`${API}/limits`)
+    .then((res) => (res.ok ? res.json() : null))
+    .catch(() => null)
+    .then((value) => {
+      limits = value;
+      return value;
+    });
+  return limitsPromise;
+}
+
+/** A limit the way a person would say it: "5 minutes", "90 seconds". */
+function describeLimit(seconds) {
+  if (seconds % 60 === 0) {
+    const minutes = seconds / 60;
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  return `${seconds} seconds`;
+}
+
+/** Say the duration limit next to the picker, when there is one.
+ *
+ * The size figure that used to live here is gone with the limit it described:
+ * a file the browser can type now goes straight to storage in parts, so
+ * quoting 100 MB would be wrong for almost every upload. A file it cannot type
+ * still goes through the one-shot endpoint, which still stops at 100 MB, and
+ * `sendWholeFile` is where that is said. */
+function applyLimitHint() {
+  if (limits?.max_duration_seconds > 0) {
+    el.dropzoneHint.textContent = `MP4, MOV, WebM, MKV, or AVI, up to ${describeLimit(limits.max_duration_seconds)}.`;
+  }
+}
+
+/** How long a file is, read in the browser before anything is uploaded.
+ *
+ * The worker measures the real duration with ffprobe and refuses an over-long
+ * video there, but that is minutes late for a large file. This is the courtesy
+ * that says so first. `null` means it could not be read -- a browser with no
+ * object URLs, a container it cannot demux, metadata that never arrives -- and
+ * the upload proceeds, so a file the browser cannot read is never blocked. */
+function readDurationSeconds(file) {
+  if (typeof URL.createObjectURL !== "function") return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const probe = document.createElement("video");
+
+    const finish = (seconds) => {
+      URL.revokeObjectURL(url);
+      resolve(Number.isFinite(seconds) && seconds > 0 ? seconds : null);
+    };
+
+    probe.preload = "metadata";
+    probe.addEventListener("loadedmetadata", () => finish(probe.duration));
+    probe.addEventListener("error", () => finish(null));
+    probe.src = url;
+  });
+}
+
 /** Whether this file can take the direct path at all.
  *
  * The direct path has to *declare* a content type and the API stores only the
@@ -708,6 +781,20 @@ async function handleFile(file) {
   setStatus("Uploading...");
 
   try {
+    // The worker refuses an over-long video once it has probed it, which is
+    // minutes late for a large one. Reading the length here is what makes the
+    // refusal instant, and "could not read it" falls through to the worker
+    // rather than blocking a file the browser does not understand.
+    const seconds = await readDurationSeconds(file);
+    const durationLimit = limits?.max_duration_seconds ?? 0;
+    if (durationLimit > 0 && seconds !== null && seconds > durationLimit) {
+      setStatus(
+        `That video is longer than ${describeLimit(durationLimit)} — the worker would refuse it. Trim it and try again.`,
+      );
+      setBusy(false);
+      return;
+    }
+
     const jobId = await sendVideo(file);
 
     clearUploadProgress();
@@ -1775,3 +1862,6 @@ applyAuthMode();
 updateProcessButton();
 // Decide which half of the page to show before anything else runs.
 refreshIdentity();
+// Public, so it is read whether or not there is a session -- the limit belongs
+// next to the picker, and the picker is behind the sign-in form.
+loadLimits().then(applyLimitHint);
