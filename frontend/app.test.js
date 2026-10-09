@@ -104,8 +104,10 @@ async function loadApp({ signedIn = true, role = "user" } = {}) {
     editClip: document.getElementById("edit-clip"),
     editClipMount: document.getElementById("edit-clip-mount"),
     editDownscale: document.getElementById("edit-downscale"),
+    editDownscaleSection: document.getElementById("edit-downscale-section"),
     editDownscaleHeight: document.getElementById("edit-downscale-height"),
     editUpscale: document.getElementById("edit-upscale"),
+    editUpscaleSection: document.getElementById("edit-upscale-section"),
     editUpscaleHeight: document.getElementById("edit-upscale-height"),
     editConvert: document.getElementById("edit-convert"),
     editConvertFormat: document.getElementById("edit-convert-format"),
@@ -1961,6 +1963,72 @@ describe("editor", () => {
       { operation: "clip", params: { start: 5, end: 12.5 } },
       { operation: "crop", params: { x: 0, y: 140, w: 1080, h: 1080 } },
     ]);
+  });
+
+  it("builds the scale dropdowns from the video's own edit_options", async () => {
+    const el = await loadApp();
+    await openEditor(el, [
+      {
+        ...SOURCE,
+        height: 720,
+        edit_options: { downscale: [480, 360, 240], upscale: [1080, 1440, 2160] },
+      },
+    ]);
+
+    expect([...el.editDownscaleHeight.options].map((o) => o.value)).toEqual(["480", "360", "240"]);
+    expect([...el.editUpscaleHeight.options].map((o) => o.value)).toEqual(["1080", "1440", "2160"]);
+    expect(el.editDownscaleSection.hidden).toBe(false);
+    expect(el.editUpscaleSection.hidden).toBe(false);
+
+    el.editUpscale.checked = true;
+    el.editUpscale.dispatchEvent(new Event("change"));
+    submit(el);
+
+    // The dropdown the API filled is the height that goes on the wire.
+    expect(sentOperations()).toEqual([{ operation: "upscale", params: { height: 1080 } }]);
+  });
+
+  it("hides the operation this video has no use for", async () => {
+    const el = await loadApp();
+    // A 2160p source: there is nothing above it to upscale to, so the API
+    // sends an empty list and the section goes away rather than sitting there
+    // permanently disabled.
+    await openEditor(el, [
+      {
+        ...SOURCE,
+        height: 2160,
+        edit_options: { downscale: [1440, 1080, 720, 480, 360, 240], upscale: [] },
+      },
+    ]);
+
+    expect(el.editUpscaleSection.hidden).toBe(true);
+    expect(el.editUpscale.disabled).toBe(true);
+    expect(el.editDownscaleSection.hidden).toBe(false);
+  });
+
+  it("keeps its own lists for a job the API has not measured", async () => {
+    const el = await loadApp();
+    // No stored dimensions means no edit_options, and the fixed lists -- with
+    // the worker doing the checking -- are what sprint 3 shipped.
+    await openEditor(el, [{ ...SOURCE }]);
+
+    expect([...el.editDownscaleHeight.options].map((o) => o.value)).toEqual(["480", "360", "240"]);
+    expect([...el.editUpscaleHeight.options].map((o) => o.value)).toEqual(["1080", "1440"]);
+    expect(el.editDownscaleSection.hidden).toBe(false);
+    expect(el.editUpscaleSection.hidden).toBe(false);
+  });
+
+  it("gives the fixed lists back after a job that replaced them", async () => {
+    const el = await loadApp();
+    await openEditor(el, [
+      { ...SOURCE, height: 720, edit_options: { downscale: [480], upscale: [1080] } },
+    ]);
+    expect([...el.editDownscaleHeight.options].map((o) => o.value)).toEqual(["480"]);
+
+    await openEditor(el, [{ ...SOURCE, id: "2" }]);
+
+    expect([...el.editDownscaleHeight.options].map((o) => o.value)).toEqual(["480", "360", "240"]);
+    expect([...el.editUpscaleHeight.options].map((o) => o.value)).toEqual(["1080", "1440"]);
   });
 
   it("cannot be made to send downscale and upscale together", async () => {
