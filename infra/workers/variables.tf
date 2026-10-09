@@ -42,9 +42,10 @@ variable "region" {
 
 variable "core_private_ip" {
   description = <<-EOT
-    The core host's private address, where workers reach Postgres and Redis.
-    Not a base output yet (asked of track A); until it is:
+    The core host's private address, where workers reach Postgres and Redis
+    in the sprint 4 shape. Becomes a base output (#62); until then:
       terraform -chdir=../terraform state show aws_instance.app | grep private_ip
+    Replaced by the RDS and ElastiCache endpoints when the datastores move.
   EOT
   type        = string
 
@@ -178,9 +179,9 @@ variable "alarm_topic_arn" {
 variable "open_datastores_to_workers" {
   description = <<-EOT
     Adds Postgres and Redis ingress from the worker security group to the
-    base's. Off in sprint 4 (plan only). Turning it on is half of the change:
-    the core host's Compose still binds both to 127.0.0.1 until sprint 5's
-    write-up and compose change land.
+    datastores' security group. Off in sprint 4 (plan only). Today that group
+    is the base's app group; after #62 it is the RDS and ElastiCache groups,
+    so turning this on no longer needs any change on the core host.
   EOT
   type        = bool
   default     = false

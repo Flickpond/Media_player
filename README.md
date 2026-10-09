@@ -353,7 +353,8 @@ npm test                                    # unit tests, mocked fetch
 RUN_LIVE_TESTS=1 npx vitest run app.live.test.js   # against the running stack
 ```
 
-CI sends Python and frontend coverage to SonarCloud for static security
+CI sends Python coverage (unit and integration tests, as two reports that
+SonarCloud merges) and frontend coverage to SonarCloud for static security
 analysis. Create the SonarCloud project with Automatic Analysis disabled, then
 configure the repository with the `SONAR_TOKEN` secret and the
 `SONAR_PROJECT_KEY` and `SONAR_ORGANIZATION` variables. The Quality Gate should

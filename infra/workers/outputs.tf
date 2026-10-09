@@ -4,7 +4,7 @@ output "autoscaling_group_name" {
 }
 
 output "worker_security_group_id" {
-  description = "Sprint 5 opens Postgres and Redis on the core host to this group only."
+  description = "Sprint 5 opens Postgres and Redis (RDS and ElastiCache, #62) to this group only."
   value       = aws_security_group.worker.id
 }
 

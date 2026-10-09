@@ -5,6 +5,22 @@ sprint 4, **applied in sprint 5**. A root of its own that plugs into the
 base in [`../terraform`](../terraform) through its outputs and never edits
 its files (sprint 4 plan §2.3).
 
+> **Sprint 5 changes where the datastores live** ([#62](https://github.com/Flickpond/Media_player/pull/62)).
+> Postgres moves to RDS and Redis to ElastiCache (Valkey), both private and
+> both TLS-only. This root was written for the sprint 4 shape, with both on
+> the core host, and is **reworked once the base exposes the new outputs**:
+>
+> | Now (sprint 4 shape) | After #62 |
+> |---|---|
+> | `core_private_ip` → `REDIS_HOST`, Postgres host | The ElastiCache and RDS endpoints (base outputs) |
+> | Ingress added to the base's app security group | Ingress added to the RDS and ElastiCache security groups (base outputs) |
+> | `REDIS_SSL` unset, plain `postgresql://` DSN | `REDIS_SSL=true`, `?sslmode=require` on the DSN |
+> | Compose rebinding Postgres/Redis on the core host | Not needed: nothing on the core host is opened |
+>
+> Unchanged: the group, spot, scaling, schedules, IAM, image and secrets
+> handling. `core_private_ip` also becomes a base output, though once the
+> datastores move, workers no longer need it.
+
 ```text
 core host (base) ── queue-metrics ──▶ CloudWatch  Flickpond/QueuedJobs, RunningJobs
      ▲  Postgres 5432, Redis 6379                   │ alarms
@@ -12,6 +28,10 @@ core host (base) ── queue-metrics ──▶ CloudWatch  Flickpond/QueuedJobs
   worker Auto Scaling Group  ◀──────────── step scaling + scheduled minimum
   spot, Graviton, 0..max_workers, one RQ worker each
 ```
+
+The diagram is the sprint 4 shape. After #62, the arrow from the workers
+goes to RDS and ElastiCache, and the core host keeps only nginx, the API, the
+reaper and the queue-metrics publisher.
 
 | File | What |
 |---|---|
@@ -88,14 +108,18 @@ billed by the second.
 ## Before the first apply (sprint 5)
 
 1. State for both roots on the S3 backend with locking.
-2. The two passwords, as SecureStrings, equal to the core host's `.env`:
+2. **The rework above**, against the base's RDS and ElastiCache outputs
+   (#62). Then `open_datastores_to_workers = true` adds the ingress to
+   *their* security groups, and no change to the core host's Compose is
+   needed: the sprint 1 rule that its datastores bind to `127.0.0.1` stays.
+3. The two passwords, as SecureStrings, equal to what the API uses for RDS
+   and ElastiCache:
    `aws ssm put-parameter --type SecureString --name /flickpond/<env>/redis-password --value …`
    (and `postgres-password`).
-3. Postgres and Redis on the core host bound to its private address as well
-   as loopback (a compose change, and an exception to the sprint 1 rule that
-   needs its own write-up), then `open_datastores_to_workers = true`.
 4. The queue-metrics publisher running on the core host with
-   `METRICS_ENVIRONMENT` equal to `environment` here.
-5. A worker that re-queues its job on SIGTERM, or a shorter reaper lease:
+   `METRICS_ENVIRONMENT` equal to `environment` here, and reaching
+   ElastiCache over TLS like the API (`REDIS_SSL=true` in its `.env`).
+5. Re-queueing a job when its worker gets SIGTERM, a Track A item in #62:
    a spot reclaim gives two minutes, and today a cut-off job waits for the
-   40-minute lease.
+   40-minute lease. The 110 s `--stop-timeout` in `user-data.sh.tftpl` is
+   sized for it.

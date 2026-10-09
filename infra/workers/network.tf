@@ -1,5 +1,9 @@
 # Worker hosts accept no connections at all: they pull work from Redis. What
 # they may reach is listed here, and Postgres and Redis only on the core host.
+#
+# Sprint 4 shape. In sprint 5 Postgres and Redis move to RDS and ElastiCache
+# (#62); the datastore rules below then reference their security groups,
+# from base outputs, instead of the core host's. See README.md.
 
 resource "aws_security_group" "worker" {
   name        = "flickpond-${var.environment}-worker"

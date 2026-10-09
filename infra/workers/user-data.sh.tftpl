@@ -25,6 +25,10 @@ postgres_password_url="$(python3 -c 'import sys, urllib.parse; print(urllib.pars
 
 # Root-only, and the reason --env-file is used rather than -e on the command
 # line: process arguments are readable by every user on the host.
+#
+# Sprint 4 shape: both datastores on the core host, plain connections. With
+# RDS and ElastiCache (#62) these become their endpoints, with REDIS_SSL=true
+# and ?sslmode=require -- both services refuse unencrypted clients.
 install -d -m 700 /etc/flickpond
 umask 077
 cat > /etc/flickpond/worker.env <<EOF
