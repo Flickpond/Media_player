@@ -667,6 +667,29 @@ describe("polling", () => {
     expect(el.jobProgress.hidden).toBe(false);
   });
 
+  it("says HD is still coming while the ladder is being built", async () => {
+    const el = await loadApp();
+    mockDirectUpload();
+    // Done and playable, with the ladder still in flight -- exactly the state
+    // `hls_status` exists to describe, and one a missing `hls_url` cannot tell
+    // apart from a ladder that is never coming.
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: "job-1",
+        status: "done",
+        output_url: "http://minio/out.mp4",
+        hls_status: "pending",
+      }),
+    );
+
+    await uploadFile(el);
+
+    expect(el.status.textContent).toBe("Ready to play — HD versions are still processing.");
+    // Playable now, rather than after the ladder: that is the whole point of
+    // the ladder running as its own job.
+    expect(el.player.hidden).toBe(false);
+  });
+
   // --- a job that never finishes (P4) -------------------------------------
 
   /** 30 polls at 2s: the point where the page starts saying it is slow. */
@@ -1764,6 +1787,49 @@ describe("player", () => {
 
     expect(FakePlyr.created).toHaveLength(1);
     expect(FakePlyr.created[0].media.getAttribute("src")).toBe(DONE.output_url);
+  });
+
+  it("swaps the upload card's MP4 for the ladder when the ladder lands", async () => {
+    const el = await loadAppWithLibraries();
+    mockDirectUpload();
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: "job-1",
+          status: "done",
+          output_url: DONE.output_url,
+          hls_status: "pending",
+        }),
+      )
+      .mockResolvedValue(
+        jsonResponse({
+          id: "job-1",
+          status: "done",
+          output_url: DONE.output_url,
+          hls_url: ADAPTIVE.hls_url,
+          hls_status: "ready",
+        }),
+      );
+
+    await uploadFile(el);
+
+    expect(FakePlyr.created).toHaveLength(1);
+    expect(FakePlyr.created[0].media.getAttribute("src")).toBe(DONE.output_url);
+
+    await vi.advanceTimersByTimeAsync(2000);
+
+    // Rebuilt once, onto the adaptive source -- not once per poll. The MP4's
+    // player is torn down rather than left running against an element nobody
+    // can see.
+    expect(FakeHls.instances).toHaveLength(1);
+    expect(FakeHls.instances[0].loadedSource).toBe(ADAPTIVE.hls_url);
+    expect(FakePlyr.created[0].destroyed).toBe(true);
+
+    // Plyr still waits for the manifest, exactly as it does from a Library
+    // card, so the quality menu is built from the ladder's real rungs.
+    FakeHls.instances[0].emit(HLS_EVENTS.MANIFEST_PARSED);
+    expect(FakePlyr.created).toHaveLength(2);
+    expect(el.status.textContent).toBe("Processing complete.");
   });
 
   it("gives an operator's admin preview the same player", async () => {

@@ -374,6 +374,16 @@ function followJob(scope, jobId, handlers) {
     handlers.onJob(job, attempt);
 
     if (job.status === "done") {
+      // A done job whose ladder is still being built is not finished with us.
+      // The MP4 is playable this second and the adaptive version is still
+      // worth waiting for, so the page stays on the job until `hls_status`
+      // settles. That field is the API's answer to "is more coming", and it
+      // is always present -- inferring it from a missing `hls_url` cannot
+      // tell "still coming" from "never coming".
+      if (job.hls_status === "pending") {
+        pollTimers[scope] = setTimeout(() => tick(attempt + 1), POLL_INTERVAL_MS);
+        return;
+      }
       handlers.onDone(job);
       return;
     }
@@ -731,6 +741,18 @@ function pollUploadJob(jobId) {
       el.jobEdit.hidden = job.status !== "done";
       el.jobProgress.hidden = job.status !== "processing";
 
+      // Playable beats perfect: the MP4 goes up the moment the job says done,
+      // and the note says whether an adaptive version is still on its way.
+      if (job.status === "done") {
+        showUploadPlayer(job);
+        setStatus(
+          job.hls_status === "pending"
+            ? "Ready to play — HD versions are still processing."
+            : "Processing complete.",
+        );
+        return;
+      }
+
       if (attempt >= SLOW_AFTER_POLLS) {
         setStatus(`Still working on it — this is taking longer than expected. Job ${jobId}`);
         // Give the form back; a stuck job otherwise never releases it.
@@ -740,8 +762,8 @@ function pollUploadJob(jobId) {
       }
     },
     onDone(job) {
+      showUploadPlayer(job);
       setStatus("Processing complete.");
-      mountPlayer(el.player, job);
     },
     onFailed(job) {
       setStatus(`Processing failed: ${job.error ?? "Unknown error"}`);
@@ -817,8 +839,27 @@ function unmountPlayersIn(root) {
 
 /** The Upload tab's player slot, emptied. */
 function clearUploadPlayer() {
+  uploadPlayerKey = null;
   unmountPlayer(el.player);
   el.player.hidden = true;
+}
+
+/** What is in the Upload tab's player right now, so it is only rebuilt when
+ *  the thing to play actually changes. */
+let uploadPlayerKey = null;
+
+/** Put the job's playable source in the upload card.
+ *
+ * The same job document arrives on every poll, so mounting unconditionally
+ * would tear Plyr down and start playback over under the reader. Keying on the
+ * URL means the MP4 that goes up first is replaced exactly once, when the
+ * ladder takes its place.
+ */
+function showUploadPlayer(job) {
+  const key = job.hls_url ?? job.output_url ?? null;
+  if (key === null || key === uploadPlayerKey) return;
+  uploadPlayerKey = key;
+  mountPlayer(el.player, job);
 }
 
 /** Put a player for `job` into `host`, replacing whatever was there. */
