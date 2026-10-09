@@ -134,8 +134,10 @@ const el = {
   editClip: document.getElementById("edit-clip"),
   editClipMount: document.getElementById("edit-clip-mount"),
   editDownscale: document.getElementById("edit-downscale"),
+  editDownscaleSection: document.getElementById("edit-downscale-section"),
   editDownscaleHeight: document.getElementById("edit-downscale-height"),
   editUpscale: document.getElementById("edit-upscale"),
+  editUpscaleSection: document.getElementById("edit-upscale-section"),
   editUpscaleHeight: document.getElementById("edit-upscale-height"),
   editConvert: document.getElementById("edit-convert"),
   editConvertFormat: document.getElementById("edit-convert-format"),
@@ -1059,11 +1061,66 @@ function updateProcessButton() {
     : "Check an operation and set it up first — a box to crop, a range to keep, or one of the dropdowns.";
 }
 
+// What the panel offers when the API has not said what this video may become:
+// every job from before sprint 4, and any job whose dimensions have not been
+// stored yet. `edit_options` replaces these per video when it is there.
+const DEFAULT_SCALE_HEIGHTS = {
+  downscale: [...el.editDownscaleHeight.options].map((option) => Number(option.value)),
+  upscale: [...el.editUpscaleHeight.options].map((option) => Number(option.value)),
+};
+
+/** The API's `edit_options` for the job the editor is open on, or null when
+ *  the API did not send any. See `applyScaleOptions`. */
+let scaleOptions = null;
+
+/** The heights `edit_options` allows for `operation`, or null when the API has
+ *  not said -- in which case the panel's own list stands. */
+function scaleHeights(operation) {
+  const offered = scaleOptions?.[operation];
+  return Array.isArray(offered) ? offered : null;
+}
+
+/** Point the two scale sections at what this video may actually become.
+ *
+ * `edit_options` is computed by the same rules `POST /jobs/{id}/edit`
+ * enforces, so the dropdowns offer exactly what the API accepts and the panel
+ * cannot build a request that comes back a 422.
+ *
+ * An empty list means the operation cannot apply at all -- a 2160p source has
+ * nothing above it to upscale to -- so that section is hidden rather than left
+ * disabled: no future state of this job makes it usable.
+ *
+ * Absent means the job is not done, or has no stored dimensions, and the
+ * panel keeps its own fixed lists. The worker checks either way.
+ */
+function applyScaleOptions(job) {
+  scaleOptions = job.edit_options ?? null;
+
+  const sections = [
+    { name: "downscale", section: el.editDownscaleSection, select: el.editDownscaleHeight },
+    { name: "upscale", section: el.editUpscaleSection, select: el.editUpscaleHeight },
+  ];
+
+  for (const { name, section, select } of sections) {
+    const heights = scaleHeights(name) ?? DEFAULT_SCALE_HEIGHTS[name];
+    section.hidden = heights.length === 0;
+    select.replaceChildren(
+      ...heights.map((height) => {
+        const option = document.createElement("option");
+        option.value = String(height);
+        option.textContent = `${height}p`;
+        return option;
+      }),
+    );
+  }
+}
+
 /** Downscale and upscale are mutually exclusive, so ticking one closes the
- *  other rather than letting the panel build a request the worker refuses. */
+ *  other rather than letting the panel build a request the worker refuses. An
+ *  operation this video has no use for stays disabled. */
 function setScaleMode(mode) {
-  el.editDownscale.disabled = mode === "upscale";
-  el.editUpscale.disabled = mode === "downscale";
+  el.editDownscale.disabled = mode === "upscale" || scaleHeights("downscale")?.length === 0;
+  el.editUpscale.disabled = mode === "downscale" || scaleHeights("upscale")?.length === 0;
   if (mode === "downscale") el.editUpscale.checked = false;
   if (mode === "upscale") el.editDownscale.checked = false;
   updateProcessButton();
@@ -1146,6 +1203,7 @@ function openEditor(job) {
   for (const box of [el.editCrop, el.editClip, el.editDownscale, el.editUpscale, el.editConvert]) {
     box.checked = false;
   }
+  applyScaleOptions(job);
   setScaleMode(null);
 
   switchView("edit");
