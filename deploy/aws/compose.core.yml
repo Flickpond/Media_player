@@ -1,0 +1,70 @@
+# The core host of the split design (sprint 5): nginx, the API and the
+# reaper. Postgres and the job queue are RDS and ElastiCache; video work runs
+# on the autoscaling worker group (infra/workers). Layered last:
+#
+#   docker compose -f docker-compose.yml -f deploy/aws/compose.aws.yml \
+#     -f deploy/aws/compose.core.yml up -d --build
+#
+# No `--scale worker=...`: this host runs none. The datastore settings come
+# from .env, written by deploy/aws/fetch-secrets.sh from SSM.
+
+x-managed-cache: &managed-cache
+  # Required here rather than allowed to fall back to the development
+  # containers. A core started before fetch-secrets.sh should fail at config
+  # time, not boot against empty placeholders with development credentials.
+  REDIS_HOST: ${REDIS_HOST:?run deploy/aws/fetch-secrets.sh first}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:?run deploy/aws/fetch-secrets.sh first}
+  REDIS_PORT: "6379"
+  REDIS_SSL: "true"
+
+x-managed-datastores: &managed-datastores
+  <<: *managed-cache
+  POSTGRES_DSN: ${POSTGRES_DSN:?run deploy/aws/fetch-secrets.sh first}
+
+services:
+  # Placeholders, so services that wait on these names still start: the
+  # real database and queue are reached through POSTGRES_DSN and REDIS_HOST.
+  # They hold no data and open no ports.
+  postgres:
+    image: busybox:1.36
+    command: ["sleep", "infinity"]
+    environment: !reset {}
+    ports: !reset []
+    volumes: !reset []
+    healthcheck:
+      test: ["CMD", "true"]
+
+  redis:
+    image: busybox:1.36
+    command: ["sleep", "infinity"]
+    environment: !reset {}
+    ports: !reset []
+    volumes: !reset []
+    healthcheck:
+      test: ["CMD", "true"]
+
+  api:
+    environment:
+      <<: *managed-datastores
+
+  # The workers live on their own instances now.
+  worker:
+    environment:
+      <<: *managed-datastores
+    deploy:
+      replicas: 0
+
+  # The base waits for a healthy worker before starting the reaper; on this
+  # host there is none to wait for.
+  reaper:
+    environment:
+      <<: *managed-datastores
+    depends_on: !override
+      api:
+        condition: service_healthy
+
+  # One publisher per queue. This stays on the core while the consumers scale
+  # independently in D's worker group.
+  queue-metrics:
+    environment:
+      <<: *managed-cache
