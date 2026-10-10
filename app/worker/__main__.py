@@ -6,8 +6,10 @@ exercise -- there is no per-worker state and no job affinity (N5).
 """
 
 import argparse
+import contextlib
 import logging
 import os
+import signal
 
 from rq import Queue, SimpleWorker, Worker
 
@@ -23,6 +25,23 @@ def configure_logging(level: str) -> None:
         format="%(asctime)s %(levelname)-8s %(name)s %(message)s",
         force=True,
     )
+
+
+class GiveBackWorker(Worker):
+    """RQ's forking worker, passing a stop on to the job it is running.
+
+    On SIGTERM RQ's own worker waits for the current job to finish -- which,
+    for a 4K encode, is longer than `docker stop` or a spot reclaim will
+    wait. The job runs in a forked child that never sees the signal, so it
+    is forwarded: the job stops FFmpeg and gives itself back to the queue
+    (app.worker.interruption), and the worker exits once the child has.
+    """
+
+    def handle_warm_shutdown_request(self):
+        super().handle_warm_shutdown_request()
+        if self.horse_pid:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(self.horse_pid, signal.SIGTERM)
 
 
 def build_worker(*, burst_safe: bool = False):
@@ -44,7 +63,7 @@ def build_worker(*, burst_safe: bool = False):
     #                   coverage and the exit code visible to the caller, and
     #                   crash isolation buys nothing for a process that is about
     #                   to exit anyway.
-    worker_class = Worker if hasattr(os, "fork") and not burst_safe else SimpleWorker
+    worker_class = GiveBackWorker if hasattr(os, "fork") and not burst_safe else SimpleWorker
     return worker_class([queue, ladder_queue], connection=connection)
 
 

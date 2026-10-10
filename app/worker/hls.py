@@ -21,6 +21,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from uuid import UUID
 
+from app.worker.interruption import run as run_process
 from app.worker.probe import SourceProbe
 from app.worker.storage import (
     DEFAULT_MAX_FPS,
@@ -220,7 +221,7 @@ class HlsLadderBuilder:
         preset: str = "veryfast",
         timeout_seconds: int = 870,
         max_height: int = 2160,
-        runner=subprocess.run,
+        runner=run_process,
     ) -> None:
         self._store = store
         self._output_prefix = output_prefix.strip("/")

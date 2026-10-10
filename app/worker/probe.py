@@ -19,6 +19,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.worker.interruption import run as run_process
 from app.worker.storage import UNPROCESSABLE_VIDEO, ObjectStoreError
 
 # The one probe refusal the uploader can fix by choosing a different file,
@@ -45,7 +46,7 @@ def probe_source(
     *,
     ffprobe_binary: str = "ffprobe",
     timeout_seconds: int = 30,
-    runner=subprocess.run,
+    runner=run_process,
 ) -> SourceProbe:
     """Read the first video stream's size and the container's duration.
 

@@ -293,6 +293,24 @@ async def list_stale_ladders(session: AsyncSession, *, before: datetime) -> list
     return list(result.scalars().all())
 
 
+async def mark_interrupted(session: AsyncSession, job_id: UUID) -> Job:
+    """processing -> queued, for a worker that was told to stop mid-job.
+
+    The one exception to transitions being one-way, and only from
+    `processing`: a spot reclaim or a scale-in is not the video's fault, so
+    the job goes back to the queue instead of failing. Everything the run
+    would have written is cleared, as on any other transition, so the next
+    worker starts clean. Conditional like every transition here: a job that
+    has moved on since is left alone.
+    """
+    return await _transition(
+        session,
+        job_id=job_id,
+        expected_status=JobStatus.PROCESSING,
+        next_status=JobStatus.QUEUED,
+    )
+
+
 async def mark_failed(session: AsyncSession, job_id: UUID, *, error: str) -> Job:
     if not error.strip():
         raise ValueError("failed jobs require a readable error")
