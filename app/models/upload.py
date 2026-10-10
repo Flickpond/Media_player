@@ -3,7 +3,16 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Integer, Text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    SmallInteger,
+    Text,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -14,6 +23,7 @@ class UploadSession(Base):
     __tablename__ = "upload_sessions"
     __table_args__ = (
         CheckConstraint("size > 0 AND part_size > 0", name="ck_upload_size"),
+        CheckConstraint("max_fps IN (30, 60)", name="ck_upload_max_fps"),
         CheckConstraint(
             "state IN ('open', 'completing', 'ready', 'completed', 'aborting', 'aborted')",
             name="ck_upload_state",
@@ -28,6 +38,8 @@ class UploadSession(Base):
     size: Mapped[int] = mapped_column(BigInteger)
     part_size: Mapped[int] = mapped_column(Integer)
     state: Mapped[str] = mapped_column(Text, default="open")
+    # Carried to the job when the upload completes; see Job.max_fps.
+    max_fps: Mapped[int] = mapped_column(SmallInteger, default=30, server_default=text("30"))
     manifest: Mapped[list | None] = mapped_column(JSONB)
     # Reserved at initiation, but there is no job row until validation succeeds.
     job_id: Mapped[UUID] = mapped_column(unique=True)

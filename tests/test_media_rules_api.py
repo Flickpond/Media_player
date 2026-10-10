@@ -53,6 +53,7 @@ def make_job(
         output_key="outputs/abc/holiday.mp4" if status == JobStatus.DONE else None,
         operations=operations,
         hls_status=HlsStatus.UNAVAILABLE.value,
+        max_fps=30,
         width=width,
         height=height,
         duration_seconds=41.2 if height else None,

@@ -51,7 +51,9 @@ def test_edit_runs_one_ffmpeg_command_in_fixed_order_and_uploads_the_right_type(
     assert len(commands) == 1
     command = commands[0]
     assert command.index("-ss") < command.index("-i")
-    assert command[command.index("-vf") + 1] == "crop=1280:720:10:20,scale=-2:480"
+    assert command[command.index("-vf") + 1] == (
+        "fps=fps=min(30\\,source_fps),crop=1280:720:10:20,scale=-2:480"
+    )
     assert "-c:v" in command
     assert "copy" not in command
     assert result.output_key.endswith("movie.mkv")

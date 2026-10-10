@@ -105,7 +105,7 @@ class FakeStep:
         self.raises = raises
         self.calls: list[tuple[UUID, str]] = []
 
-    def run(self, *, job_id: UUID, source_key: str) -> ProcessingResult:
+    def run(self, *, job_id: UUID, source_key: str, max_fps: int = 30) -> ProcessingResult:
         self.calls.append((job_id, source_key))
         if self.raises is not None:
             raise self.raises
@@ -151,7 +151,7 @@ async def test_the_poster_frame_is_recorded_with_the_rest_of_the_result(store, s
     job = store.add(source_key="uploads/abc/demo.mp4")
 
     class _ThumbnailStep:
-        def run(self, *, job_id, source_key):
+        def run(self, *, job_id, source_key, max_fps=30):
             return ProcessingResult(
                 output_key="outputs/abc/demo.mp4", thumbnail_key="outputs/abc/thumbnail.jpg"
             )

@@ -61,27 +61,30 @@ def ladder_writing_runner(*, variant_count: int = 3, returncode: int = 0, stderr
 # --- which rungs a source gets -------------------------------------------
 
 
-def test_a_4k_source_gets_every_rung_up_to_its_own_height():
-    assert variants_for(2160) == (360, 480, 720, 1080, 1440, 2160)
+def test_a_4k_source_gets_every_rung_up_to_its_own_height_but_480():
+    """1440p stays; 480p is a full encode a player barely uses between 360p
+    and 720p, so it only appears as a video's top rung.
+    """
+    assert variants_for(2160) == (360, 720, 1080, 1440, 2160)
 
 
 def test_a_1080p_source_stops_at_1080():
-    assert variants_for(1080) == (360, 480, 720, 1080)
+    assert variants_for(1080) == (360, 720, 1080)
 
 
 def test_a_720p_source_stops_at_720():
-    assert variants_for(720) == (360, 480, 720)
+    assert variants_for(720) == (360, 720)
 
 
 def test_the_host_cap_limits_a_4k_source():
     """The current server cannot encode a 4K ladder inside the job timeout;
     capping there is what keeps a 4K upload from failing its ladder outright.
     """
-    assert variants_for(2160, max_height=1080) == (360, 480, 720, 1080)
+    assert variants_for(2160, max_height=1080) == (360, 720, 1080)
 
 
 def test_the_cap_never_raises_a_source_above_its_own_height():
-    assert variants_for(720, max_height=2160) == (360, 480, 720)
+    assert variants_for(720, max_height=2160) == (360, 720)
 
 
 def test_a_source_taller_than_every_rung_tops_out_at_2160():
@@ -121,10 +124,10 @@ def test_a_source_shorter_than_every_rung_gets_one_at_its_own_height():
 
 
 def test_split_count_and_var_stream_map_agree_with_the_variant_list():
-    """These three have to describe the same number of renditions. A
-    mismatch is an FFmpeg error rather than a quietly wrong output, which is
-    the good case -- but only because this is built from the list rather
-    than hardcoded at three.
+    """These have to describe the same number of renditions. A mismatch is
+    an FFmpeg error rather than a quietly wrong output, which is the good
+    case -- but only because this is built from the list rather than
+    hardcoded.
     """
     command = build_ladder_command(SOURCE, Path("/tmp/out"), heights=(360, 480))
 
@@ -133,8 +136,49 @@ def test_split_count_and_var_stream_map_agree_with_the_variant_list():
     assert filter_complex.count("scale=-2:") == 2
 
     var_stream_map = command[command.index("-var_stream_map") + 1]
-    assert var_stream_map == "v:0,a:0 v:1,a:1"
-    assert command.count("-map") == 4  # two video, two audio
+    assert var_stream_map == "v:0,agroup:audio v:1,agroup:audio a:0,agroup:audio"
+    assert command.count("-map") == 3  # two video, and the audio once
+
+
+def test_the_audio_is_encoded_once_for_every_rung():
+    """One soundtrack, shared through an HLS audio group, instead of the same
+    AAC encode repeated per rung."""
+    command = build_ladder_command(SOURCE, Path("/tmp/out"), heights=(360, 720, 1080, 2160))
+
+    assert command.count("a:0?") == 1
+    var_stream_map = command[command.index("-var_stream_map") + 1]
+    assert var_stream_map.count("agroup:audio") == 5  # four rungs + the audio itself
+    assert var_stream_map.endswith("a:0,agroup:audio")
+
+
+def test_the_frame_rate_is_capped_before_anything_is_scaled():
+    """Dropping frames after scaling them would have paid for the scaling."""
+    command = build_ladder_command(SOURCE, Path("/tmp/out"), heights=(360, 720))
+    filter_complex = command[command.index("-filter_complex") + 1]
+
+    assert filter_complex.startswith("[0:v]fps=fps=min(30\\,source_fps),split=")
+
+
+def test_rungs_below_1080_are_scaled_from_the_1080_rendition():
+    command = build_ladder_command(SOURCE, Path("/tmp/out"), heights=(360, 720, 1080, 2160))
+    graph = dict(
+        part.split("scale=-2:", 1)
+        for part in command[command.index("-filter_complex") + 1].split(";")[1:]
+    )
+
+    # The source feeds 1080 and 2160; 1080's output feeds 720 and 360.
+    assert graph["[s1080]"].startswith("1080,split=3[v2out][a360][a720]")
+    assert graph["[s2160]"] == "2160[v3out]"
+    assert graph["[a720]"] == "720[v1out]"
+    assert graph["[a360]"] == "360[v0out]"
+
+
+def test_without_a_1080_rung_every_rung_comes_from_the_source():
+    command = build_ladder_command(SOURCE, Path("/tmp/out"), heights=(360, 720))
+    filter_complex = command[command.index("-filter_complex") + 1]
+
+    assert "split=2[s360][s720]" in filter_complex
+    assert "[a" not in filter_complex
 
 
 def test_each_rendition_is_scaled_to_its_own_height():
@@ -155,9 +199,9 @@ def test_audio_is_mapped_optionally_so_a_silent_source_does_not_fail_here():
     assert "a:0?" in command
 
 
-def test_a_single_rung_still_produces_a_valid_two_stream_map():
+def test_a_single_rung_still_produces_a_valid_stream_map():
     command = build_ladder_command(SOURCE, Path("/tmp/out"), heights=(240,))
-    assert command[command.index("-var_stream_map") + 1] == "v:0,a:0"
+    assert command[command.index("-var_stream_map") + 1] == "v:0,agroup:audio a:0,agroup:audio"
 
 
 # --- content types --------------------------------------------------------

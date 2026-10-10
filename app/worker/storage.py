@@ -31,6 +31,20 @@ UNPROCESSABLE_VIDEO = (
 
 logger = logging.getLogger("app.worker.storage")
 
+# Encode work grows with frames as well as pixels, and a phone's 60 fps costs
+# twice its 30 fps -- so 30 unless the uploader chose to keep 60 (Job.max_fps).
+DEFAULT_MAX_FPS = 30
+
+
+def fps_cap_filter(max_fps: int) -> str:
+    """An FFmpeg filter that lowers the frame rate to `max_fps`, never raises it.
+
+    `min` against the source's own rate, so a 24 or 25 fps film is left alone
+    rather than padded with duplicated frames. First in every chain, so
+    frames that would be dropped are never scaled first.
+    """
+    return f"fps=fps=min({max_fps}\\,source_fps)"
+
 
 @dataclass(frozen=True, slots=True)
 class ProcessingResult:
@@ -169,7 +183,9 @@ class MinioObjectStore:
 
 
 class ProcessingStep(Protocol):
-    def run(self, *, job_id: UUID, source_key: str) -> ProcessingResult:
+    def run(
+        self, *, job_id: UUID, source_key: str, max_fps: int = DEFAULT_MAX_FPS
+    ) -> ProcessingResult:
         """Process the source object and return what it produced."""
 
 
@@ -282,7 +298,9 @@ class FfmpegProcessor:
             return None
         return key
 
-    def run(self, *, job_id: UUID, source_key: str) -> ProcessingResult:
+    def run(
+        self, *, job_id: UUID, source_key: str, max_fps: int = DEFAULT_MAX_FPS
+    ) -> ProcessingResult:
         if not self._store.object_exists(source_key):
             raise ObjectStoreError(
                 f"source object missing from storage: {source_key}",
@@ -310,7 +328,7 @@ class FfmpegProcessor:
                 "-i",
                 str(source_path),
                 "-vf",
-                f"scale=-2:min({self._max_height}\\,ih)",
+                f"{fps_cap_filter(max_fps)},scale=-2:min({self._max_height}\\,ih)",
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -378,7 +396,9 @@ class CopyProcessor:
         filename = PurePosixPath(source_key).name or f"{job_id}.bin"
         return f"{self._output_prefix}/{job_id}/{filename}"
 
-    def run(self, *, job_id: UUID, source_key: str) -> ProcessingResult:
+    def run(
+        self, *, job_id: UUID, source_key: str, max_fps: int = DEFAULT_MAX_FPS
+    ) -> ProcessingResult:
         if not self._store.object_exists(source_key):
             raise ObjectStoreError(
                 f"source object missing from storage: {source_key}",

@@ -38,6 +38,9 @@ class JobResponse(BaseModel):
     # A signed URL for the poster frame. Omitted until the job is done, and on
     # any job whose frame could not be taken -- show a placeholder then.
     thumbnail_url: str | None = None
+    # The frame-rate ceiling chosen at upload: 30, or 60 when the uploader
+    # kept it. Always present.
+    max_fps: int = 30
     # Only on a done job whose dimensions are known. Describes the copy an edit
     # starts from (the MP4), which can be shorter than `height` (the original).
     edit_options: EditOptions | None = None

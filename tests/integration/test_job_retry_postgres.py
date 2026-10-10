@@ -220,7 +220,7 @@ async def test_a_failed_rq_delivery_can_retry_the_same_id_and_reach_done(
     attempts = []
 
     class Step:
-        def run(self, *, job_id, source_key):
+        def run(self, *, job_id, source_key, max_fps=30):
             attempts.append((job_id, source_key))
             if len(attempts) == 1:
                 raise ObjectStoreError("temporary test fault", user_message="please retry")
@@ -295,7 +295,7 @@ async def test_bs_adapter_reports_a_bad_edit_through_the_worker_and_polling_api(
     ffmpeg = Mock()
 
     class ValidatingStep:
-        def run(self, *, job_id, source_key):
+        def run(self, *, job_id, source_key, max_fps=30):
             try:
                 validate(params, SourceProbe(1920, 1080, 10))
             except ValueError as exc:

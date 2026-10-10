@@ -46,6 +46,7 @@ def make_job(owner_id, *, status: JobStatus = JobStatus.QUEUED) -> Job:
         output_key=None,
         error=None,
         hls_status=HlsStatus.PENDING.value,
+        max_fps=30,
         created_at=now,
         updated_at=now,
     )
@@ -266,7 +267,7 @@ async def test_an_upload_records_its_owner(test_user, monkeypatch):
 
     recorded = {}
 
-    async def fake_create_job(_session, *, job_id, owner_id, filename, source_key):
+    async def fake_create_job(_session, *, job_id, owner_id, filename, source_key, max_fps=30):
         recorded["owner_id"] = owner_id
 
     class FakeStorage:

@@ -29,11 +29,13 @@ async def create_job(
     filename: str,
     source_key: str,
     job_id: UUID | None = None,
+    max_fps: int = 30,
 ) -> Job:
     job = Job(
         owner_id=owner_id,
         filename=filename,
         source_key=source_key,
+        max_fps=max_fps,
         status=JobStatus.QUEUED.value,
         **({"id": job_id} if job_id is not None else {}),
     )
@@ -51,8 +53,13 @@ async def create_edit_job(
     source_key: str,
     operations: list[dict],
     job_id: UUID | None = None,
+    max_fps: int = 30,
 ) -> Job:
-    """Create a queued edit without changing the plain-upload contract."""
+    """Create a queued edit without changing the plain-upload contract.
+
+    `max_fps` is the source video's: an edit of a video kept at 60 fps
+    stays at 60.
+    """
     if not operations:
         raise ValueError("an edit job requires at least one operation")
     job = Job(
@@ -60,6 +67,7 @@ async def create_edit_job(
         filename=filename,
         source_key=source_key,
         operations=operations,
+        max_fps=max_fps,
         status=JobStatus.QUEUED.value,
         **({"id": job_id} if job_id is not None else {}),
     )

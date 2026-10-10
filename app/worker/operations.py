@@ -11,10 +11,12 @@ from pydantic import ValidationError
 
 from app.schemas.edit import EditRequest
 from app.worker.storage import (
+    DEFAULT_MAX_FPS,
     UNPROCESSABLE_VIDEO,
     ObjectStore,
     ObjectStoreError,
     ProcessingResult,
+    fps_cap_filter,
 )
 from app.worker.validation import validate_clip, validate_crop, validate_edit_rules
 
@@ -35,6 +37,7 @@ def build_edit_command(
     output_path: Path,
     preset: str,
     crf: int,
+    max_fps: int = DEFAULT_MAX_FPS,
 ) -> list[str]:
     command = [ffmpeg_binary, "-hide_banner", "-loglevel", "error"]
 
@@ -71,8 +74,9 @@ def build_edit_command(
     elif output_format == "mkv" and not filters:
         command.extend(["-c", "copy"])
     else:
-        if filters:
-            command.extend(["-vf", ",".join(filters)])
+        # Re-encoding anyway, so the frame-rate cap rides along for free. A
+        # stream copy (the remux above) keeps the source's frames untouched.
+        command.extend(["-vf", ",".join([fps_cap_filter(max_fps), *filters])])
         command.extend(
             ["-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-c:a", "aac"]
         )
@@ -124,7 +128,9 @@ class EditProcessor:
             logger.exception("job %s: could not probe the edit output; no ladder", job_id)
             return None
 
-    def run(self, *, job_id: UUID, source_key: str) -> ProcessingResult:
+    def run(
+        self, *, job_id: UUID, source_key: str, max_fps: int = DEFAULT_MAX_FPS
+    ) -> ProcessingResult:
         if not self._store.object_exists(source_key):
             raise ObjectStoreError(
                 f"source object missing from storage: {source_key}",
@@ -173,6 +179,7 @@ class EditProcessor:
                 output_path=output_path,
                 preset=self._preset,
                 crf=self._crf,
+                max_fps=max_fps,
             )
             try:
                 result = self._runner(

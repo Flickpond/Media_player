@@ -34,6 +34,7 @@ from app.repositories.jobs import (
 from app.worker.db import get_worker_session_factory
 from app.worker.probe import SourceProbe
 from app.worker.storage import (
+    DEFAULT_MAX_FPS,
     ObjectStoreError,
     ProcessingStep,
     get_edit_processing_step,
@@ -116,7 +117,12 @@ async def process_job_async(
     # 2. Do the work with no database connection held. The step is blocking
     #    object-store I/O, so it goes to a thread rather than stalling the loop.
     try:
-        result = await asyncio.to_thread(selected_step.run, job_id=job_id, source_key=source_key)
+        result = await asyncio.to_thread(
+            selected_step.run,
+            job_id=job_id,
+            source_key=source_key,
+            max_fps=getattr(job, "max_fps", DEFAULT_MAX_FPS),
+        )
     except Exception as exc:
         reason = readable_error(exc)
         # The diagnostic half lives here and only here: the traceback, and for
@@ -215,7 +221,11 @@ async def build_ladder_async(
     logger.info("job %s: ladder pending -> building", job_id)
     try:
         hls_key = await asyncio.to_thread(
-            ladder_step.run, job_id=job_id, source_key=ladder_input, probe=probe
+            ladder_step.run,
+            job_id=job_id,
+            source_key=ladder_input,
+            probe=probe,
+            max_fps=getattr(job, "max_fps", DEFAULT_MAX_FPS),
         )
     except Exception:
         logger.exception("job %s: HLS ladder failed; the MP4 stands", job_id)

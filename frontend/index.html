@@ -208,6 +208,15 @@
             <div id="dropzone-hint" class="dropzone-hint">MP4, MOV, WebM, MKV, or AVI.</div>
           </div>
 
+          <!-- Outside the dropzone on purpose: a click anywhere in it opens
+               the file picker. Off by default -- 60 fps is twice the
+               processing, worth it only for fast motion. -->
+          <label class="fps-choice">
+            <input type="checkbox" id="keep-60fps" />
+            <span>Keep 60 fps</span>
+            <span class="fps-choice-note">smoother fast motion, slower to process</span>
+          </label>
+
           <!-- An unfinished direct upload outlives the page: its session and
                the parts already in storage have a 24 hour life. A browser
                cannot reopen a file it was handed before a reload, so the page

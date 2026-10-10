@@ -83,6 +83,7 @@ const el = {
   viewUpload: document.getElementById("view-upload"),
   dropzone: document.getElementById("dropzone"),
   dropzoneHint: document.getElementById("dropzone-hint"),
+  keep60fps: document.getElementById("keep-60fps"),
   resumePrompt: document.getElementById("resume-prompt"),
   resumeText: document.getElementById("resume-text"),
   resumeChoose: document.getElementById("resume-choose"),
@@ -680,11 +681,25 @@ function clearUploadProgress() {
  * from before sprint 4 answers 404, and a body with no session in it is no
  * more usable than no route at all. Either way the upload falls back to the
  * one-shot POST rather than half-starting a transfer it cannot finish. */
+/** The frame-rate ceiling for this upload: 30 unless the reader kept 60.
+ *
+ * Read when the upload starts, so ticking the box mid-transfer changes the
+ * next upload, not this one. A resumed upload keeps the choice it was
+ * started with -- the server stored it with the session. */
+function chosenMaxFps() {
+  return el.keep60fps?.checked ? 60 : 30;
+}
+
 async function openUploadSession(file) {
   const res = await fetch(`${API}/uploads`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ filename: file.name, size: file.size, content_type: file.type }),
+    body: JSON.stringify({
+      filename: file.name,
+      size: file.size,
+      content_type: file.type,
+      max_fps: chosenMaxFps(),
+    }),
   });
   if (res.status === 404) return null;
   const data = await res.json().catch(() => ({}));
@@ -803,6 +818,7 @@ async function sendWholeFile(file) {
   }
   const body = new FormData();
   body.append("file", file);
+  body.append("max_fps", String(chosenMaxFps()));
   const res = await fetch(`${API}/upload`, { method: "POST", body });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw httpError(res.status, data);

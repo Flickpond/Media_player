@@ -41,7 +41,7 @@ class FakeStep:
         self.hls_key = hls_key
         self.raises = raises
 
-    def run(self, *, job_id: UUID, source_key: str) -> ProcessingResult:
+    def run(self, *, job_id: UUID, source_key: str, max_fps: int = 30) -> ProcessingResult:
         if self.raises is not None:
             raise self.raises
         return ProcessingResult(
