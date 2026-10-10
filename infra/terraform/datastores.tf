@@ -44,6 +44,15 @@ resource "aws_vpc_security_group_ingress_rule" "db_from_core" {
   to_port                      = 5432
 }
 
+resource "aws_vpc_security_group_egress_rule" "core_to_db" {
+  security_group_id            = aws_security_group.app.id
+  description                  = "PostgreSQL to the managed database"
+  referenced_security_group_id = aws_security_group.db.id
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+}
+
 # Plain-text connections are refused outright, not merely discouraged.
 resource "aws_db_parameter_group" "postgres" {
   name   = "${local.name}-postgres16"
@@ -123,6 +132,15 @@ resource "aws_vpc_security_group_ingress_rule" "cache_from_core" {
   to_port                      = 6379
 }
 
+resource "aws_vpc_security_group_egress_rule" "core_to_cache" {
+  security_group_id            = aws_security_group.app.id
+  description                  = "Valkey to the managed job queue"
+  referenced_security_group_id = aws_security_group.cache.id
+  ip_protocol                  = "tcp"
+  from_port                    = 6379
+  to_port                      = 6379
+}
+
 # A replication group rather than a bare cluster: it is the resource that
 # supports in-transit encryption and an auth token. One node; the queue is
 # rebuilt from Postgres by the reaper if it is ever lost, so no replica.
@@ -158,9 +176,10 @@ resource "aws_ssm_parameter" "db_dsn" {
   name        = "/flickpond/${var.environment}/postgres_dsn"
   description = "POSTGRES_DSN for the API, reaper and workers (TLS required)"
   type        = "SecureString"
-  # asyncpg treats `ssl=require` as a PostgreSQL server setting. `sslmode` is
-  # the URI option that makes the client reject a non-TLS connection.
-  value = "postgresql://flickpond:${random_password.db.result}@${aws_db_instance.main.address}:${aws_db_instance.main.port}/flickpond?sslmode=require"
+  # SQLAlchemy's asyncpg dialect forwards URI query keys as connect()
+  # keywords. asyncpg accepts `ssl`, while `sslmode` raises TypeError before
+  # opening a socket. RDS also refuses plaintext through rds.force_ssl = 1.
+  value = "postgresql://flickpond:${random_password.db.result}@${aws_db_instance.main.address}:${aws_db_instance.main.port}/flickpond?ssl=require"
 }
 
 # Not a secret, but where every host looks for its connection settings, so a
