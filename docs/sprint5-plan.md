@@ -20,7 +20,7 @@ days. **Read [`known-traps.md`](known-traps.md) before writing code.**
 | Track | Owner | Function | Main deliverable |
 |---|---|---|---|
 | **A** | Ibrahim Mammadov (@1brahim74) | Processing and AWS | RDS and ElastiCache in the base; workers that survive being stopped; the cutover |
-| **B** | Zhang Jizhang (@zhanj384) | Upload path | Direct upload proven on S3; one upload path instead of two |
+| **B** | Zhang Jizhang (@zhanj384) | Upload path and accounts | Direct upload proven on S3; one upload path instead of two; deleting a user |
 | **C** | Yang Dongwei (@ttydw-ch) | Media rules and the clip scrubber | Editing from the original upload; the clip scrubber |
 | **D** | Jiang Yibai (@JiangYibai666) | Infrastructure | The worker Auto Scaling Group live on spot; images from CI; the login fix |
 | **E** | Lu Jingxing (@Dilute-l) | The UI | Crop box in the original's pixels; cancel and faster uploads (#67, #68) |
@@ -68,6 +68,11 @@ on the current server — it already runs everything sprint 4 shipped.
   audio encoded **once** and shared by every rung. Measured on staging
   before and after with the same 4K phone clip; both numbers go in the PR.
   This is what lets a 4-vCPU spot worker carry 4K comfortably.
+- **"Keep 60 fps" is the uploader's choice** (#71, with the item above). Off
+  by default; ticked, that video keeps 60 fps in the MP4, every rung and any
+  edit made from it. Stored as `max_fps` on the job.
+- **An operator can delete a user** (2.4), with everything they uploaded. A
+  full admin page with real roles and rights is sprint 6.
 
 ---
 
@@ -137,6 +142,29 @@ POST /jobs/{id}/edit
   lease drops from 40 minutes to a few minutes past the job timeout, once
   workers send RQ heartbeats.
 
+### 2.4 Deleting a user (B builds it, E adds the button)
+
+```
+DELETE /admin/users/{id}
+  204                                       // the user and everything they own
+  403 { "error": "operator role required" }
+  404 { "error": "not found" }
+  409 { "error": "an operator cannot delete their own account" }
+```
+
+- **Everything goes, storage first:** every job's source, MP4, ladder and
+  thumbnail through the same cleanup `DELETE /jobs/{id}` already uses; open
+  upload sessions aborted; then the jobs, the sessions and the user row in
+  one transaction. A storage failure stops the delete before any row goes,
+  so nothing is left pointing at nothing.
+- **Their session ends at once:** the API already loads the user on every
+  request, so a deleted user's cookie gets 401 on the next call rather than
+  living out its 30 minutes.
+- **No deleting yourself** — the 409 is what stops the last operator from
+  locking everyone out.
+- The admin panel lists users with a **Delete** button and a confirmation
+  that names the account and how many videos go with it.
+
 ---
 
 ## 3. The one pairing rule, again
@@ -160,19 +188,21 @@ and merges that evening. Small daily PRs, not one branch that lands on Friday.
 
 | | Mon 12 | Tue 13 | Wed 14 | Thu 15 | **Fri 16 · freeze** | **Sat 17 · cutover** | Sun 18 |
 |---|---|---|---|---|---|---|---|
-| **A** Ibrahim | Terraform: RDS, ElastiCache, their security groups, SSM secrets, the outputs in 2.1; remote state with locking. Post contracts 2.1 and 2.3. | Worker `SIGTERM` handling: give the job back, attempt cap of 3, clear partial output. **Post the datastore review note.** | Apply the datastores on staging once the note is read; core shrinks to `t4g.small`. RQ heartbeats; shorter reaper lease. Rewrite CLAUDE.md rule 2. | Time a real 4K phone clip through a spot worker. Rehearse the data move: restore a copy of production's dump into staging's RDS. Update the cutover runbook for RDS. | PR complete | **12:00 decision.** Cutover: stop writes, `pg_dump` → RDS, MinIO → S3, certificates, DNS. Verify a 4K upload plays in 4K. | Sprint report |
-| **B** Zhang | Cap open upload sessions per user. Plan retiring `POST /upload` with E: what the fallback still covers. | Direct upload on staging S3: CORS from the staging origin, `ETag` exposed, a resumed upload. | Files the browser can't type go through the direct path too (the content sniff on `complete` already identifies them); `POST /upload` then retires. | Tests; a 1 GB upload on staging, resumed once. | PR complete | Verify a 1 GB upload on production | Slack |
+| **A** Ibrahim | Terraform: RDS, ElastiCache, their security groups, SSM secrets, the outputs in 2.1; remote state with locking. Post contracts 2.1 and 2.3. | Worker `SIGTERM` handling: give the job back, attempt cap of 3, clear partial output. **Post the datastore review note.** | Apply the datastores on staging once the note is read; core shrinks to `t4g.small`. RQ heartbeats; shorter reaper lease. Rewrite CLAUDE.md rule 2. | Time a real 4K phone clip through a spot worker. Rehearse the data move: restore a copy of production's dump into staging's RDS. Update the cutover runbook for RDS. | PR complete. **Lower flickpond.com's DNS TTL to 300 s at Spaceship** (Ibrahim holds the login). Budget alert on the AWS account at $80 a month. | **12:00 decision.** Cutover: stop writes, `pg_dump` → RDS, MinIO → S3 (465 MB), certificates, **the A record at Spaceship**. **Rotate the admin password** on the new host (runbook step 6). Verify a 4K upload plays in 4K. | Sprint report. CLAUDE.md's deployment section rewritten for AWS. |
+| **B** Zhang | Cap open upload sessions per user. Agree 2.4 with E. Plan retiring `POST /upload` with E: what the fallback still covers. | Direct upload on staging S3: CORS from the staging origin, `ETag` exposed, a resumed upload. | `DELETE /admin/users/{id}` (2.4): storage first, then rows in one transaction; tests for the 403, 404 and 409. | Files the browser can't type go through the direct path too (the content sniff on `complete` already identifies them); `POST /upload` then retires. A 1 GB upload on staging, resumed once. | PR complete | Verify a 1 GB upload on production | Slack |
 | **C** Yang | Agree contract 2.2 with E. Design: finding the root job; what `edit_source` returns for uploads, edits and edits of edits. Clip scrubber: two handles over the timeline, reporting `{start, end}` through `mountClipScrubber`. | Edit from the original: the API follows the chain; `edit_source` in the API. Scrubber: highlighted range, `m:ss` readout, the player seeks as a handle moves. | Tests across the edit path, including an edit of an edit. Scrubber: arrow keys, `start < end` unbreakable, proportional on a 10-second and a 10-minute video. **Go / no-go** with E. | Verify clip — and, if go, crop and scale — on staging against a 4K original. Raise the duration limit if A's 4K timing allows it. | PR complete | Verify on production | Slack |
-| **D** Yibai | Apply `infra/registry`; set the repository variables so CI pushes a worker image per merge. Repoint the module's datastore rules at 2.1's groups. | `terraform plan` the worker group against staging with the datastores open; read A's review note. | Apply the worker group on staging: spot, queue-depth scaling, scheduled minimum. Spot interruption → `docker stop` (2.3). | Interruption test with A (AWS FIS, or `docker stop` mid-encode). The 5.8 s login fix if the investigation found one; DAST against staging. | PR complete | Cutover with A: workers live on production; watch the scaling alarms. | Write-up: the first week's real AWS cost |
-| **E** Lu | Agree contract 2.2 with C. Cancel an upload in progress (#67). | The editor plays the `edit_source` video. Crop box drawn over it, converted to its pixels. | Upload parts three at a time, measured before and after (#68). **Go / no-go** with C. | One resume note per upload (#69). Quality labels up to 2160p; a "starting a worker…" note when a job waits on a cold start. | PR complete | Verify on production | Stretch: notify when a video is ready |
+| **D** Yibai | Apply `infra/registry`; set the repository variables so CI pushes a worker image per merge. Repoint the module's datastore rules at 2.1's groups. | `terraform plan` the worker group against staging with the datastores open; read A's review note. | Apply the worker group on staging: spot, queue-depth scaling, scheduled minimum. Spot interruption → `docker stop` (2.3). | Interruption test with A (AWS FIS, or `docker stop` mid-encode). The 5.8 s login fix if the investigation found one; DAST against staging. | PR complete. A health check on `https://flickpond.com/api/health` with an email alarm, ready to arm at the cutover. | Cutover with A: workers live on production; arm the health alarm; watch the scaling alarms. | Write-up: the first week's real AWS cost |
+| **E** Lu | Agree contract 2.2 with C. Cancel an upload in progress (#67). | The editor plays the `edit_source` video. Crop box drawn over it, converted to its pixels. | Upload parts three at a time, measured before and after (#68). **Go / no-go** with C. | Quality labels up to 2160p, with "60 fps" on videos that kept it; a "starting a worker…" note when a job waits on a cold start. The **Delete user** button in the admin panel (2.4). One resume note per upload (#69) if time allows. | PR complete | Verify on production | Stretch: notify when a video is ready |
 
 ### Handoffs
 
-- **Mon 12:** A posts the base outputs (2.1) → D writes against them all week. C and E agree 2.2.
+- **Mon 12:** A posts the base outputs (2.1) → D writes against them all week. C and E agree 2.2; B and E agree 2.4.
 - **Tue 13:** E's editor plays the `edit_source` video → C's scrubber and E's crop box mount on it.
 - **Tue 13:** A posts the datastore review note → D and Ibrahim's reviewer read it before anything opens.
 - **Wed 14:** staging runs the split design → B, C and E verify against it from here on. The crop-pair go / no-go is posted.
 - **Thu 15:** D's group is live on staging → A times 4K on a spot worker; A and D run the interruption test together.
+- **Wed 14:** B's `DELETE /admin/users/{id}` lands → E wires the button on Thursday.
+- **Fri 16:** Ibrahim lowers the DNS TTL at Spaceship, so Saturday's switch takes minutes, not hours.
 - **Sat 17, 12:00:** A's cutover decision, which decides where everyone verifies.
 
 ### Checkpoints — things you can check, not statuses you post
@@ -183,8 +213,8 @@ and merges that evening. Small daily PRs, not one branch that lands on Friday.
 | Tue 13 | Staging has RDS and ElastiCache, unreachable from outside AWS (tested, not assumed). The review note is posted. |
 | Wed 14 | A spot worker on staging takes a job from the queue. `docker stop` mid-encode puts the job back and another worker finishes it. The crop-pair decision is posted. A clip cut with the scrubber comes out the length it showed. |
 | Thu 15 | A 4K phone clip plays at 2160p on staging. Production's dump restores cleanly into staging's RDS. |
-| Fri 16 | **Freeze:** every track has an open PR. |
-| Sat 17 | flickpond.com on AWS plays a 4K upload in 4K; with the queue empty the worker count falls to the scheduled minimum; a 1 GB upload completes. The Alibaba server is untouched and kept for a week as the rollback. |
+| Fri 16 | **Freeze:** every track has an open PR. The DNS TTL is 300 s. |
+| Sat 17 | flickpond.com on AWS plays a 4K upload in 4K; with the queue empty the worker count falls to the scheduled minimum; a 1 GB upload completes. The Alibaba server is untouched and kept for a week as the rollback. The old admin password no longer signs in. The health alarm is armed. An operator deletes a test account, and its videos are gone from S3. |
 
 ---
 
@@ -200,11 +230,19 @@ and merges that evening. Small daily PRs, not one branch that lands on Friday.
 - **`docker-compose.yml` still pins the MP4 at 720p** (BUG-15) — the AWS
   overlay sets 1080, so the cutover retires it; D changes the default too.
 - **`core_private_ip` as a base output**, asked for by D — A, Monday (2.1).
-- **The admin password** has been in chat logs since 11 September. If it
-  wasn't rotated by the end of sprint 4, it is rotated on the new production
-  host during the cutover — never pasted into chat again.
+- **The admin password** has been in chat logs since 11 September and was
+  not rotated in sprint 4. It is rotated on the new production host during
+  the cutover (A, Saturday) — never pasted into chat again.
+- **Test accounts left on production** by deploy checks
+  (`deploy-check-…@example.com`) — deleted with the new operator option once
+  it lands.
 
 ## 6. Not this sprint
+
+- **An admin page with real roles and rights** — today there are two roles,
+  `user` and `operator`, and the operator can see and delete everything.
+  Sprint 6: a proper admin page (users, jobs, storage use), and finer rights
+  than all-or-nothing.
 
 - **Chunked parallel encoding** — splitting one video across workers needs
   the worker group live first. Sprint 6.
