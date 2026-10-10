@@ -56,7 +56,11 @@ def test_containers_use_the_forking_worker(fake_connection):
     if not hasattr(os, "fork"):
         pytest.skip("this host has no fork, so the forking path cannot be built here")
 
-    assert type(entrypoint.build_worker()) is Worker
+    worker = entrypoint.build_worker()
+    # Still RQ's forking worker -- crash isolation per job -- with the one
+    # override that passes a stop on to the job (sprint 5, contract 2.3).
+    assert isinstance(worker, Worker) and not isinstance(worker, SimpleWorker)
+    assert type(worker) is entrypoint.GiveBackWorker
 
 
 def test_configure_logging_sets_the_requested_level():
