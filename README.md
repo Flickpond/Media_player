@@ -150,6 +150,11 @@ docker compose up --build -d
 docker compose ps
 ```
 
+The first build compiles MinIO from its pinned source (see
+[`deploy/minio/Dockerfile`](deploy/minio/Dockerfile)), because MinIO's
+registries no longer serve the image anonymously. Expect several minutes and
+network access to GitHub and the Go module proxy; later builds are cached.
+
 Wait until every service reports `healthy`, then check the API:
 
 ```bash
@@ -358,9 +363,8 @@ baseline is reviewed; a ZAP infrastructure failure still fails the workflow.
 HTML, JSON, Markdown, XML, and application logs are retained as workflow
 artifacts for 30 days. No repository secret is required because every DAST
 credential exists only for the lifetime of the disposable runner. The DAST
-stack builds its pinned MinIO release from source because MinIO's community
-container registries no longer allow anonymous pulls; this override does not
-change the image used by normal deployments.
+stack is the plain `docker-compose.yml`, so it also proves a fresh checkout
+builds and starts.
 
 ## Environment variables
 
