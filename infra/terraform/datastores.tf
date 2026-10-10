@@ -160,6 +160,15 @@ resource "aws_ssm_parameter" "db_dsn" {
   value       = "postgresql://flickpond:${random_password.db.result}@${aws_db_instance.main.address}:${aws_db_instance.main.port}/flickpond?ssl=require"
 }
 
+# Not a secret, but where every host looks for its connection settings, so a
+# host needs nothing from Terraform's outputs to start.
+resource "aws_ssm_parameter" "cache_host" {
+  name        = "/flickpond/${var.environment}/redis_host"
+  description = "REDIS_HOST: the ElastiCache primary endpoint (TLS only)"
+  type        = "String"
+  value       = aws_elasticache_replication_group.main.primary_endpoint_address
+}
+
 resource "aws_ssm_parameter" "cache_token" {
   name        = "/flickpond/${var.environment}/redis_password"
   description = "REDIS_PASSWORD (the ElastiCache auth token)"
