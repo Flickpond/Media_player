@@ -17,12 +17,12 @@ variable "environment" {
 
 variable "instance_type" {
   description = <<-EOT
-    Graviton, compute-optimised. 8 vCPU / 16 GiB is enough to encode a 4K
-    ladder inside the job timeout with the API, reaper and two workers on the
-    same host. The image is multi-arch, so arm64 needs no code change.
+    Graviton core host. It runs nginx, the API, reaper and queue metrics;
+    encoding belongs to the autoscaling worker group, so burstable compute is
+    enough here. The image is multi-arch, so arm64 needs no code change.
   EOT
   type        = string
-  default     = "c7g.2xlarge"
+  default     = "t4g.small"
 
   validation {
     condition     = can(regex("^[a-z0-9]+g[a-z0-9]*\\.", var.instance_type))
@@ -69,4 +69,26 @@ variable "site_origins" {
     condition     = alltrue([for origin in var.site_origins : origin != "*"])
     error_message = "List the site's origins explicitly."
   }
+}
+
+variable "db_instance_class" {
+  description = "RDS PostgreSQL size. Users, jobs and upload sessions -- thousands of rows -- fit the smallest Graviton class."
+  type        = string
+  default     = "db.t4g.micro"
+}
+
+variable "cache_node_type" {
+  description = "ElastiCache node for the RQ queue, which holds job ids, not videos."
+  type        = string
+  default     = "cache.t4g.micro"
+}
+
+variable "protect_data" {
+  description = <<-EOT
+    RDS refuses deletion and keeps a final snapshot. On by default -- the
+    safe way round; staging.tfvars turns it off, since staging is meant to
+    be torn down and rebuilt.
+  EOT
+  type        = bool
+  default     = true
 }
