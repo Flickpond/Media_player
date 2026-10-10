@@ -5,6 +5,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job import HlsStatus, Job, JobStatus
+from app.models.upload import UploadSession
 
 # Page sizes for `list_jobs`. A default rather than "everything" because the
 # endpoint's cost grows with the table: each row returned is a signed URL to
@@ -372,7 +373,15 @@ async def delete_job(
 
 
 async def list_source_keys(session: AsyncSession) -> set[str]:
-    result = await session.execute(select(Job.source_key))
+    # A complete request may have merged storage before its job transaction.
+    # Keep that object until completion or the upload cleanup owns its removal.
+    result = await session.execute(
+        select(Job.source_key).union(
+            select(UploadSession.source_key).where(
+                UploadSession.state.in_(["open", "completing", "aborting"])
+            )
+        )
+    )
     return set(result.scalars().all())
 
 

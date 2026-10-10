@@ -26,6 +26,7 @@ services:
       #   openssl rand -base64 48
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       JWT_TTL_SECONDS: ${JWT_TTL_SECONDS:-1800}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-2147483648}
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-127.0.0.1:9000}
       # https for the browser-facing URLs once TLS is on; the internal client
       # keeps using MINIO_USE_SSL, which stays false.
