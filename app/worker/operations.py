@@ -10,6 +10,7 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from app.schemas.edit import EditRequest
+from app.worker.interruption import run as run_process
 from app.worker.storage import (
     DEFAULT_MAX_FPS,
     UNPROCESSABLE_VIDEO,
@@ -98,7 +99,7 @@ class EditProcessor:
         preset: str = "veryfast",
         crf: int = 23,
         timeout_seconds: int = 870,
-        runner=subprocess.run,
+        runner=run_process,
         prober,
     ) -> None:
         self._store = store

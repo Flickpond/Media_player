@@ -316,8 +316,9 @@ async def test_a_ladder_that_cannot_be_queued_is_settled_unavailable_at_once(
 def test_the_rq_entrypoint_wires_the_real_dependencies(monkeypatch):
     seen = {}
 
-    async def fake_build(job_id, *, session_factory, ladder_step):
+    async def fake_build(job_id, *, session_factory, ladder_step, interruptions):
         seen.update(job_id=job_id, session_factory=session_factory, ladder_step=ladder_step)
+        seen["interruptions"] = interruptions
         return HlsStatus.READY
 
     monkeypatch.setattr(tasks, "build_ladder_async", fake_build)
@@ -326,7 +327,12 @@ def test_the_rq_entrypoint_wires_the_real_dependencies(monkeypatch):
     job_id = uuid4()
 
     assert tasks.build_ladder(str(job_id)) == "ready"
-    assert seen == {"job_id": job_id, "session_factory": "sessions", "ladder_step": "ladder"}
+    assert seen == {
+        "job_id": job_id,
+        "session_factory": "sessions",
+        "ladder_step": "ladder",
+        "interruptions": 0,
+    }
 
 
 def test_the_rq_entrypoint_reports_a_skipped_entry(monkeypatch):

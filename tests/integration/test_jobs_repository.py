@@ -21,6 +21,7 @@ from app.repositories.jobs import (
     list_stale_ladders,
     mark_done,
     mark_failed,
+    mark_interrupted,
     mark_ladder_ready,
     mark_ladder_unavailable,
     mark_processing,
@@ -710,3 +711,39 @@ async def test_only_ladders_pending_since_before_the_cutoff_are_stale(
             assert job_id not in {job.id for job in await list_stale_ladders(session, before=past)}
     finally:
         await _cleanup(session_factory, job_id)
+
+
+# --- a stopped worker gives its job back -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_job_goes_back_to_queued_and_can_be_claimed_again(
+    session_factory, owner
+) -> None:
+    job_id = await _make(session_factory, owner)
+    try:
+        async with session_factory() as session:
+            await mark_processing(session, job_id)
+            back = await mark_interrupted(session, job_id)
+            assert (back.status, back.hls_status, back.output_key) == ("queued", "pending", None)
+
+            # The next worker claims it exactly as it would a fresh upload.
+            again = await mark_processing(session, job_id)
+            assert again.status == "processing"
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.commit()
+
+
+@pytest.mark.asyncio
+async def test_only_a_processing_job_can_be_given_back(session_factory, owner) -> None:
+    job_id = await _make(session_factory, owner)
+    try:
+        async with session_factory() as session:
+            with pytest.raises(InvalidJobTransitionError):
+                await mark_interrupted(session, job_id)  # still queued
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.commit()

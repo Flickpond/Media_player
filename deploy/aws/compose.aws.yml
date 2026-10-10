@@ -38,6 +38,10 @@ services:
       <<: *instance-role
 
   worker:
+    # A stopped worker gives its job back (app.worker.interruption) in a few
+    # seconds, but a spot reclaim allows two minutes: use most of it before
+    # Docker's SIGKILL, rather than the 10-second default.
+    stop_grace_period: 100s
     environment:
       <<: *instance-role
       # The reason for the move: this host can encode a 4K ladder in time.

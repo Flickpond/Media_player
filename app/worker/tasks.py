@@ -13,10 +13,12 @@ Contract rules this file exists to enforce:
 """
 
 import asyncio
+import contextlib
 import logging
 from enum import StrEnum
 from uuid import UUID
 
+from rq import Retry, get_current_job
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.job import HlsStatus, JobStatus
@@ -27,11 +29,13 @@ from app.repositories.jobs import (
     get_job,
     mark_done,
     mark_failed,
+    mark_interrupted,
     mark_ladder_ready,
     mark_ladder_unavailable,
     mark_processing,
 )
 from app.worker.db import get_worker_session_factory
+from app.worker.interruption import stop_on_sigterm, stop_requested
 from app.worker.probe import SourceProbe
 from app.worker.storage import (
     DEFAULT_MAX_FPS,
@@ -58,6 +62,14 @@ class JobOutcome(StrEnum):
     DONE = "done"
     FAILED = "failed"
     SKIPPED = "skipped"
+    # The worker was told to stop mid-job and gave the job back to the queue.
+    INTERRUPTED = "interrupted"
+
+
+# A job interrupted this many times fails instead of going back again: a
+# video that reliably takes its worker down with it must not loop forever.
+MAX_INTERRUPTIONS = 3
+INTERRUPTED_TOO_OFTEN = "processing was interrupted repeatedly; please try uploading again"
 
 
 def readable_error(exception: BaseException) -> str:
@@ -93,6 +105,7 @@ async def process_job_async(
     step: ProcessingStep,
     edit_step_factory=get_edit_processing_step,
     enqueue_ladder_fn=enqueue_ladder,
+    interruptions: int = 0,
 ) -> JobOutcome:
     # 1. Claim the job. The conditional update in `mark_processing` is what
     #    makes this safe with N workers racing on the same queue entry: exactly
@@ -124,6 +137,12 @@ async def process_job_async(
             max_fps=getattr(job, "max_fps", DEFAULT_MAX_FPS),
         )
     except Exception as exc:
+        if stop_requested():
+            # Not the video's fault: the worker is being stopped, and killing
+            # FFmpeg is what made the step fail.
+            return await _give_back(
+                job_id, session_factory=session_factory, interruptions=interruptions
+            )
         reason = readable_error(exc)
         # The diagnostic half lives here and only here: the traceback, and for
         # an ObjectStoreError the keys and stderr its message carries. `reason`
@@ -174,6 +193,24 @@ async def process_job_async(
     return JobOutcome.DONE
 
 
+async def _give_back(job_id: UUID, *, session_factory, interruptions: int) -> JobOutcome:
+    """Put a stopped job back on the queue -- or, the third time, fail it."""
+    async with session_factory() as session:
+        try:
+            if interruptions + 1 >= MAX_INTERRUPTIONS:
+                await mark_failed(session, job_id, error=INTERRUPTED_TOO_OFTEN)
+                logger.warning(
+                    "job %s: interrupted %d times, failing it", job_id, interruptions + 1
+                )
+                return JobOutcome.FAILED
+            await mark_interrupted(session, job_id)
+        except (JobNotFoundError, InvalidJobTransitionError) as write_exc:
+            logger.error("job %s: could not give the job back: %s", job_id, write_exc)
+            return JobOutcome.SKIPPED
+    logger.warning("job %s: worker stopping; processing -> queued (gave it back)", job_id)
+    return JobOutcome.INTERRUPTED
+
+
 async def _hand_off_ladder(job_id: UUID, *, session_factory, enqueue) -> None:
     try:
         await asyncio.to_thread(enqueue, job_id)
@@ -190,7 +227,8 @@ async def build_ladder_async(
     *,
     session_factory: async_sessionmaker[AsyncSession],
     ladder_step,
-) -> HlsStatus | None:
+    interruptions: int = 0,
+) -> HlsStatus | JobOutcome | None:
     """Build the adaptive ladder for a job that is already `done`.
 
     Never touches `status`: the video was finished when this was queued, and
@@ -228,6 +266,13 @@ async def build_ladder_async(
             max_fps=getattr(job, "max_fps", DEFAULT_MAX_FPS),
         )
     except Exception:
+        if stop_requested() and interruptions + 1 < MAX_INTERRUPTIONS:
+            # Stopped, not broken: the ladder stays pending and RQ runs it
+            # again elsewhere. Anything already uploaded is half a ladder.
+            logger.warning("job %s: worker stopping; the ladder goes back to its queue", job_id)
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(ladder_step.discard, job_id)
+            return JobOutcome.INTERRUPTED
         logger.exception("job %s: HLS ladder failed; the MP4 stands", job_id)
         async with session_factory() as session:
             await mark_ladder_unavailable(session, job_id)
@@ -256,23 +301,41 @@ def process_job(job_id: str) -> str:
     through the queue cleanly.
     """
     parsed = UUID(job_id)
-    outcome = asyncio.run(
-        process_job_async(
-            parsed,
-            session_factory=get_worker_session_factory(),
-            step=get_processing_step(),
+    with stop_on_sigterm():
+        outcome = asyncio.run(
+            process_job_async(
+                parsed,
+                session_factory=get_worker_session_factory(),
+                step=get_processing_step(),
+                interruptions=_previous_interruptions(),
+            )
         )
-    )
-    return outcome.value
+    # Returning a Retry is how RQ is asked to run this same queue entry again;
+    # the row is already back in `queued` for the next worker to claim.
+    return Retry(max=MAX_INTERRUPTIONS) if outcome is JobOutcome.INTERRUPTED else outcome.value
 
 
 def build_ladder(job_id: str) -> str:
     """RQ entrypoint for the ladder queue. Enqueued by `process_job_async`."""
-    settled = asyncio.run(
-        build_ladder_async(
-            UUID(job_id),
-            session_factory=get_worker_session_factory(),
-            ladder_step=get_ladder_step(),
+    with stop_on_sigterm():
+        settled = asyncio.run(
+            build_ladder_async(
+                UUID(job_id),
+                session_factory=get_worker_session_factory(),
+                ladder_step=get_ladder_step(),
+                interruptions=_previous_interruptions(),
+            )
         )
-    )
+    if settled is JobOutcome.INTERRUPTED:
+        return Retry(max=MAX_INTERRUPTIONS)
     return settled.value if settled is not None else "skipped"
+
+
+def _previous_interruptions() -> int:
+    """How many times RQ has already re-run this queue entry.
+
+    Every re-run comes from a Retry returned above, so this counts
+    interruptions; a job run directly, outside a worker, has had none.
+    """
+    current = get_current_job()
+    return (current.number_of_retries or 0) if current is not None else 0

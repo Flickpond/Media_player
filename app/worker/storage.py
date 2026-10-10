@@ -20,6 +20,7 @@ from minio.commonconfig import CopySource
 
 from app.config import get_settings
 from app.services.minio_client import bucket, internal_client
+from app.worker.interruption import run as run_process
 
 # One message for every "the file itself is the problem" case. FFmpeg's own
 # stderr names the temp path it was working on and assumes the reader knows what
@@ -202,7 +203,7 @@ class FfmpegProcessor:
         crf: int = 23,
         max_height: int = 1080,
         timeout_seconds: int = 870,
-        runner=subprocess.run,
+        runner=run_process,
         builds_ladder: bool = False,
         prober=None,
         source_check=None,

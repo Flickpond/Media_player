@@ -23,6 +23,14 @@ Sprint 1 had no retries. Sprint 3 adds `failed -> queued` through
 Retry preserves the job ID, owner, source and operations, clears `error`,
 `output_key` and `hls_key`, and advances `updated_at`.
 
+Sprint 5 adds **`processing -> queued`**, written only by the worker through
+`mark_interrupted`, when the worker itself is told to stop mid-job (a spot
+reclaim, a scale-in, `docker stop`). It is not the video's fault, so the job
+goes back to the queue instead of failing, and RQ runs the same queue entry
+again on another worker. After three interruptions the job fails with "processing
+was interrupted repeatedly; please try uploading again". A ladder interrupted
+the same way stays `pending` and is rebuilt; its partial upload is discarded.
+
 **`error` is read by the person who uploaded the file**, because
 `GET /jobs/{id}` returns it verbatim. It must name a cause they can act on and
 must not carry an object key, a temp path, an S3 code or an exception class
@@ -188,6 +196,7 @@ mark_processing(session, job_id)
 mark_done(session, job_id, *, output_key, hls_key=None, hls_status=None,
           width=None, height=None, duration_seconds=None, thumbnail_key=None)
 mark_failed(session, job_id, *, error)
+mark_interrupted(session, job_id)                # processing -> queued; worker only
 mark_ladder_ready(session, job_id, *, hls_key)   # -> Job, or None if not waiting
 mark_ladder_unavailable(session, job_id)         # -> Job, or None if not waiting
 list_stale_ladders(session, *, before)           # reaper

@@ -13,6 +13,7 @@ processor logs and moves past.
 import subprocess
 from pathlib import Path
 
+from app.worker.interruption import run as run_process
 from app.worker.probe import SourceProbe
 
 THUMBNAIL_CONTENT_TYPE = "image/jpeg"
@@ -82,7 +83,7 @@ def extract_thumbnail(
     max_width: int = 640,
     max_height: int = 360,
     timeout_seconds: int = 30,
-    runner=subprocess.run,
+    runner=run_process,
 ) -> Path:
     """Write one JPEG frame of `source_path` to `output_path`."""
     command = build_thumbnail_command(
