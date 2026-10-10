@@ -209,8 +209,9 @@ def test_the_source_is_probed_once_before_encoding_and_its_dimensions_returned()
 
 def test_an_unreadable_source_still_produces_the_mp4_without_dimensions():
     """Whether an unreadable source should fail the job is the validation
-    step's rule. Until that lands, a probe failure costs only the
-    dimensions and the ladder -- never the video.
+    step's rule, and it only applies when a `source_check` is supplied (see
+    tests/test_worker_source_rules.py). Without one, a probe failure costs
+    only the dimensions and the ladder -- never the video.
     """
 
     def exploding_prober(_path):

@@ -136,7 +136,7 @@ jobs:
         run: python -m pip install -e '.[dev]'
       - name: Build and start MinIO
         run: |
-          docker build -t flickpond-minio:ci -f deploy/dast/minio.Dockerfile .
+          docker build -t flickpond-minio:ci deploy/minio
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=minioadmin \
             -e MINIO_ROOT_PASSWORD=minioadmin123 \

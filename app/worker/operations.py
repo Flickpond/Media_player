@@ -16,7 +16,7 @@ from app.worker.storage import (
     ObjectStoreError,
     ProcessingResult,
 )
-from app.worker.validation import validate_clip, validate_crop
+from app.worker.validation import validate_clip, validate_crop, validate_edit_rules
 
 INVALID_EDIT = "the edit request is invalid; please submit it again"
 
@@ -150,13 +150,19 @@ class EditProcessor:
 
             crop = request.operation("crop")
             clip = request.operation("clip")
-            if crop is not None or clip is not None:
+            scales = request.operation("downscale") or request.operation("upscale")
+            if crop is not None or clip is not None or scales is not None:
                 probe = self._prober(source_path)
                 try:
                     if clip is not None:
                         validate_clip(_params(clip), probe)
                     if crop is not None:
                         validate_crop(_params(crop), probe)
+                    # After crop: scale is judged against the frame it is
+                    # applied to, which a valid crop has already defined.
+                    validate_edit_rules(
+                        [(item.operation, _params(item)) for item in request.operations], probe
+                    )
                 except ValueError as exc:
                     raise ObjectStoreError("edit validation failed", user_message=str(exc)) from exc
 

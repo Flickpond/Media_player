@@ -1,14 +1,46 @@
-"""Track C's source-aware checks, called by B before constructing FFmpeg args.
+"""Track C's source-aware checks, run by the worker against the real file.
 
 These functions do no I/O and never change the supplied parameters. The probe
 must describe the downloaded input file, not metadata sent by the browser.
 Only these curated ValueError messages should be exposed by the edit processor;
 ordinary exceptions still belong in the operator log.
+
+Two callers:
+
+* B's edit processor, before constructing FFmpeg arguments: `validate_crop`,
+  `validate_clip` and `validate_edit_rules`.
+* A's MP4 processor, right after the probe and before any encoding:
+  `validate_source` -- the probe-first rejection of a source too long to take.
+
+The rules themselves live in `app.services.media_rules`, which the API reads
+too; this module applies them to a `SourceProbe`.
 """
 
 import math
 
+from app.services.media_rules import check_edit_operations, check_source_duration
 from app.worker.probe import SourceProbe
+
+
+def validate_source(probe: SourceProbe, *, max_duration_seconds: int) -> None:
+    """Refuse an upload the worker should not even start encoding.
+
+    Corrupt files and files with no video stream never get this far: the
+    probe itself refuses them. What is left is the one rule that needs the
+    probe's answer -- the duration limit.
+    """
+    check_source_duration(probe.duration_seconds, max_duration_seconds=max_duration_seconds)
+
+
+def validate_edit_rules(operations: list[tuple[str, dict]], probe: SourceProbe) -> None:
+    """The scale and conversion rules, against the edit's real input.
+
+    The API applies the same rules earlier, to stored dimensions, so most bad
+    requests never reach this. It runs here as well because stored dimensions
+    can be absent (jobs from before sprint 4) or describe a different file
+    than the one downloaded (an MP4 encoded under an older height cap).
+    """
+    check_edit_operations(operations, input_height=probe.height)
 
 
 def validate_crop(params: dict, probe: SourceProbe) -> None:

@@ -85,6 +85,17 @@ class Settings(BaseSettings):
     # can encode 4K in time sets 2160. Never above the source either way.
     worker_hls_max_height: int = 1080
     worker_ffmpeg_timeout_seconds: int = 870
+    # The longest source the worker accepts, checked right after the probe
+    # and before any encoding. By duration rather than bytes: encode time --
+    # and so whether a job finishes inside the timeout above -- follows how
+    # long a video is, which a byte count no longer predicts once uploads are
+    # 4K. Five minutes until a real 4K clip has been timed on the sprint 4
+    # instance; 0 turns the check off.
+    media_max_duration_seconds: int = 300
+    # The poster frame's bounding box. Big enough for a Library card on a
+    # high-density screen, small enough to stay a few tens of kilobytes.
+    thumbnail_max_width: int = 640
+    thumbnail_max_height: int = 360
     reaper_interval_seconds: int = 60
     reaper_lease_seconds: int = 1800
     reaper_orphan_grace_seconds: int = 3600

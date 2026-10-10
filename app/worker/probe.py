@@ -21,6 +21,17 @@ from pathlib import Path
 
 from app.worker.storage import UNPROCESSABLE_VIDEO, ObjectStoreError
 
+# The one probe refusal the uploader can fix by choosing a different file,
+# rather than a different copy of the same one: an audio file, or a container
+# whose only stream is not video.
+NO_VIDEO_STREAM = "this file has no video track; please upload a video file"
+
+
+# Stream size and the container's duration, plus the two places a rotation can
+# be recorded: display-matrix side data (current FFmpeg) and the legacy
+# `rotate` tag (files written by older muxers).
+PROBE_ENTRIES = "stream=width,height:stream_side_data=rotation:stream_tags=rotate:format=duration"
+
 
 @dataclass(frozen=True, slots=True)
 class SourceProbe:
@@ -54,8 +65,11 @@ def probe_source(
         # assumed -- but that is a behaviour nothing here pins, and the half
         # that would go missing if it ever changed comes back as an absent
         # key, not an error. The documented form costs nothing.
+        #
+        # The rotation entries are what make a phone video come out the right
+        # way up: see `_display_size`.
         "-show_entries",
-        "stream=width,height:format=duration",
+        PROBE_ENTRIES,
         "-of",
         "json",
         str(path),
@@ -95,12 +109,11 @@ def probe_source(
         # every stream inside it is intact.
         raise ObjectStoreError(
             f"ffprobe found no video stream in {path}",
-            user_message=UNPROCESSABLE_VIDEO,
+            user_message=NO_VIDEO_STREAM,
         )
 
     try:
-        width = int(streams[0]["width"])
-        height = int(streams[0]["height"])
+        width, height = _display_size(streams[0])
         duration = float(payload["format"]["duration"])
     except (KeyError, TypeError, ValueError) as exc:
         # Some containers genuinely carry no duration, and a stream can
@@ -119,3 +132,34 @@ def probe_source(
         )
 
     return SourceProbe(width=width, height=height, duration_seconds=duration)
+
+
+def _rotation_degrees(stream: dict) -> int:
+    """The clockwise rotation a player applies, from whichever place has it."""
+    for side_data in stream.get("side_data_list") or []:
+        if isinstance(side_data, dict) and "rotation" in side_data:
+            try:
+                return int(float(side_data["rotation"]))
+            except (TypeError, ValueError):
+                return 0
+    try:
+        return int(float((stream.get("tags") or {}).get("rotate", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _display_size(stream: dict) -> tuple[int, int]:
+    """Width and height as the video is *shown*, not as it is stored.
+
+    A phone held upright records landscape frames and a rotation flag. ffprobe
+    reports the stored frame -- 3840x2160 for an upright 4K phone video -- but
+    FFmpeg applies the flag before any filter runs, so every encode, the
+    ladder, the thumbnail and the crop box all see 2160x3840. A height read
+    from the stored frame would cap that video's ladder at 2160 when its frames
+    are 3840 tall, and size its edit options from the wrong side.
+    """
+    width = int(stream["width"])
+    height = int(stream["height"])
+    if _rotation_degrees(stream) % 180 != 0:
+        return height, width
+    return width, height

@@ -29,6 +29,11 @@ def edit_app(test_user, monkeypatch):
         filename="holiday.mov",
         status=JobStatus.DONE.value,
         output_key="outputs/source/holiday.mp4",
+        operations=None,
+        # As every job from before sprint 4 is: never probed. Tests that need
+        # the source-aware rules set these.
+        width=None,
+        height=None,
     )
     created = SimpleNamespace(id=uuid4())
     get_job = AsyncMock(return_value=source)

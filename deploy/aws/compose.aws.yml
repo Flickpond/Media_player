@@ -21,7 +21,13 @@ services:
   # when one does not resolve. A placeholder answers to the name and holds
   # nothing. It also sidesteps the MinIO image no registry will serve
   # anonymously any more -- a fresh AWS host could not pull it.
+  #
+  # The base now builds MinIO from source, and Compose merges `build:` and
+  # `pull_policy:` through from it -- without the resets, `--build` compiles
+  # MinIO, tags it busybox:1.36, and runs `minio sleep infinity`.
   minio:
+    build: !reset null
+    pull_policy: !reset null
     image: busybox:1.36
     command: ["sleep", "infinity"]
     healthcheck:
