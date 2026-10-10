@@ -17,12 +17,12 @@ variable "environment" {
 
 variable "instance_type" {
   description = <<-EOT
-    Graviton, compute-optimised. 8 vCPU / 16 GiB is enough to encode a 4K
-    ladder inside the job timeout with the API, reaper and two workers on the
-    same host. The image is multi-arch, so arm64 needs no code change.
+    Graviton core host. It runs nginx, the API, reaper and queue metrics;
+    encoding belongs to the autoscaling worker group, so burstable compute is
+    enough here. The image is multi-arch, so arm64 needs no code change.
   EOT
   type        = string
-  default     = "c7g.2xlarge"
+  default     = "t4g.small"
 
   validation {
     condition     = can(regex("^[a-z0-9]+g[a-z0-9]*\\.", var.instance_type))
