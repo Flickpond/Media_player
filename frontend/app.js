@@ -9,7 +9,9 @@
 //   POST /upload         -> 202 { job_id }, sets no cookie
 //   POST /uploads                    -> 201 { upload_id, part_size, part_count }
 //   POST /uploads/{id}/parts         -> 200 { urls: { "1": "...", ... } }
+//   GET  /uploads/{id}               -> 200 { parts_done, state, part_size, part_count, job_id? }
 //   POST /uploads/{id}/complete      -> 202 { job_id }
+//   DELETE /uploads/{id}             -> 204
 //   GET  /limits         -> 200 { max_duration_seconds, max_edit_height }
 //   GET  /jobs/{id}      -> { id, filename, status, output_url?, hls_url?,
 //                             hls_status, thumbnail_url?, error? }
@@ -81,6 +83,10 @@ const el = {
   viewUpload: document.getElementById("view-upload"),
   dropzone: document.getElementById("dropzone"),
   dropzoneHint: document.getElementById("dropzone-hint"),
+  resumePrompt: document.getElementById("resume-prompt"),
+  resumeText: document.getElementById("resume-text"),
+  resumeChoose: document.getElementById("resume-choose"),
+  resumeDiscard: document.getElementById("resume-discard"),
   fileInput: document.getElementById("file-input"),
   browseButton: document.getElementById("browse-button"),
   status: document.getElementById("status"),
@@ -185,6 +191,7 @@ function showSignedIn(user) {
   el.auth.hidden = true;
   el.app.hidden = false;
   switchView("upload");
+  renderResumePrompt();
 }
 
 function showSignedOut() {
@@ -446,6 +453,21 @@ el.jobRetry.addEventListener("click", () => {
 });
 el.jobChooseDifferent.addEventListener("click", () => el.fileInput.click());
 el.jobDelete.addEventListener("click", deleteActiveJob);
+
+el.resumeChoose.addEventListener("click", () => el.fileInput.click());
+el.resumeDiscard.addEventListener("click", async () => {
+  const record = readPendingUpload();
+  // Forget it first: the local note is what the reader is asking to be rid of,
+  // and it should go even if the request below never lands.
+  clearPendingUpload();
+  renderResumePrompt();
+  if (!record) return;
+  try {
+    await fetch(`${API}/uploads/${record.uploadId}`, { method: "DELETE" });
+  } catch {
+    // The parts are collected when the session expires either way.
+  }
+});
 
 async function deleteActiveJob() {
   if (!activeJobId) return;
@@ -728,7 +750,10 @@ async function runDirectUpload(session, file) {
     showUploadProgress(sent, file.size, meter);
   }
 
-  return finishUploadSession(uploadId, parts);
+  const jobId = await finishUploadSession(uploadId, parts);
+  // The session has become a job; there is nothing left to come back to.
+  clearPendingUpload();
+  return jobId;
 }
 
 /** One opaque POST. Still the only path that can take a file whose type the
@@ -747,9 +772,166 @@ async function sendWholeFile(file) {
   return data.job_id;
 }
 
+// --- resuming an interrupted upload ----------------------------------------
+
+// The pointer to an unfinished session, kept between page loads. The session
+// and the parts already in storage live on the server for 24 hours; this is
+// only how the next page load finds them again.
+const PENDING_UPLOAD_KEY = "flickpond.pending-upload";
+
+/** localStorage throws when it is full, and in a browser that has been told to
+ *  keep nothing. None of that should fail an upload, so every read and write
+ *  here shrugs and carries on. */
+function readPendingUpload() {
+  try {
+    return JSON.parse(localStorage.getItem(PENDING_UPLOAD_KEY));
+  } catch {
+    return null;
+  }
+}
+
+function savePendingUpload(record) {
+  try {
+    localStorage.setItem(PENDING_UPLOAD_KEY, JSON.stringify(record));
+  } catch {
+    // The upload still works; it just cannot be picked up again later.
+  }
+}
+
+function clearPendingUpload() {
+  try {
+    localStorage.removeItem(PENDING_UPLOAD_KEY);
+  } catch {
+    // Same.
+  }
+}
+
+/** Whether the file just picked is the one this record was made from.
+ *
+ * The server cannot prove it either: a name, a length and a modification time
+ * are all a browser hands back for a file it has already let go of. This is a
+ * courtesy check that the reader picked the same file, not a promise about
+ * what is inside it. */
+function isSameFile(record, file) {
+  return (
+    record.filename === file.name &&
+    record.size === file.size &&
+    record.lastModified === file.lastModified
+  );
+}
+
+/** How many bytes part `n` of a `total`-byte file holds. */
+function partBytes(n, partSize, total) {
+  return Math.min(partSize, total - (n - 1) * partSize);
+}
+
+/** The unfinished session this file can complete, if there is one.
+ *
+ * Three things have to line up, or this is an ordinary upload: the same
+ * account, the same file, and -- checked by asking, a moment later -- a
+ * session the server still has. */
+function resumableRecordFor(file) {
+  const record = readPendingUpload();
+  if (!record || !currentUser || record.userId !== currentUser.id) return null;
+  return isSameFile(record, file) ? record : null;
+}
+
+/** Offer to finish an upload this browser did not get to the end of.
+ *
+ * Never offered to a different account: the record names whoever started it,
+ * and the server would refuse it to anyone else anyway. */
+function renderResumePrompt() {
+  const record = readPendingUpload();
+  const usable = Boolean(record && currentUser && record.userId === currentUser.id);
+  el.resumePrompt.hidden = !usable;
+  if (usable) {
+    el.resumeText.textContent =
+      `Unfinished upload: ${record.filename}. Choose the same file to pick up where it stopped.`;
+  }
+}
+
+/** What the server already holds of a session. Null when it holds nothing:
+ *  expired, cleaned up, or belonging to someone else. */
+async function getUploadProgress(uploadId) {
+  const res = await fetch(`${API}/uploads/${uploadId}`);
+  if (!res.ok) return null;
+  return await res.json().catch(() => null);
+}
+
+/** Open a session for this file and note it down, so a reload can find it. */
+async function startDirectUpload(file) {
+  const session = await openUploadSession(file);
+  if (!session) return null;
+  savePendingUpload({
+    uploadId: session.upload_id,
+    partSize: session.part_size,
+    partCount: session.part_count,
+    userId: currentUser?.id ?? null,
+    filename: file.name,
+    size: file.size,
+    lastModified: file.lastModified,
+    startedAt: Date.now(),
+  });
+  return session;
+}
+
+/** Finish a session this browser started before the page was reloaded.
+ *
+ * The server is the authority on what is already in storage -- the page's own
+ * memory of it went with the reload -- so this asks first and then sends only
+ * the parts that are missing. A session the server has forgotten, or one that
+ * has been cancelled, is not an error worth showing: the file is simply
+ * uploaded from the beginning. */
+async function resumeDirectUpload(record, file) {
+  const progress = await getUploadProgress(record.uploadId);
+
+  if (progress === null || progress.state === "aborting" || progress.state === "aborted") {
+    clearPendingUpload();
+    const session = await startDirectUpload(file);
+    return session ? runDirectUpload(session, file) : sendWholeFile(file);
+  }
+
+  // The server got all the way to a job. There is nothing left to send.
+  if (progress.state === "completed") {
+    clearPendingUpload();
+    return progress.job_id;
+  }
+
+  const done = new Map(progress.parts_done.map((part) => [part.n, part.etag]));
+  const meter = makeRateMeter();
+  const parts = [];
+  let sent = 0;
+  for (const n of done.keys()) sent += partBytes(n, progress.part_size, file.size);
+
+  showUploadProgress(sent, file.size, meter);
+
+  for (let n = 1; n <= progress.part_count; n += 1) {
+    const held = done.get(n);
+    if (held !== undefined) {
+      parts.push({ n, etag: held });
+      continue;
+    }
+    const start = (n - 1) * progress.part_size;
+    const blob = file.slice(start, Math.min(start + progress.part_size, file.size));
+    parts.push({ n, etag: await putPart(await signPart(record.uploadId, n), blob) });
+    sent += blob.size;
+    meter.mark(sent);
+    showUploadProgress(sent, file.size, meter);
+  }
+
+  const jobId = await finishUploadSession(record.uploadId, parts);
+  clearPendingUpload();
+  return jobId;
+}
+
 async function sendVideo(file) {
   if (canUploadDirectly(file)) {
-    const session = await openUploadSession(file);
+    // A file this browser was already part way through goes back to its own
+    // session rather than starting a second one.
+    const record = resumableRecordFor(file);
+    if (record) return resumeDirectUpload(record, file);
+
+    const session = await startDirectUpload(file);
     if (session) return runDirectUpload(session, file);
   }
   return sendWholeFile(file);
@@ -779,6 +961,8 @@ async function handleFile(file) {
   lastFile = file;
   setBusy(true);
   setStatus("Uploading...");
+  // The prompt is about a file the reader is no longer looking at.
+  el.resumePrompt.hidden = true;
 
   try {
     // The worker refuses an over-long video once it has probed it, which is
@@ -804,9 +988,11 @@ async function handleFile(file) {
     setBadge("queued");
     activeJobId = jobId;
     setBusy(false);
+    renderResumePrompt();
     pollUploadJob(jobId);
   } catch (err) {
     clearUploadProgress();
+    renderResumePrompt();
     if (err.status === 401) {
       showSignedOut();
       setAuthStatus("Your session expired. Sign in again.");

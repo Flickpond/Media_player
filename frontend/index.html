@@ -208,6 +208,18 @@
             <div id="dropzone-hint" class="dropzone-hint">MP4, MOV, WebM, MKV, or AVI.</div>
           </div>
 
+          <!-- An unfinished direct upload outlives the page: its session and
+               the parts already in storage have a 24 hour life. A browser
+               cannot reopen a file it was handed before a reload, so the page
+               asks for that one file again. -->
+          <div id="resume-prompt" class="resume-prompt" hidden>
+            <p id="resume-text" class="resume-text"></p>
+            <div class="resume-actions">
+              <button type="button" id="resume-choose" class="btn-ghost">Choose the file</button>
+              <button type="button" id="resume-discard" class="btn-ghost">Discard</button>
+            </div>
+          </div>
+
           <p id="status" class="status" hidden></p>
 
           <!-- The direct upload's own progress, which exists before any job

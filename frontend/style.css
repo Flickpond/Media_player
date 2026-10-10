@@ -646,6 +646,31 @@ main {
     transform: translateX(220%);
   }
 }
+/* --- an unfinished upload -----------------------------------------------------
+   Sits above the picker, because choosing that file again is what finishes it. */
+.resume-prompt {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--bg-raised);
+}
+.resume-text {
+  flex: 1;
+  min-width: 220px;
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--text-muted);
+}
+.resume-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .progress-track {
   position: relative;
   overflow: hidden;

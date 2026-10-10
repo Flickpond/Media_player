@@ -43,6 +43,10 @@ async function loadApp({ signedIn = true, role = "user", limits = null } = {}) {
   return {
     dropzone: document.getElementById("dropzone"),
     dropzoneHint: document.getElementById("dropzone-hint"),
+    resumePrompt: document.getElementById("resume-prompt"),
+    resumeText: document.getElementById("resume-text"),
+    resumeChoose: document.getElementById("resume-choose"),
+    resumeDiscard: document.getElementById("resume-discard"),
     fileInput: document.getElementById("file-input"),
     browseButton: document.getElementById("browse-button"),
     status: document.getElementById("status"),
@@ -150,6 +154,26 @@ function fileOfSize(size, name = "holiday.mp4", type = "video/mp4") {
   return file;
 }
 
+/** Note a session down the way a reloaded page would find it. `file` is the
+ *  file it was started from, so the identity the page checks comes from the
+ *  same place it does. */
+function rememberUpload(file, overrides = {}) {
+  localStorage.setItem(
+    "flickpond.pending-upload",
+    JSON.stringify({
+      uploadId: "up-1",
+      partSize: 2,
+      partCount: 3,
+      userId: "u-1",
+      filename: file.name,
+      size: file.size,
+      lastModified: file.lastModified,
+      startedAt: 1,
+      ...overrides,
+    }),
+  );
+}
+
 /** Everything a direct upload asks for *after* its session exists: one signed
  *  URL, one PUT, one completion, and a poll that answers but never advances. */
 function mockUploadRest({ jobId = "job-1", etag = '"e1"' } = {}) {
@@ -190,6 +214,8 @@ afterEach(() => {
   // taking the "the browser cannot measure this file" path.
   URL.createObjectURL = undefined;
   URL.revokeObjectURL = undefined;
+  // The resume note outlives a page load by design; between tests it must not.
+  localStorage.clear();
 });
 
 describe("upload", () => {
@@ -657,6 +683,138 @@ describe("upload", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(fetchMock.mock.calls.some(([url]) => url === "/api/upload")).toBe(true);
+  });
+});
+
+describe("resuming an upload", () => {
+  it("offers to finish an upload that was interrupted", async () => {
+    const file = new File(["abcdef"], "holiday.mp4", { type: "video/mp4" });
+    rememberUpload(file);
+
+    const el = await loadApp();
+
+    expect(el.resumePrompt.hidden).toBe(false);
+    expect(el.resumeText.textContent).toContain("holiday.mp4");
+  });
+
+  it("asks the server what it has, and sends only the missing parts", async () => {
+    const file = new File(["abcdef"], "holiday.mp4", { type: "video/mp4" });
+    rememberUpload(file);
+    const el = await loadApp();
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        parts_done: [{ n: 1, etag: '"e1"' }],
+        state: "open",
+        part_size: 2,
+        part_count: 3,
+        job_id: null,
+      }),
+    );
+    fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "2": "http://minio/p2" } }));
+    fetchMock.mockResolvedValueOnce(partResponse('"e2"'));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "3": "http://minio/p3" } }));
+    fetchMock.mockResolvedValueOnce(partResponse('"e3"'));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }));
+    fetchMock.mockResolvedValue(jsonResponse({ id: "job-1", status: "queued" }));
+
+    await uploadFile(el, file);
+
+    // The server is the authority on what is already in storage.
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/uploads/up-1");
+
+    const signed = fetchMock.mock.calls
+      .filter(([url]) => url === "/api/uploads/up-1/parts")
+      .map(([, init]) => JSON.parse(init.body).part_numbers);
+    expect(signed).toEqual([[2], [3]]);
+
+    // Completion takes the whole manifest, the part already in storage too.
+    const complete = fetchMock.mock.calls.find(([url]) => url === "/api/uploads/up-1/complete");
+    expect(JSON.parse(complete[1].body).parts).toEqual([
+      { n: 1, etag: '"e1"' },
+      { n: 2, etag: '"e2"' },
+      { n: 3, etag: '"e3"' },
+    ]);
+
+    // There is a job now, so there is nothing left to come back to.
+    expect(localStorage.getItem("flickpond.pending-upload")).toBeNull();
+    expect(el.jobBadge.textContent).toBe("Queued");
+  });
+
+  it("starts over when the server no longer has the session", async () => {
+    const file = new File(["abcdef"], "holiday.mp4", { type: "video/mp4" });
+    rememberUpload(file);
+    const el = await loadApp();
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not found" }, false, 404));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ upload_id: "up-2", part_size: 2, part_count: 1 }),
+    );
+    mockUploadRest();
+
+    await uploadFile(el, file);
+
+    // It asked, was told there was nothing, and opened a new session.
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/uploads/up-1");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/uploads");
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).size).toBe(6);
+  });
+
+  it("does not offer one account's unfinished upload to another", async () => {
+    const file = new File(["abcdef"], "holiday.mp4", { type: "video/mp4" });
+    rememberUpload(file, { userId: "someone-else" });
+    const el = await loadApp();
+
+    expect(el.resumePrompt.hidden).toBe(true);
+
+    mockDirectUpload();
+    await uploadFile(el, file);
+
+    // A fresh session rather than someone else's.
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/uploads");
+  });
+
+  it("lets the reader abandon an unfinished upload", async () => {
+    const file = new File(["abcdef"], "holiday.mp4", { type: "video/mp4" });
+    rememberUpload(file);
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 204, json: async () => ({}) });
+
+    el.resumeDiscard.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock.mock.calls[0]).toEqual(["/api/uploads/up-1", { method: "DELETE" }]);
+    expect(el.resumePrompt.hidden).toBe(true);
+    expect(localStorage.getItem("flickpond.pending-upload")).toBeNull();
+  });
+
+  it("uploads anyway when the browser refuses to keep anything", async () => {
+    const el = await loadApp();
+    mockDirectUpload();
+    const refuse = () => {
+      throw new Error("storage disabled");
+    };
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(refuse);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(refuse);
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(refuse);
+
+    await uploadFile(el);
+
+    // Having nowhere to write the note is not a reason to refuse the upload.
+    expect(el.jobBadge.textContent).toBe("Queued");
+    expect(el.resumePrompt.hidden).toBe(true);
+  });
+
+  it("reopens the picker from the prompt", async () => {
+    const file = new File(["abcdef"], "holiday.mp4", { type: "video/mp4" });
+    rememberUpload(file);
+    const el = await loadApp();
+    const clicked = vi.spyOn(el.fileInput, "click").mockImplementation(() => {});
+
+    el.resumeChoose.dispatchEvent(new Event("click"));
+
+    expect(clicked).toHaveBeenCalled();
   });
 });
 
