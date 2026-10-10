@@ -48,9 +48,10 @@ ONLY_AS_TOP_RUNG: frozenset[int] = frozenset({480})
 CASCADE_FROM = 1080
 
 
-# Video bitrate per rung. Not a formula: these are the conventional ladder
-# figures for H.264 at these heights, and a formula fitted to a handful of
-# points would be a worse kind of magic.
+# The most each rung may spend, in bits per second. Not a formula: these are
+# the conventional ladder figures for H.264 at these heights, and a formula
+# fitted to a handful of points would be a worse kind of magic. A ceiling,
+# not a target -- see LADDER_CRF.
 BITRATES: dict[int, str] = {
     360: "800k",
     480: "1400k",
@@ -60,6 +61,13 @@ BITRATES: dict[int, str] = {
     2160: "14000k",
 }
 FALLBACK_BITRATE = "800k"
+
+# Each rung encodes to a quality, capped at its bitrate, rather than to a fixed
+# bitrate. A fixed rate gives a talking head or a screen recording as many bits
+# as a football match; capped quality lets simple footage come out smaller and
+# still never lets complex footage exceed the ceiling a player plans around.
+# 23 is the MP4's own setting (worker_ffmpeg_crf), so the two match.
+LADDER_CRF = 23
 
 PLAYLIST_CONTENT_TYPE = "application/vnd.apple.mpegurl"
 SEGMENT_CONTENT_TYPE = "video/mp2t"
@@ -127,6 +135,11 @@ def _ladder_filter(heights: tuple[int, ...], max_fps: int) -> str:
     return ";".join(parts)
 
 
+def _double(rate: str) -> str:
+    """"5000k" -> "10000k": the buffer, two seconds of the ceiling."""
+    return f"{int(rate.removesuffix('k')) * 2}k"
+
+
 def build_ladder_command(
     source_path: Path,
     output_dir: Path,
@@ -159,6 +172,7 @@ def build_ladder_command(
     ]
 
     for index, height in enumerate(heights):
+        ceiling = BITRATES.get(height, FALLBACK_BITRATE)
         command += [
             "-map",
             f"[v{index}out]",
@@ -166,8 +180,16 @@ def build_ladder_command(
             "libx264",
             "-preset",
             preset,
-            f"-b:v:{index}",
-            BITRATES.get(height, FALLBACK_BITRATE),
+            f"-crf:v:{index}",
+            str(LADDER_CRF),
+            # The ceiling, and a two-second buffer to average it over: x264
+            # may burst within the buffer but never past the rate across it.
+            # It also becomes the rung's BANDWIDTH in the master playlist,
+            # which is what a player chooses rungs by.
+            f"-maxrate:v:{index}",
+            ceiling,
+            f"-bufsize:v:{index}",
+            _double(ceiling),
         ]
 
     # The audio is encoded once, as its own rendition every video rung points

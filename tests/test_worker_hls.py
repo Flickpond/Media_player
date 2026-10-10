@@ -298,3 +298,22 @@ def test_a_timeout_is_reported_rather_than_raised_raw():
         builder.build(job_id=uuid4(), source_path=SOURCE, probe=probe())
 
     assert caught.value.user_message == UNPROCESSABLE_VIDEO
+
+
+def test_each_rung_encodes_to_a_quality_capped_at_its_bitrate():
+    """Capped quality, not a fixed rate: simple footage comes out smaller, and
+    complex footage still never passes the ceiling a player plans around --
+    the fixed rate let a "5 Mbps" 1080p rung peak at 10 Mbps on grainy video.
+    """
+    from app.worker.hls import BITRATES, LADDER_CRF
+
+    command = build_ladder_command(SOURCE, Path("/tmp/out"), heights=(360, 1080))
+
+    def option(name):
+        return command[command.index(name) + 1]
+
+    assert "-b:v:0" not in command, "a fixed bitrate would undo the saving"
+    assert option("-crf:v:1") == str(LADDER_CRF)
+    assert option("-maxrate:v:1") == BITRATES[1080] == "5000k"
+    assert option("-bufsize:v:1") == "10000k", "two seconds of the ceiling"
+    assert option("-maxrate:v:0") == BITRATES[360]
