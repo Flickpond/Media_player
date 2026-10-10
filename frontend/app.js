@@ -7,13 +7,19 @@
 //   POST /auth/logout    -> 204, clears it
 //   GET  /auth/me        -> 200 { id, email, role } | 401
 //   POST /upload         -> 202 { job_id }, sets no cookie
-//   GET  /jobs/{id}      -> { id, filename, status, output_url?, hls_url?, error? }
+//   GET  /jobs/{id}      -> { id, filename, status, output_url?, hls_url?,
+//                             hls_status, thumbnail_url?, error? }
 //   GET  /jobs?limit&offset       -> [ ...job shape... ]   (caller's own jobs)
 //   GET  /admin/jobs?limit&offset -> [ ...job shape... ]   (operator only)
 //
 // `hls_url` is sprint 3's adaptive ladder: present when the worker built one,
 // absent on every job uploaded before it and on any job whose ladder failed.
 // The player falls back to `output_url` -- the MP4 -- whenever it is missing.
+//
+// `thumbnail_url` is sprint 4's poster frame (Track C), signed the same way
+// `output_url` is. It is absent until the frame is extracted and on every job
+// from before sprint 4, so the Library draws its gradient placeholder either
+// way and swaps in the frame when the API hands one back.
 //
 // The session cookie is HttpOnly and sent automatically, so nothing here reads
 // or attaches a token -- which is the point: a script cannot steal what it
@@ -1073,6 +1079,29 @@ function makeBadge(status) {
   return badge;
 }
 
+/** The poster frame, when the API has extracted one for this job.
+ *
+ * `thumbnail_url` is a presigned URL, so it can outlive the object it points
+ * at: a frame deleted with its job, or one whose signature simply expired
+ * between page loads, would otherwise leave a broken-image icon sitting on
+ * the card. Removing the element on `error` puts the gradient placeholder
+ * back, which is exactly what a job with no frame shows anyway.
+ */
+function makeThumbImage(job) {
+  const img = document.createElement("img");
+  img.className = "thumb-image";
+  img.setAttribute("src", job.thumbnail_url);
+  // Decorative: the filename sits directly below, so a spoken alt would only
+  // repeat the name of the video the reader is already on.
+  img.setAttribute("alt", "");
+  // A Library page is mostly cards nobody has scrolled to yet, and every
+  // poster is a separate presigned fetch.
+  img.setAttribute("loading", "lazy");
+  img.setAttribute("decoding", "async");
+  img.addEventListener("error", () => img.remove());
+  return img;
+}
+
 function renderLibrary() {
   // Re-rendering throws the cards away, and a card can be holding a player.
   // Both libraries keep listeners on the element they were handed, so they
@@ -1090,6 +1119,9 @@ function renderLibrary() {
 
     const thumb = document.createElement("div");
     thumb.className = "video-thumb";
+    // First, so the player that expands later -- and the badge and play
+    // overlay after it -- paint on top of the frame rather than under it.
+    if (job.thumbnail_url) thumb.appendChild(makeThumbImage(job));
     thumb.appendChild(makeBadge(job.status));
 
     // Playable means the API handed back something to play: the ladder or the

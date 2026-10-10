@@ -917,6 +917,23 @@ video {
   top: 10px;
   left: 10px;
 }
+/* The poster frame, once the API has one for this job. Absolute so it fills
+   the 16:9 slot without moving the badge or the play overlay, and so the
+   gradient placeholder shows through until it loads. */
+.thumb-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* The badge is drawn on top of the frame, and a frame can be any brightness.
+   Over a poster, the soft status tint alone disappears, so it gets a dark
+   plate instead -- the text and the dot still carry the status colour. */
+.video-thumb:has(.thumb-image) .badge {
+  background-color: oklch(19% 0.024 262 / 55%);
+  backdrop-filter: blur(6px);
+}
 .video-thumb.playable {
   cursor: pointer;
 }
