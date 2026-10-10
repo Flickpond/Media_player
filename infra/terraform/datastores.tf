@@ -157,7 +157,9 @@ resource "aws_ssm_parameter" "db_dsn" {
   name        = "/flickpond/${var.environment}/postgres_dsn"
   description = "POSTGRES_DSN for the API, reaper and workers (TLS required)"
   type        = "SecureString"
-  value       = "postgresql://flickpond:${random_password.db.result}@${aws_db_instance.main.address}:${aws_db_instance.main.port}/flickpond?ssl=require"
+  # asyncpg treats `ssl=require` as a PostgreSQL server setting. `sslmode` is
+  # the URI option that makes the client reject a non-TLS connection.
+  value = "postgresql://flickpond:${random_password.db.result}@${aws_db_instance.main.address}:${aws_db_instance.main.port}/flickpond?sslmode=require"
 }
 
 # Not a secret, but where every host looks for its connection settings, so a
