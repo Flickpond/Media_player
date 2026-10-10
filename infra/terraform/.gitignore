@@ -10,3 +10,10 @@ crash.log
 *.plan
 plan.txt
 apply.txt
+
+# Backend settings name the account's state bucket; the example is the template.
+*.backend.hcl
+!example.backend.hcl
+
+# Local overrides, e.g. planning against local state before the bucket exists.
+*_override.tf

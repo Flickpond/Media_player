@@ -70,3 +70,25 @@ variable "site_origins" {
     error_message = "List the site's origins explicitly."
   }
 }
+
+variable "db_instance_class" {
+  description = "RDS PostgreSQL size. Users, jobs and upload sessions -- thousands of rows -- fit the smallest Graviton class."
+  type        = string
+  default     = "db.t4g.micro"
+}
+
+variable "cache_node_type" {
+  description = "ElastiCache node for the RQ queue, which holds job ids, not videos."
+  type        = string
+  default     = "cache.t4g.micro"
+}
+
+variable "protect_data" {
+  description = <<-EOT
+    RDS refuses deletion and keeps a final snapshot. On by default -- the
+    safe way round; staging.tfvars turns it off, since staging is meant to
+    be torn down and rebuilt.
+  EOT
+  type        = bool
+  default     = true
+}
