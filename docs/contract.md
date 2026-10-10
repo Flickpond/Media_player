@@ -45,6 +45,7 @@ code that split is `ObjectStoreError`: `str(exc)` is the operator's half,
 | `hls_status` | Text, NOT NULL, default `pending` | `pending`, `ready` or `unavailable`. **`ready` exactly when `hls_key` exists** — enforced by `ck_jobs_hls_ready_has_key`, so the two are always written together. Always returned by `GET /jobs/{id}` |
 | `width`, `height` | Integer, nullable | The real dimensions of what this job plays: the upload for an upload, the edited output for an edit (a crop or scale changes them). Set once the worker has probed it. Positive when set. **As displayed**: a phone video recorded upright is stored as landscape frames plus a rotation flag, and the probe reports it portrait, the way FFmpeg encodes it |
 | `duration_seconds` | Float, nullable | The real duration, on the same rule as `width` and `height`. Positive when set |
+| `max_fps` | SmallInteger, NOT NULL, default `30` | `30` or `60` (`ck_jobs_max_fps`). The frame-rate ceiling for every encode of this job — MP4, ladder and any edit made from it. `60` only when the uploader ticked *Keep 60 fps*; an edit inherits its source's value. Also on `upload_sessions`, carried to the job on completion. Always returned by `GET /jobs/{id}` |
 | `thumbnail_key` | Text, nullable | Object key of the poster frame (`outputs/<id>/thumbnail.jpg`), once extracted. Set by `mark_done` with the MP4 and cleared by every other transition. Best-effort: a done job may have none. The API returns it as a signed `thumbnail_url` |
 | `error` | Text, nullable | Present only for `failed` jobs. **User-facing** — see the rule above |
 | `created_at` | Timestamp with time zone | Set when the API creates the job |
@@ -79,7 +80,7 @@ issue or accept a token without one.
 ## HTTP API
 
 ```text
-POST /upload
+POST /upload                    // multipart: file, optional max_fps=30|60 (default 30)
   202 { "job_id": "<uuid>" }
   413 { "error": "file too large" }
   415 { "error": "unsupported media type" }                          // declared Content-Type not allowed

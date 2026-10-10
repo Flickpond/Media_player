@@ -648,6 +648,28 @@ main {
 }
 /* --- an unfinished upload -----------------------------------------------------
    Sits above the picker, because choosing that file again is what finishes it. */
+/* inline-flex: only the words toggle it, not a click anywhere on the row. */
+.fps-choice {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.fps-choice input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+.fps-choice-note {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
 .resume-prompt {
   display: flex;
   align-items: center;

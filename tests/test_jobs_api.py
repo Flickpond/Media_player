@@ -74,6 +74,7 @@ def make_job(
         source_key="uploads/demo.mp4",
         output_key=output_key,
         error=error,
+        max_fps=30,
         hls_status=(
             HlsStatus.PENDING
             if status in (JobStatus.QUEUED, JobStatus.PROCESSING)
@@ -114,6 +115,7 @@ async def test_get_queued_job_omits_internal_and_empty_fields(
         "filename": "demo.mp4",
         "status": "queued",
         "hls_status": "pending",
+        "max_fps": 30,
     }
 
 

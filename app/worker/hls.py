@@ -22,13 +22,30 @@ from pathlib import Path, PurePosixPath
 from uuid import UUID
 
 from app.worker.probe import SourceProbe
-from app.worker.storage import UNPROCESSABLE_VIDEO, ObjectStore, ObjectStoreError
+from app.worker.storage import (
+    DEFAULT_MAX_FPS,
+    UNPROCESSABLE_VIDEO,
+    ObjectStore,
+    ObjectStoreError,
+    fps_cap_filter,
+)
 
 logger = logging.getLogger("app.worker.hls")
 
 # The rungs we offer, shortest first. A source is never given a rung taller
 # than itself.
 LADDER_HEIGHTS: tuple[int, ...] = (360, 480, 720, 1080, 1440, 2160)
+
+# 480p sits so close to 360p and 720p that a player gains almost nothing from
+# it once either neighbour exists, and every rung is a full encode. It stays
+# only as a video's top rung, so a 480p upload still plays at its own size.
+ONLY_AS_TOP_RUNG: frozenset[int] = frozenset({480})
+
+# Lower rungs are scaled down from this rendition rather than from the source:
+# taking 720p and 360p from a 1080p frame is a fraction of the work of taking
+# them from a 4K one, and no visible difference at those sizes.
+CASCADE_FROM = 1080
+
 
 # Video bitrate per rung. Not a formula: these are the conventional ladder
 # figures for H.264 at these heights, and a formula fitted to a handful of
@@ -59,7 +76,10 @@ def variants_for(height: int, *, max_height: int = 2160) -> tuple[int, ...]:
     ladder at all.
     """
     rungs = {rung for rung in LADDER_HEIGHTS if rung <= min(height, max_height)}
-    return tuple(sorted(rungs)) if rungs else (height,)
+    if not rungs:
+        return (height,)
+    top = max(rungs)
+    return tuple(sorted(r for r in rungs if r == top or r not in ONLY_AS_TOP_RUNG))
 
 
 def content_type_for(name: str) -> str:
@@ -72,6 +92,40 @@ def content_type_for(name: str) -> str:
     return PLAYLIST_CONTENT_TYPE if name.endswith(".m3u8") else SEGMENT_CONTENT_TYPE
 
 
+AUDIO_GROUP = "audio"
+
+
+def _ladder_filter(heights: tuple[int, ...], max_fps: int) -> str:
+    """The filter graph: cap the frame rate (see `fps_cap_filter`), then
+    scale every rung.
+
+    Rungs at or above `CASCADE_FROM` are scaled from the source; the ones
+    below it from the `CASCADE_FROM` rendition, when the ladder has one.
+    Output labels follow `heights`' order -- `[v0out]` is the shortest rung --
+    because that is the order the maps and `-var_stream_map` use.
+    """
+    fps = fps_cap_filter(max_fps)
+    index = {height: i for i, height in enumerate(heights)}
+    anchor = CASCADE_FROM if CASCADE_FROM in index else None
+    from_source = [h for h in heights if anchor is None or h >= anchor]
+    from_anchor = [h for h in heights if anchor is not None and h < anchor]
+
+    parts = [
+        f"[0:v]{fps},split={len(from_source)}" + "".join(f"[s{h}]" for h in from_source)
+    ]
+    for height in from_source:
+        if height == anchor and from_anchor:
+            branches = [f"[v{index[height]}out]"] + [f"[a{h}]" for h in from_anchor]
+            parts.append(
+                f"[s{height}]scale=-2:{height},split={len(branches)}" + "".join(branches)
+            )
+        else:
+            parts.append(f"[s{height}]scale=-2:{height}[v{index[height]}out]")
+    for height in from_anchor:
+        parts.append(f"[a{height}]scale=-2:{height}[v{index[height]}out]")
+    return ";".join(parts)
+
+
 def build_ladder_command(
     source_path: Path,
     output_dir: Path,
@@ -79,22 +133,18 @@ def build_ladder_command(
     heights: tuple[int, ...],
     ffmpeg_binary: str = "ffmpeg",
     preset: str = "veryfast",
+    max_fps: int = DEFAULT_MAX_FPS,
 ) -> list[str]:
     """One invocation producing every rendition and the master playlist.
 
     Built from `heights` rather than hardcoding three of everything: the
-    `split` count, the per-rendition maps and `-var_stream_map` all have to
+    `split` counts, the per-rendition maps and `-var_stream_map` all have to
     agree, and a mismatch between them is an FFmpeg error rather than a
     quietly wrong output -- which is the good case, and the reason this
     function is what the tests cover.
     """
     count = len(heights)
-
-    labels = "".join(f"[v{index}]" for index in range(count))
-    scales = ";".join(
-        f"[v{index}]scale=-2:{height}[v{index}out]" for index, height in enumerate(heights)
-    )
-    filter_complex = f"[0:v]split={count}{labels};{scales}"
+    filter_complex = _ladder_filter(heights, max_fps)
 
     command = [
         ffmpeg_binary,
@@ -119,17 +169,21 @@ def build_ladder_command(
             BITRATES.get(height, FALLBACK_BITRATE),
         ]
 
+    # The audio is encoded once, as its own rendition every video rung points
+    # at (an HLS audio group), instead of once per rung -- the same soundtrack
+    # six times was six AAC encodes and six copies in storage. It lands in
+    # v{count}/, the next index after the video rungs.
+    #
     # `a:0?` rather than `a:0`: the trailing question mark makes the mapping
     # optional, so a source with no audio track does not fail here. It fails
     # a moment later in `-var_stream_map`, which names an audio stream that
     # does not exist -- deliberately left as a ladder failure rather than
     # special-cased, because the MP4 fallback already covers it and guessing
     # at a silent audio track would be worse.
-    for _ in heights:
-        command += ["-map", "a:0?"]
-    command += ["-c:a", "aac", "-b:a", "128k"]
+    command += ["-map", "a:0?", "-c:a", "aac", "-b:a", "128k"]
 
-    var_stream_map = " ".join(f"v:{index},a:{index}" for index in range(count))
+    video = " ".join(f"v:{index},agroup:{AUDIO_GROUP}" for index in range(count))
+    var_stream_map = f"{video} a:0,agroup:{AUDIO_GROUP}"
     command += [
         "-f",
         "hls",
@@ -179,13 +233,22 @@ class HlsLadderBuilder:
     def prefix_for(self, job_id: UUID) -> str:
         return f"{self._output_prefix}/{job_id}/hls"
 
-    def run(self, *, job_id: UUID, source_key: str, probe: SourceProbe) -> str:
+    def run(
+        self,
+        *,
+        job_id: UUID,
+        source_key: str,
+        probe: SourceProbe,
+        max_fps: int = DEFAULT_MAX_FPS,
+    ) -> str:
         """Download `source_key`, build its ladder, return the master's key."""
         temp_dir = Path(tempfile.mkdtemp(prefix="flickpond-ladder-src-"))
         try:
             source_path = temp_dir / "source"
             self._store.download_file(key=source_key, destination=str(source_path))
-            return self.build(job_id=job_id, source_path=source_path, probe=probe)
+            return self.build(
+                job_id=job_id, source_path=source_path, probe=probe, max_fps=max_fps
+            )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -193,7 +256,14 @@ class HlsLadderBuilder:
         """Remove a ladder nobody will record -- see `build_ladder_async`."""
         self._store.delete_prefix(self.prefix_for(job_id) + "/")
 
-    def build(self, *, job_id: UUID, source_path: Path, probe: SourceProbe) -> str:
+    def build(
+        self,
+        *,
+        job_id: UUID,
+        source_path: Path,
+        probe: SourceProbe,
+        max_fps: int = DEFAULT_MAX_FPS,
+    ) -> str:
         """Build and upload the ladder, returning the master playlist's key."""
         heights = variants_for(probe.height, max_height=self._max_height)
         logger.info(
@@ -207,8 +277,9 @@ class HlsLadderBuilder:
         work_dir = Path(tempfile.mkdtemp(prefix="flickpond-hls-"))
         try:
             # FFmpeg's %v expands to the variant index but does not create the
-            # directories it expands into.
-            for index in range(len(heights)):
+            # directories it expands into. One more than the rungs: the shared
+            # audio rendition is a variant of its own.
+            for index in range(len(heights) + 1):
                 (work_dir / f"v{index}").mkdir(parents=True, exist_ok=True)
 
             command = build_ladder_command(
@@ -217,6 +288,7 @@ class HlsLadderBuilder:
                 heights=heights,
                 ffmpeg_binary=self._ffmpeg_binary,
                 preset=self._preset,
+                max_fps=max_fps,
             )
             try:
                 result = self._runner(

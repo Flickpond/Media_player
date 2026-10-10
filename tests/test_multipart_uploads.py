@@ -267,3 +267,28 @@ async def test_expired_upload_cannot_resume_but_can_abort(setup):
 
 def test_part_count_rounds_up_without_float_arithmetic():
     assert UploadSession(size=PART_SIZE + 1, part_size=PART_SIZE).part_count == 2
+
+
+# --- keeping 60 fps is the uploader's choice ---------------------------------
+
+
+async def start_with(s, **extra):
+    return await s.client.post(
+        "/uploads",
+        json={"filename": "clip.mp4", "size": len(MP4), "content_type": "video/mp4", **extra},
+    )
+
+
+async def test_a_direct_upload_is_capped_at_30_fps_unless_asked(setup):
+    assert (await start_with(setup)).status_code == 201
+    assert next(iter(setup.rows.values())).max_fps == 30
+
+
+async def test_a_direct_upload_can_keep_60_fps(setup):
+    assert (await start_with(setup, max_fps=60)).status_code == 201
+    assert next(iter(setup.rows.values())).max_fps == 60
+
+
+async def test_a_direct_upload_refuses_any_other_frame_rate(setup):
+    assert (await start_with(setup, max_fps=45)).status_code == 422
+    assert setup.rows == {}

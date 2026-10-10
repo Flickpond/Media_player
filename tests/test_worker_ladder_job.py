@@ -73,7 +73,7 @@ class FakeLadderStep:
         self.runs: list[tuple[UUID, str, object]] = []
         self.discarded: list[UUID] = []
 
-    def run(self, *, job_id, source_key, probe):
+    def run(self, *, job_id, source_key, probe, max_fps=30):
         self.runs.append((job_id, source_key, probe))
         if self.on_run is not None:
             self.on_run()
@@ -249,7 +249,7 @@ class _Step:
     def __init__(self, result):
         self.result = result
 
-    def run(self, *, job_id, source_key):
+    def run(self, *, job_id, source_key, max_fps=30):
         return self.result
 
 
@@ -376,7 +376,7 @@ def test_the_builder_downloads_its_input_and_cleans_its_temp_dir(monkeypatch):
     builder = HlsLadderBuilder(store, output_prefix="outputs")
     seen: dict = {}
 
-    def fake_build(*, job_id, source_path, probe):
+    def fake_build(*, job_id, source_path, probe, max_fps=30):
         seen["path"] = source_path
         assert source_path.read_bytes() == b"src"
         return "outputs/x/hls/master.m3u8"

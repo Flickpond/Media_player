@@ -17,6 +17,10 @@ class StartUpload(UploadModel):
     filename: str = Field(min_length=1, max_length=255)
     size: Annotated[StrictInt, Field(gt=0, le=PART_SIZE * MAX_PARTS)]
     content_type: str = Field(min_length=1, max_length=128)
+    # 30 caps every rendition at 30 fps, the default and the cheap path. 60
+    # keeps a 60 fps phone video at 60 -- twice the encode work, so it is
+    # the uploader's explicit choice, never a default.
+    max_fps: Literal[30, 60] = 30
 
 
 PartNumber = Annotated[StrictInt, Field(ge=1, le=MAX_PARTS)]

@@ -232,6 +232,8 @@ describe("upload", () => {
       filename: "holiday.mp4",
       size: 4,
       content_type: "video/mp4",
+      // 30 unless the reader ticks "Keep 60 fps".
+      max_fps: 30,
     });
 
     const [signUrl, signInit] = fetchMock.mock.calls[1];
@@ -356,6 +358,28 @@ describe("upload", () => {
     expect(el.jobBadge.textContent).toBe("Queued");
   });
 
+  it("asks to keep 60 fps when the box is ticked", async () => {
+    const el = await loadApp();
+    document.getElementById("keep-60fps").checked = true;
+    mockDirectUpload();
+
+    await uploadFile(el);
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).max_fps).toBe(60);
+  });
+
+  it("sends the frame-rate choice through the one-shot POST too", async () => {
+    const el = await loadApp();
+    document.getElementById("keep-60fps").checked = true;
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not found" }, false, 404));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }));
+    fetchMock.mockResolvedValue(jsonResponse({ id: "job-1", status: "queued" }));
+
+    await uploadFile(el);
+
+    expect(fetchMock.mock.calls[1][1].body.get("max_fps")).toBe("60");
+  });
+
   it("falls back to the one-shot POST when the server has no direct upload", async () => {
     const el = await loadApp();
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not found" }, false, 404));
@@ -367,6 +391,7 @@ describe("upload", () => {
     const [url, init] = fetchMock.mock.calls[1];
     expect(url).toBe("/api/upload");
     expect(init.body.get("file")).toBeInstanceOf(File);
+    expect(init.body.get("max_fps")).toBe("30");
     expect(el.jobBadge.textContent).toBe("Queued");
   });
 

@@ -3,7 +3,7 @@ from pathlib import PurePosixPath
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -66,13 +66,21 @@ def safe_filename(raw: str | None) -> str:
     return name[:MAX_FILENAME_LENGTH] or DEFAULT_FILENAME
 
 
+ALLOWED_MAX_FPS = frozenset({30, 60})
+
 @router.post("/upload", status_code=202)
 async def upload_video(
     file: Annotated[UploadFile, File(...)],
     user: CurrentUser,
     storage: StorageDependency,
     session: SessionDependency,
+    max_fps: Annotated[int, Form()] = 30,
 ):
+    # A form field, so it arrives as text and the Literal the JSON endpoints
+    # use would not coerce it; the same two values, checked by hand.
+    if max_fps not in ALLOWED_MAX_FPS:
+        return JSONResponse(status_code=422, content={"error": "max_fps must be 30 or 60"})
+
     # Strip any `; charset=...` parameter before matching: the type is what
     # decides whether this is storable, the parameters are not.
     content_type = (file.content_type or "").split(";")[0].strip().lower()
@@ -128,6 +136,7 @@ async def upload_video(
         owner_id=user.id,
         filename=filename,
         source_key=source_key,
+        max_fps=max_fps,
     )
 
     # Enqueue last, and only after the row exists: a worker can pick the job up

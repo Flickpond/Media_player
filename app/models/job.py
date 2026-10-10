@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     Text,
     func,
     text,
@@ -80,6 +81,7 @@ class Job(Base):
             "AND (duration_seconds IS NULL OR duration_seconds > 0)",
             name="ck_jobs_media_dimensions_positive",
         ),
+        CheckConstraint("max_fps IN (30, 60)", name="ck_jobs_max_fps"),
         Index("ix_jobs_status", "status"),
         Index("ix_jobs_owner_id", "owner_id"),
         Index("ix_jobs_created_at", "created_at"),
@@ -114,6 +116,12 @@ class Job(Base):
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     thumbnail_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The frame-rate ceiling the uploader chose: 30 unless they asked to keep
+    # 60. Every encode of this job -- MP4, ladder, and any edit made from
+    # it -- reads it from here.
+    max_fps: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=30, server_default=text("30")
+    )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

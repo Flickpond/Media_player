@@ -98,6 +98,7 @@ async def _to_response(job: Job, signer: OutputUrlSigner) -> JobResponse:
         height=job.height,
         duration_seconds=job.duration_seconds,
         thumbnail_url=thumbnail_url,
+        max_fps=job.max_fps,
         edit_options=_edit_options(job),
         error=error,
     )
@@ -229,6 +230,7 @@ async def edit_job_by_id(
         filename=f"{stem}-edited.{extension}",
         source_key=source.output_key,
         operations=request.stored_operations(),
+        max_fps=source.max_fps,
     )
 
     try:

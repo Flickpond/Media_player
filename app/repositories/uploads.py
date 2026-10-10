@@ -28,6 +28,7 @@ async def create_upload_job(session, upload):
             owner_id=upload.owner_id,
             filename=upload.filename,
             source_key=upload.source_key,
+            max_fps=upload.max_fps,
             status="queued",
         )
     )

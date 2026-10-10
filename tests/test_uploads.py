@@ -73,10 +73,10 @@ def events(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
     """Ordered log of side effects, so ordering can be asserted, not assumed."""
     log: list[tuple] = []
 
-    async def fake_create_job(_session, *, job_id, owner_id, filename, source_key):
+    async def fake_create_job(_session, *, job_id, owner_id, filename, source_key, max_fps=30):
         log.append(
             ("insert", {"job_id": job_id, "owner_id": owner_id, "filename": filename,
-                        "source_key": source_key})
+                        "source_key": source_key, "max_fps": max_fps})
         )
 
     def fake_enqueue(job_id):
@@ -361,3 +361,33 @@ async def test_an_oversized_upload_enqueues_nothing(storage, events):
     )
 
     assert events == []
+
+
+# --- keeping 60 fps is the uploader's choice ---------------------------------
+
+
+async def test_an_upload_is_capped_at_30_fps_unless_asked(client, storage, events):
+    await client.post("/upload", files={"file": ("holiday.mp4", MP4_HEAD, "video/mp4")})
+
+    assert inserts(events)[0]["max_fps"] == 30
+
+
+async def test_an_uploader_can_keep_60_fps(client, storage, events):
+    await client.post(
+        "/upload",
+        files={"file": ("holiday.mp4", MP4_HEAD, "video/mp4")},
+        data={"max_fps": "60"},
+    )
+
+    assert inserts(events)[0]["max_fps"] == 60
+
+
+async def test_any_other_frame_rate_is_refused_before_storing_anything(client, storage, events):
+    response = await client.post(
+        "/upload",
+        files={"file": ("holiday.mp4", MP4_HEAD, "video/mp4")},
+        data={"max_fps": "45"},
+    )
+
+    assert response.status_code == 422
+    assert storage.uploads == [] and inserts(events) == []

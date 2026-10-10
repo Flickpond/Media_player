@@ -104,6 +104,7 @@ async def start(
         source_key=f"uploads/{job_id}/{filename}",
         size=request.size,
         part_size=PART_SIZE,
+        max_fps=request.max_fps,
         state="open",
         created_at=now,
         expires_at=now + timedelta(hours=24),

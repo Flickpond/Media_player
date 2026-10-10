@@ -24,6 +24,7 @@ def edit_app(test_user, monkeypatch):
     authenticate_as(application, test_user)
 
     source = SimpleNamespace(
+        max_fps=30,
         id=uuid4(),
         owner_id=test_user.id,
         filename="holiday.mov",
@@ -73,6 +74,8 @@ async def test_edit_is_owner_scoped_created_from_the_output_and_enqueued(edit_ap
         filename="holiday-edited.mkv",
         source_key=source.output_key,
         operations=operations,
+        # The edit inherits the source video's frame-rate ceiling.
+        max_fps=30,
     )
     enqueue.assert_called_once_with(created.id)
 
