@@ -205,10 +205,47 @@
             <div class="dropzone-title">Drag and drop your video here</div>
             <div class="dropzone-subtitle">or click to browse your files</div>
             <button type="button" id="browse-button" class="btn-ghost">Choose file</button>
-            <div class="dropzone-hint">MP4, MOV, WebM, MKV, or AVI, up to 100MB.</div>
+            <div id="dropzone-hint" class="dropzone-hint">MP4, MOV, WebM, MKV, or AVI.</div>
+          </div>
+
+          <!-- An unfinished direct upload outlives the page: its session and
+               the parts already in storage have a 24 hour life. A browser
+               cannot reopen a file it was handed before a reload, so the page
+               asks for that one file again. -->
+          <div id="resume-prompt" class="resume-prompt" hidden>
+            <p id="resume-text" class="resume-text"></p>
+            <div class="resume-actions">
+              <button type="button" id="resume-choose" class="btn-ghost">Choose the file</button>
+              <button type="button" id="resume-discard" class="btn-ghost">Discard</button>
+            </div>
           </div>
 
           <p id="status" class="status" hidden></p>
+
+          <!-- The direct upload's own progress, which exists before any job
+               does. The job card's .progress-track below is the indeterminate
+               sweep shown while the worker transcodes; this one is determinate
+               and belongs to the transfer. -->
+          <div id="upload-progress" class="upload-progress" hidden>
+            <div
+              id="upload-progress-track"
+              class="progress-track"
+              role="progressbar"
+              aria-label="Upload progress"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+            >
+              <div id="upload-progress-fill" class="progress-fill"></div>
+            </div>
+            <!-- The bar above is the accessible control; this line is the same
+                 number spelled out, so it does not need announcing twice. -->
+            <div class="upload-progress-line" aria-hidden="true">
+              <span id="upload-progress-percent" class="upload-progress-percent">0%</span>
+              <span id="upload-progress-rate"></span>
+              <span id="upload-progress-eta"></span>
+            </div>
+          </div>
 
           <div id="active-job" class="job-card" hidden>
             <div class="job-card-body">
@@ -390,7 +427,7 @@
                 </div>
               </details>
 
-              <details class="edit-op">
+              <details class="edit-op" id="edit-downscale-section">
                 <summary>
                   <input type="checkbox" id="edit-downscale" />
                   <span class="edit-op-name">Downscale</span>
@@ -408,7 +445,7 @@
                 </div>
               </details>
 
-              <details class="edit-op">
+              <details class="edit-op" id="edit-upscale-section">
                 <summary>
                   <input type="checkbox" id="edit-upscale" />
                   <span class="edit-op-name">Upscale</span>

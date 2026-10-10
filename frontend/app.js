@@ -7,6 +7,12 @@
 //   POST /auth/logout    -> 204, clears it
 //   GET  /auth/me        -> 200 { id, email, role } | 401
 //   POST /upload         -> 202 { job_id }, sets no cookie
+//   POST /uploads                    -> 201 { upload_id, part_size, part_count }
+//   POST /uploads/{id}/parts         -> 200 { urls: { "1": "...", ... } }
+//   GET  /uploads/{id}               -> 200 { parts_done, state, part_size, part_count, job_id? }
+//   POST /uploads/{id}/complete      -> 202 { job_id }
+//   DELETE /uploads/{id}             -> 204
+//   GET  /limits         -> 200 { max_duration_seconds, max_edit_height }
 //   GET  /jobs/{id}      -> { id, filename, status, output_url?, hls_url?,
 //                             hls_status, thumbnail_url?, error? }
 //   GET  /jobs?limit&offset       -> [ ...job shape... ]   (caller's own jobs)
@@ -20,6 +26,11 @@
 // `output_url` is. It is absent until the frame is extracted and on every job
 // from before sprint 4, so the Library draws its gradient placeholder either
 // way and swaps in the frame when the API hands one back.
+//
+// The `/uploads` trio is sprint 4's direct multipart upload (Track B, see
+// docs/b-direct-uploads.md): the browser asks for a presigned URL per 16 MiB
+// part and PUTs the bytes straight to storage, so the API never sees the
+// video. `POST /upload` still exists and is still used as the fallback.
 //
 // The session cookie is HttpOnly and sent automatically, so nothing here reads
 // or attaches a token -- which is the point: a script cannot steal what it
@@ -71,6 +82,11 @@ const el = {
 
   viewUpload: document.getElementById("view-upload"),
   dropzone: document.getElementById("dropzone"),
+  dropzoneHint: document.getElementById("dropzone-hint"),
+  resumePrompt: document.getElementById("resume-prompt"),
+  resumeText: document.getElementById("resume-text"),
+  resumeChoose: document.getElementById("resume-choose"),
+  resumeDiscard: document.getElementById("resume-discard"),
   fileInput: document.getElementById("file-input"),
   browseButton: document.getElementById("browse-button"),
   status: document.getElementById("status"),
@@ -80,6 +96,12 @@ const el = {
   jobEdit: document.getElementById("job-edit"),
   jobDelete: document.getElementById("job-delete"),
   jobProgress: document.getElementById("job-progress"),
+  uploadProgress: document.getElementById("upload-progress"),
+  uploadProgressTrack: document.getElementById("upload-progress-track"),
+  uploadProgressFill: document.getElementById("upload-progress-fill"),
+  uploadProgressPercent: document.getElementById("upload-progress-percent"),
+  uploadProgressRate: document.getElementById("upload-progress-rate"),
+  uploadProgressEta: document.getElementById("upload-progress-eta"),
   player: document.getElementById("player"),
   jobActions: document.getElementById("job-actions"),
   jobRetry: document.getElementById("job-retry"),
@@ -120,8 +142,10 @@ const el = {
   editClip: document.getElementById("edit-clip"),
   editClipMount: document.getElementById("edit-clip-mount"),
   editDownscale: document.getElementById("edit-downscale"),
+  editDownscaleSection: document.getElementById("edit-downscale-section"),
   editDownscaleHeight: document.getElementById("edit-downscale-height"),
   editUpscale: document.getElementById("edit-upscale"),
+  editUpscaleSection: document.getElementById("edit-upscale-section"),
   editUpscaleHeight: document.getElementById("edit-upscale-height"),
   editConvert: document.getElementById("edit-convert"),
   editConvertFormat: document.getElementById("edit-convert-format"),
@@ -167,6 +191,7 @@ function showSignedIn(user) {
   el.auth.hidden = true;
   el.app.hidden = false;
   switchView("upload");
+  renderResumePrompt();
 }
 
 function showSignedOut() {
@@ -358,6 +383,16 @@ function followJob(scope, jobId, handlers) {
     handlers.onJob(job, attempt);
 
     if (job.status === "done") {
+      // A done job whose ladder is still being built is not finished with us.
+      // The MP4 is playable this second and the adaptive version is still
+      // worth waiting for, so the page stays on the job until `hls_status`
+      // settles. That field is the API's answer to "is more coming", and it
+      // is always present -- inferring it from a missing `hls_url` cannot
+      // tell "still coming" from "never coming".
+      if (job.hls_status === "pending") {
+        pollTimers[scope] = setTimeout(() => tick(attempt + 1), POLL_INTERVAL_MS);
+        return;
+      }
       handlers.onDone(job);
       return;
     }
@@ -419,6 +454,21 @@ el.jobRetry.addEventListener("click", () => {
 el.jobChooseDifferent.addEventListener("click", () => el.fileInput.click());
 el.jobDelete.addEventListener("click", deleteActiveJob);
 
+el.resumeChoose.addEventListener("click", () => el.fileInput.click());
+el.resumeDiscard.addEventListener("click", async () => {
+  const record = readPendingUpload();
+  // Forget it first: the local note is what the reader is asking to be rid of,
+  // and it should go even if the request below never lands.
+  clearPendingUpload();
+  renderResumePrompt();
+  if (!record) return;
+  try {
+    await fetch(`${API}/uploads/${record.uploadId}`, { method: "DELETE" });
+  } catch {
+    // The parts are collected when the session expires either way.
+  }
+});
+
 async function deleteActiveJob() {
   if (!activeJobId) return;
   const filename = el.jobFilename.textContent || "this video";
@@ -452,15 +502,499 @@ async function deleteActiveJob() {
   }
 }
 
+// --- what the API will and will not take -----------------------------------
+
+let limits = null;
+let limitsPromise = null;
+
+/** The API's limits, fetched once per page load.
+ *
+ * `/limits` is public and changes only when the deployment does. Null means
+ * the server has no such route -- anything from before sprint 4 -- and the
+ * page then says nothing about a limit it cannot know, rather than inventing
+ * one.
+ */
+function loadLimits() {
+  limitsPromise ??= fetch(`${API}/limits`)
+    .then((res) => (res.ok ? res.json() : null))
+    .catch(() => null)
+    .then((value) => {
+      limits = value;
+      return value;
+    });
+  return limitsPromise;
+}
+
+/** A limit the way a person would say it: "5 minutes", "90 seconds". */
+function describeLimit(seconds) {
+  if (seconds % 60 === 0) {
+    const minutes = seconds / 60;
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  return `${seconds} seconds`;
+}
+
+/** A size limit the way a person would say it: "2 GB", not "2.0 GB". */
+function describeSize(bytes) {
+  const gib = 1024 ** 3;
+  return bytes % gib === 0 ? `${bytes / gib} GB` : formatBytes(bytes);
+}
+
+/** Say the duration limit next to the picker, when there is one.
+ *
+ * The size figure that used to live here is gone with the limit it described:
+ * a file the browser can type now goes straight to storage in parts, so
+ * quoting 100 MB would be wrong for almost every upload. A file it cannot type
+ * still goes through the one-shot endpoint, which still stops at 100 MB, and
+ * `sendWholeFile` is where that is said. */
+function applyLimitHint() {
+  const bounds = [];
+  if (limits?.max_duration_seconds > 0) bounds.push(describeLimit(limits.max_duration_seconds));
+  if (limits?.max_upload_bytes > 0) bounds.push(describeSize(limits.max_upload_bytes));
+  if (bounds.length > 0) {
+    el.dropzoneHint.textContent = `MP4, MOV, WebM, MKV, or AVI, up to ${bounds.join(" and ")}.`;
+  }
+}
+
+/** How long a file is, read in the browser before anything is uploaded.
+ *
+ * The worker measures the real duration with ffprobe and refuses an over-long
+ * video there, but that is minutes late for a large file. This is the courtesy
+ * that says so first. `null` means it could not be read -- a browser with no
+ * object URLs, a container it cannot demux, metadata that never arrives -- and
+ * the upload proceeds, so a file the browser cannot read is never blocked. */
+function readDurationSeconds(file) {
+  if (typeof URL.createObjectURL !== "function") return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const probe = document.createElement("video");
+
+    const finish = (seconds) => {
+      URL.revokeObjectURL(url);
+      resolve(Number.isFinite(seconds) && seconds > 0 ? seconds : null);
+    };
+
+    probe.preload = "metadata";
+    probe.addEventListener("loadedmetadata", () => finish(probe.duration));
+    probe.addEventListener("error", () => finish(null));
+    probe.src = url;
+  });
+}
+
+/** Whether this file can take the direct path at all.
+ *
+ * The direct path has to *declare* a content type and the API stores only the
+ * ones on its list, so a file the browser could not type -- an .mkv on most
+ * Linux desktops, an .avi on Windows -- has nothing to declare. Those still go
+ * through the legacy one-shot POST, which identifies the container from the
+ * bytes instead of trusting the declaration. */
+function canUploadDirectly(file) {
+  return Boolean(file.type) && ALLOWED_CONTENT_TYPES.has(file.type);
+}
+
+/** An error that carries its status, so the caller can tell "your session
+ *  ended" from "the upload failed" without matching on message text. */
+function httpError(status, data) {
+  const error = new Error(data?.error ?? `HTTP ${status}`);
+  error.status = status;
+  return error;
+}
+
+// --- the readout -----------------------------------------------------------
+
+// A readout that averaged the whole transfer would keep reporting the slow
+// start long after the connection settled. Eight seconds is short enough to
+// follow a change and long enough that one slow part does not swing it.
+const RATE_WINDOW_MS = 8000;
+
+function makeRateMeter(now = () => Date.now()) {
+  const samples = [];
+
+  return {
+    /** Record that `bytes` have landed. */
+    mark(bytes) {
+      const at = now();
+      samples.push({ at, bytes });
+      while (samples.length > 2 && at - samples[0].at > RATE_WINDOW_MS) samples.shift();
+    },
+    /** Bytes per second across the window, or null until two points exist. */
+    rate() {
+      if (samples.length < 2) return null;
+      const first = samples[0];
+      const last = samples[samples.length - 1];
+      const seconds = (last.at - first.at) / 1000;
+      if (seconds <= 0) return null;
+      return (last.bytes - first.bytes) / seconds;
+    },
+  };
+}
+
+const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"];
+
+function formatBytes(bytes) {
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(unit === 0 || value >= 10 ? 0 : 1)} ${BYTE_UNITS[unit]}`;
+}
+
+function formatEta(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "";
+  if (seconds < 1) return "almost done";
+  if (seconds < 60) return `about ${Math.round(seconds)}s left`;
+  return `about ${Math.round(seconds / 60)} min left`;
+}
+
+function showUploadProgress(sent, total, meter) {
+  const percent = total > 0 ? Math.min(100, Math.round((sent / total) * 100)) : 0;
+  el.uploadProgress.hidden = false;
+  el.uploadProgressFill.style.width = `${percent}%`;
+  el.uploadProgressTrack.setAttribute("aria-valuenow", String(percent));
+  el.uploadProgressPercent.textContent = `${percent}%`;
+
+  // The rate needs two measurements to exist, so the first part shows a
+  // percentage and nothing else rather than a made-up speed.
+  const rate = meter.rate();
+  el.uploadProgressRate.textContent = rate === null ? "" : `${formatBytes(rate)}/s`;
+  el.uploadProgressEta.textContent = rate === null ? "" : formatEta((total - sent) / rate);
+}
+
+function clearUploadProgress() {
+  el.uploadProgress.hidden = true;
+  el.uploadProgressFill.style.width = "0%";
+  el.uploadProgressTrack.setAttribute("aria-valuenow", "0");
+  el.uploadProgressPercent.textContent = "0%";
+  el.uploadProgressRate.textContent = "";
+  el.uploadProgressEta.textContent = "";
+}
+
+// --- the direct path -------------------------------------------------------
+
+/** Open a multipart session, or null when this API has no usable `/uploads`.
+ *
+ * Two things mean that, and they mean the same thing to the caller: a server
+ * from before sprint 4 answers 404, and a body with no session in it is no
+ * more usable than no route at all. Either way the upload falls back to the
+ * one-shot POST rather than half-starting a transfer it cannot finish. */
+async function openUploadSession(file) {
+  const res = await fetch(`${API}/uploads`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename: file.name, size: file.size, content_type: file.type }),
+  });
+  if (res.status === 404) return null;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw httpError(res.status, data);
+  if (!data.upload_id || !data.part_size || !data.part_count) return null;
+  return data; // { upload_id, part_size, part_count }
+}
+
+/** Presigned URLs are short-lived, so each part is signed as it is about to
+ *  be sent rather than all of them up front. */
+async function signPart(uploadId, number) {
+  const res = await fetch(`${API}/uploads/${uploadId}/parts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ part_numbers: [number] }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw httpError(res.status, data);
+  const url = data.urls?.[String(number)];
+  if (!url) throw new Error(`the API did not sign part ${number}`);
+  return url;
+}
+
+// Parts go one at a time, so without a retry one dropped connection on part
+// 40 of 64 ends the whole upload -- resumable, but only after the reader picks
+// the file again. Three tries, a second then two apart, cover the blip. Only
+// failures that can come out differently next time are retried: the network
+// (fetch rejects), a 5xx, 408 and 429. A 403 is an expired or refused URL, and
+// the same request would be refused the same way.
+const PART_ATTEMPTS = 3;
+const PART_RETRY_DELAY_MS = 1000;
+
+function isWorthRetrying(status) {
+  return status >= 500 || status === 408 || status === 429;
+}
+
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function putPartWithRetries(url, blob) {
+  for (let attempt = 1; ; attempt += 1) {
+    const last = attempt === PART_ATTEMPTS;
+    try {
+      const res = await fetch(url, { method: "PUT", body: blob, credentials: "omit" });
+      if (res.ok || last || !isWorthRetrying(res.status)) return res;
+    } catch (err) {
+      if (last) throw new Error(`the connection dropped while sending a part (${err.message})`);
+    }
+    await pause(PART_RETRY_DELAY_MS * attempt);
+  }
+}
+
+/** PUT one part straight to storage and hand back its ETag.
+ *
+ * The API cookie must not follow this request: storage is a different service
+ * on a different origin and has no use for it. The ETag only comes back at all
+ * if the bucket's CORS rules list it under exposed headers, and without that
+ * every part succeeds and completion fails for a reason that looks nothing
+ * like the cause -- so it is worth naming. */
+async function putPart(url, blob) {
+  const res = await putPartWithRetries(url, blob);
+  if (!res.ok) throw new Error(`storage rejected a part (HTTP ${res.status})`);
+  const etag = res.headers.get("ETag");
+  if (!etag) {
+    throw new Error("storage did not expose the part's ETag (the bucket's CORS must list it)");
+  }
+  return etag;
+}
+
+async function finishUploadSession(uploadId, parts) {
+  const res = await fetch(`${API}/uploads/${uploadId}/complete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ parts }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw httpError(res.status, data);
+  return data.job_id;
+}
+
+/** Send every part, then ask the API to assemble them into a job.
+ *
+ * One part at a time, in order. Parts may legally go up in any order and in
+ * parallel, which would finish a large upload sooner; it would also make the
+ * rate readout and the retry story harder to reason about, and the transfer is
+ * not the part of this pipeline that is short of time. */
+async function runDirectUpload(session, file) {
+  const { upload_id: uploadId, part_size: partSize, part_count: partCount } = session;
+  const meter = makeRateMeter();
+  const parts = [];
+  let sent = 0;
+
+  showUploadProgress(0, file.size, meter);
+
+  for (let n = 1; n <= partCount; n += 1) {
+    const start = (n - 1) * partSize;
+    const blob = file.slice(start, Math.min(start + partSize, file.size));
+    parts.push({ n, etag: await putPart(await signPart(uploadId, n), blob) });
+    sent += blob.size;
+    meter.mark(sent);
+    showUploadProgress(sent, file.size, meter);
+  }
+
+  const jobId = await finishUploadSession(uploadId, parts);
+  // The session has become a job; there is nothing left to come back to.
+  clearPendingUpload();
+  return jobId;
+}
+
+/** One opaque POST. Still the only path that can take a file whose type the
+ *  browser could not name. */
+async function sendWholeFile(file) {
+  if (file.size > MAX_FILE_SIZE_BYTES) {
+    throw new Error(
+      `this server has no direct upload, and its one-shot upload stops at ${formatBytes(MAX_FILE_SIZE_BYTES)}`,
+    );
+  }
+  const body = new FormData();
+  body.append("file", file);
+  const res = await fetch(`${API}/upload`, { method: "POST", body });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw httpError(res.status, data);
+  return data.job_id;
+}
+
+// --- resuming an interrupted upload ----------------------------------------
+
+// The pointer to an unfinished session, kept between page loads. The session
+// and the parts already in storage live on the server for 24 hours; this is
+// only how the next page load finds them again.
+const PENDING_UPLOAD_KEY = "flickpond.pending-upload";
+
+/** localStorage throws when it is full, and in a browser that has been told to
+ *  keep nothing. None of that should fail an upload, so every read and write
+ *  here shrugs and carries on. */
+function readPendingUpload() {
+  try {
+    return JSON.parse(localStorage.getItem(PENDING_UPLOAD_KEY));
+  } catch {
+    return null;
+  }
+}
+
+function savePendingUpload(record) {
+  try {
+    localStorage.setItem(PENDING_UPLOAD_KEY, JSON.stringify(record));
+  } catch {
+    // The upload still works; it just cannot be picked up again later.
+  }
+}
+
+function clearPendingUpload() {
+  try {
+    localStorage.removeItem(PENDING_UPLOAD_KEY);
+  } catch {
+    // Same.
+  }
+}
+
+/** Whether the file just picked is the one this record was made from.
+ *
+ * The server cannot prove it either: a name, a length and a modification time
+ * are all a browser hands back for a file it has already let go of. This is a
+ * courtesy check that the reader picked the same file, not a promise about
+ * what is inside it. */
+function isSameFile(record, file) {
+  return (
+    record.filename === file.name &&
+    record.size === file.size &&
+    record.lastModified === file.lastModified
+  );
+}
+
+/** How many bytes part `n` of a `total`-byte file holds. */
+function partBytes(n, partSize, total) {
+  return Math.min(partSize, total - (n - 1) * partSize);
+}
+
+/** The unfinished session this file can complete, if there is one.
+ *
+ * Three things have to line up, or this is an ordinary upload: the same
+ * account, the same file, and -- checked by asking, a moment later -- a
+ * session the server still has. */
+function resumableRecordFor(file) {
+  const record = readPendingUpload();
+  if (!record || !currentUser || record.userId !== currentUser.id) return null;
+  return isSameFile(record, file) ? record : null;
+}
+
+/** Offer to finish an upload this browser did not get to the end of.
+ *
+ * Never offered to a different account: the record names whoever started it,
+ * and the server would refuse it to anyone else anyway. */
+function renderResumePrompt() {
+  const record = readPendingUpload();
+  const usable = Boolean(record && currentUser && record.userId === currentUser.id);
+  el.resumePrompt.hidden = !usable;
+  if (usable) {
+    el.resumeText.textContent =
+      `Unfinished upload: ${record.filename}. Choose the same file to pick up where it stopped.`;
+  }
+}
+
+/** What the server already holds of a session. Null when it holds nothing:
+ *  expired, cleaned up, or belonging to someone else. */
+async function getUploadProgress(uploadId) {
+  const res = await fetch(`${API}/uploads/${uploadId}`);
+  if (!res.ok) return null;
+  return await res.json().catch(() => null);
+}
+
+/** Open a session for this file and note it down, so a reload can find it. */
+async function startDirectUpload(file) {
+  const session = await openUploadSession(file);
+  if (!session) return null;
+  savePendingUpload({
+    uploadId: session.upload_id,
+    partSize: session.part_size,
+    partCount: session.part_count,
+    userId: currentUser?.id ?? null,
+    filename: file.name,
+    size: file.size,
+    lastModified: file.lastModified,
+    startedAt: Date.now(),
+  });
+  return session;
+}
+
+/** Finish a session this browser started before the page was reloaded.
+ *
+ * The server is the authority on what is already in storage -- the page's own
+ * memory of it went with the reload -- so this asks first and then sends only
+ * the parts that are missing. A session the server has forgotten, or one that
+ * has been cancelled, is not an error worth showing: the file is simply
+ * uploaded from the beginning. */
+async function resumeDirectUpload(record, file) {
+  const progress = await getUploadProgress(record.uploadId);
+
+  if (progress === null || progress.state === "aborting" || progress.state === "aborted") {
+    clearPendingUpload();
+    const session = await startDirectUpload(file);
+    return session ? runDirectUpload(session, file) : sendWholeFile(file);
+  }
+
+  // The server got all the way to a job. There is nothing left to send.
+  if (progress.state === "completed") {
+    clearPendingUpload();
+    return progress.job_id;
+  }
+
+  const done = new Map(progress.parts_done.map((part) => [part.n, part.etag]));
+  const meter = makeRateMeter();
+  const parts = [];
+  let sent = 0;
+  for (const n of done.keys()) sent += partBytes(n, progress.part_size, file.size);
+
+  showUploadProgress(sent, file.size, meter);
+
+  for (let n = 1; n <= progress.part_count; n += 1) {
+    const held = done.get(n);
+    if (held !== undefined) {
+      parts.push({ n, etag: held });
+      continue;
+    }
+    const start = (n - 1) * progress.part_size;
+    const blob = file.slice(start, Math.min(start + progress.part_size, file.size));
+    parts.push({ n, etag: await putPart(await signPart(record.uploadId, n), blob) });
+    sent += blob.size;
+    meter.mark(sent);
+    showUploadProgress(sent, file.size, meter);
+  }
+
+  const jobId = await finishUploadSession(record.uploadId, parts);
+  clearPendingUpload();
+  return jobId;
+}
+
+async function sendVideo(file) {
+  if (canUploadDirectly(file)) {
+    // A file this browser was already part way through goes back to its own
+    // session rather than starting a second one.
+    const record = resumableRecordFor(file);
+    if (record) return resumeDirectUpload(record, file);
+
+    const session = await startDirectUpload(file);
+    if (session) return runDirectUpload(session, file);
+  }
+  return sendWholeFile(file);
+}
+
 async function handleFile(file) {
   if (uploading) return; // A rapid second drop cannot double-post the first.
 
+  clearUploadProgress();
+
   if (file.type && !ALLOWED_CONTENT_TYPES.has(file.type)) {
-    setStatus(`"${file.type || "unknown type"}" is not a video format we handle.`);
+    setStatus(`"${file.type}" is not a video format we handle.`);
     return;
   }
-  if (file.size > MAX_FILE_SIZE_BYTES) {
-    setStatus("That file is larger than the 100MB limit.");
+  // The 100 MB limit belongs to the legacy one-shot endpoint. The direct path
+  // streams parts to storage instead and its own bound is the API's part count,
+  // so refusing a large file here would refuse one the API accepts.
+  if (!canUploadDirectly(file) && file.size > MAX_FILE_SIZE_BYTES) {
+    setStatus(`That file is larger than the ${formatBytes(MAX_FILE_SIZE_BYTES)} limit.`);
+    return;
+  }
+  // The direct path's own cap, from /limits: refused here before a single part
+  // goes, instead of by a 413 once the session is asked for.
+  const maxUpload = limits?.max_upload_bytes ?? 0;
+  if (canUploadDirectly(file) && maxUpload > 0 && file.size > maxUpload) {
+    setStatus(`That file is larger than the ${describeSize(maxUpload)} limit.`);
     return;
   }
 
@@ -471,36 +1005,57 @@ async function handleFile(file) {
   lastFile = file;
   setBusy(true);
   setStatus("Uploading...");
+  // The prompt is about a file the reader is no longer looking at.
+  el.resumePrompt.hidden = true;
 
   try {
-    const body = new FormData();
-    body.append("file", file);
+    // The worker refuses an over-long video once it has probed it, which is
+    // minutes late for a large one. Reading the length here is what makes the
+    // refusal instant, and "could not read it" falls through to the worker
+    // rather than blocking a file the browser does not understand.
+    const seconds = await readDurationSeconds(file);
+    const durationLimit = limits?.max_duration_seconds ?? 0;
+    if (durationLimit > 0 && seconds !== null && seconds > durationLimit) {
+      setStatus(
+        `That video is longer than ${describeLimit(durationLimit)} — the worker would refuse it. Trim it and try again.`,
+      );
+      setBusy(false);
+      return;
+    }
 
-    const res = await fetch(`${API}/upload`, { method: "POST", body });
-    const data = await res.json().catch(() => ({}));
+    const jobId = await sendVideo(file);
 
-    if (res.status === 401) {
+    clearUploadProgress();
+    setStatus("Received, waiting for processing...");
+    el.activeJob.hidden = false;
+    el.jobFilename.textContent = file.name;
+    setBadge("queued");
+    activeJobId = jobId;
+    setBusy(false);
+    renderResumePrompt();
+    pollUploadJob(jobId);
+  } catch (err) {
+    clearUploadProgress();
+    renderResumePrompt();
+    if (err.status === 401) {
       showSignedOut();
       setAuthStatus("Your session expired. Sign in again.");
       setBusy(false);
       return;
     }
-
-    if (!res.ok) {
-      setStatus(`Upload failed: ${data.error ?? res.status}`);
+    if (err.status === 413) {
+      // A server without /limits, or one whose cap changed since this page
+      // loaded: still say it plainly, rather than "exceeds 2147483648 bytes".
+      const maxUpload = limits?.max_upload_bytes ?? 0;
+      setStatus(
+        maxUpload > 0
+          ? `That file is larger than the ${describeSize(maxUpload)} limit.`
+          : "That file is larger than this server accepts.",
+      );
       setBusy(false);
       return;
     }
-
-    setStatus("Received, waiting for processing...");
-    el.activeJob.hidden = false;
-    el.jobFilename.textContent = file.name;
-    setBadge("queued");
-    activeJobId = data.job_id;
-    setBusy(false);
-    pollUploadJob(data.job_id);
-  } catch (err) {
-    setStatus(`Request failed: ${err.message}`);
+    setStatus(`Upload failed: ${err.message}`);
     setBusy(false);
   }
 }
@@ -515,6 +1070,18 @@ function pollUploadJob(jobId) {
       el.jobEdit.hidden = job.status !== "done";
       el.jobProgress.hidden = job.status !== "processing";
 
+      // Playable beats perfect: the MP4 goes up the moment the job says done,
+      // and the note says whether an adaptive version is still on its way.
+      if (job.status === "done") {
+        showUploadPlayer(job);
+        setStatus(
+          job.hls_status === "pending"
+            ? "Ready to play — HD versions are still processing."
+            : "Processing complete.",
+        );
+        return;
+      }
+
       if (attempt >= SLOW_AFTER_POLLS) {
         setStatus(`Still working on it — this is taking longer than expected. Job ${jobId}`);
         // Give the form back; a stuck job otherwise never releases it.
@@ -524,8 +1091,8 @@ function pollUploadJob(jobId) {
       }
     },
     onDone(job) {
+      showUploadPlayer(job);
       setStatus("Processing complete.");
-      mountPlayer(el.player, job);
     },
     onFailed(job) {
       setStatus(`Processing failed: ${job.error ?? "Unknown error"}`);
@@ -601,8 +1168,27 @@ function unmountPlayersIn(root) {
 
 /** The Upload tab's player slot, emptied. */
 function clearUploadPlayer() {
+  uploadPlayerKey = null;
   unmountPlayer(el.player);
   el.player.hidden = true;
+}
+
+/** What is in the Upload tab's player right now, so it is only rebuilt when
+ *  the thing to play actually changes. */
+let uploadPlayerKey = null;
+
+/** Put the job's playable source in the upload card.
+ *
+ * The same job document arrives on every poll, so mounting unconditionally
+ * would tear Plyr down and start playback over under the reader. Keying on the
+ * URL means the MP4 that goes up first is replaced exactly once, when the
+ * ladder takes its place.
+ */
+function showUploadPlayer(job) {
+  const key = job.hls_url ?? job.output_url ?? null;
+  if (key === null || key === uploadPlayerKey) return;
+  uploadPlayerKey = key;
+  mountPlayer(el.player, job);
 }
 
 /** Put a player for `job` into `host`, replacing whatever was there. */
@@ -845,11 +1431,66 @@ function updateProcessButton() {
     : "Check an operation and set it up first — a box to crop, a range to keep, or one of the dropdowns.";
 }
 
+// What the panel offers when the API has not said what this video may become:
+// every job from before sprint 4, and any job whose dimensions have not been
+// stored yet. `edit_options` replaces these per video when it is there.
+const DEFAULT_SCALE_HEIGHTS = {
+  downscale: [...el.editDownscaleHeight.options].map((option) => Number(option.value)),
+  upscale: [...el.editUpscaleHeight.options].map((option) => Number(option.value)),
+};
+
+/** The API's `edit_options` for the job the editor is open on, or null when
+ *  the API did not send any. See `applyScaleOptions`. */
+let scaleOptions = null;
+
+/** The heights `edit_options` allows for `operation`, or null when the API has
+ *  not said -- in which case the panel's own list stands. */
+function scaleHeights(operation) {
+  const offered = scaleOptions?.[operation];
+  return Array.isArray(offered) ? offered : null;
+}
+
+/** Point the two scale sections at what this video may actually become.
+ *
+ * `edit_options` is computed by the same rules `POST /jobs/{id}/edit`
+ * enforces, so the dropdowns offer exactly what the API accepts and the panel
+ * cannot build a request that comes back a 422.
+ *
+ * An empty list means the operation cannot apply at all -- a 2160p source has
+ * nothing above it to upscale to -- so that section is hidden rather than left
+ * disabled: no future state of this job makes it usable.
+ *
+ * Absent means the job is not done, or has no stored dimensions, and the
+ * panel keeps its own fixed lists. The worker checks either way.
+ */
+function applyScaleOptions(job) {
+  scaleOptions = job.edit_options ?? null;
+
+  const sections = [
+    { name: "downscale", section: el.editDownscaleSection, select: el.editDownscaleHeight },
+    { name: "upscale", section: el.editUpscaleSection, select: el.editUpscaleHeight },
+  ];
+
+  for (const { name, section, select } of sections) {
+    const heights = scaleHeights(name) ?? DEFAULT_SCALE_HEIGHTS[name];
+    section.hidden = heights.length === 0;
+    select.replaceChildren(
+      ...heights.map((height) => {
+        const option = document.createElement("option");
+        option.value = String(height);
+        option.textContent = `${height}p`;
+        return option;
+      }),
+    );
+  }
+}
+
 /** Downscale and upscale are mutually exclusive, so ticking one closes the
- *  other rather than letting the panel build a request the worker refuses. */
+ *  other rather than letting the panel build a request the worker refuses. An
+ *  operation this video has no use for stays disabled. */
 function setScaleMode(mode) {
-  el.editDownscale.disabled = mode === "upscale";
-  el.editUpscale.disabled = mode === "downscale";
+  el.editDownscale.disabled = mode === "upscale" || scaleHeights("downscale")?.length === 0;
+  el.editUpscale.disabled = mode === "downscale" || scaleHeights("upscale")?.length === 0;
   if (mode === "downscale") el.editUpscale.checked = false;
   if (mode === "upscale") el.editDownscale.checked = false;
   updateProcessButton();
@@ -932,6 +1573,7 @@ function openEditor(job) {
   for (const box of [el.editCrop, el.editClip, el.editDownscale, el.editUpscale, el.editConvert]) {
     box.checked = false;
   }
+  applyScaleOptions(job);
   setScaleMode(null);
 
   switchView("edit");
@@ -1462,3 +2104,6 @@ applyAuthMode();
 updateProcessButton();
 // Decide which half of the page to show before anything else runs.
 refreshIdentity();
+// Public, so it is read whether or not there is a session -- the limit belongs
+// next to the picker, and the picker is behind the sign-in form.
+loadLimits().then(applyLimitHint);

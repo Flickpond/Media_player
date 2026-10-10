@@ -295,4 +295,20 @@ async def test_the_page_can_read_the_duration_limit_without_signing_in(monkeypat
         response = await client.get("/limits")
 
     assert response.status_code == 200
-    assert response.json() == {"max_duration_seconds": 300, "max_edit_height": 2160}
+    assert response.json() == {
+        "max_duration_seconds": 300,
+        "max_edit_height": 2160,
+        "max_upload_bytes": get_settings().max_upload_bytes,
+    }
+
+
+async def test_the_page_can_read_the_upload_size_limit(monkeypatch):
+    monkeypatch.setattr(get_settings(), "max_upload_bytes", 2 * 1024**3)
+    application = create_app()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.get("/limits")
+
+    assert response.json()["max_upload_bytes"] == 2147483648

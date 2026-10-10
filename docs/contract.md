@@ -113,8 +113,10 @@ POST /jobs/{id}/edit
   503 { "error": "edit could not be queued; please try again" }
 
 GET /limits                     // public, no sign-in
-  200 { "max_duration_seconds": 300, "max_edit_height": 2160 }
-                                  // 0 = no duration limit configured
+  200 { "max_duration_seconds": 300, "max_edit_height": 2160,
+        "max_upload_bytes": 2147483648 }
+                                  // 0 = no duration limit configured;
+                                  // max_upload_bytes is POST /uploads' cap
 
 DELETE /jobs/{id}
   204                          // no body. Deletes regardless of status.

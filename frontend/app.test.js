@@ -24,7 +24,7 @@ let fetchMock;
  * index from its own first request rather than from the identity check.
  * `loadSignedOut` is for the tests that care about the signed-out half.
  */
-async function loadApp({ signedIn = true, role = "user" } = {}) {
+async function loadApp({ signedIn = true, role = "user", limits = null } = {}) {
   document.body.innerHTML = BODY;
   vi.resetModules();
   fetchMock.mockResolvedValueOnce(
@@ -32,12 +32,21 @@ async function loadApp({ signedIn = true, role = "user" } = {}) {
       ? jsonResponse({ id: "u-1", email: "maya@example.test", role })
       : jsonResponse({ error: "not authenticated" }, false, 401),
   );
+  // app.js reads the public /limits right after it asks who it is talking to.
+  // A server from before sprint 4 has no such route, which is the default
+  // here; `limits` lets a test say what this deployment allows.
+  fetchMock.mockResolvedValueOnce(limits ? jsonResponse(limits) : jsonResponse({ error: "not found" }, false, 404));
   await import("./app.js");
   await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/auth/me"));
   await vi.advanceTimersByTimeAsync(0);
   fetchMock.mockClear();
   return {
     dropzone: document.getElementById("dropzone"),
+    dropzoneHint: document.getElementById("dropzone-hint"),
+    resumePrompt: document.getElementById("resume-prompt"),
+    resumeText: document.getElementById("resume-text"),
+    resumeChoose: document.getElementById("resume-choose"),
+    resumeDiscard: document.getElementById("resume-discard"),
     fileInput: document.getElementById("file-input"),
     browseButton: document.getElementById("browse-button"),
     status: document.getElementById("status"),
@@ -46,6 +55,12 @@ async function loadApp({ signedIn = true, role = "user" } = {}) {
     jobBadge: document.getElementById("job-badge"),
     jobDelete: document.getElementById("job-delete"),
     jobProgress: document.getElementById("job-progress"),
+    uploadProgress: document.getElementById("upload-progress"),
+    uploadProgressTrack: document.getElementById("upload-progress-track"),
+    uploadProgressFill: document.getElementById("upload-progress-fill"),
+    uploadProgressPercent: document.getElementById("upload-progress-percent"),
+    uploadProgressRate: document.getElementById("upload-progress-rate"),
+    uploadProgressEta: document.getElementById("upload-progress-eta"),
     jobActions: document.getElementById("job-actions"),
     jobRetry: document.getElementById("job-retry"),
     player: document.getElementById("player"),
@@ -98,8 +113,10 @@ async function loadApp({ signedIn = true, role = "user" } = {}) {
     editClip: document.getElementById("edit-clip"),
     editClipMount: document.getElementById("edit-clip-mount"),
     editDownscale: document.getElementById("edit-downscale"),
+    editDownscaleSection: document.getElementById("edit-downscale-section"),
     editDownscaleHeight: document.getElementById("edit-downscale-height"),
     editUpscale: document.getElementById("edit-upscale"),
+    editUpscaleSection: document.getElementById("edit-upscale-section"),
     editUpscaleHeight: document.getElementById("edit-upscale-height"),
     editConvert: document.getElementById("edit-convert"),
     editConvertFormat: document.getElementById("edit-convert-format"),
@@ -120,6 +137,60 @@ const jsonResponse = (body, ok = true, status = 200) => ({
   json: async () => body,
 });
 
+/** A storage PUT's response. The ETag is the whole point of reading it back:
+ *  completion is rejected unless every part's ETag is echoed exactly. */
+const partResponse = (etag, ok = true, status = 200) => ({
+  ok,
+  status,
+  headers: { get: (name) => (name.toLowerCase() === "etag" ? etag : null) },
+  json: async () => ({}),
+});
+
+/** A file whose byte length is faked, so a test can describe a large upload
+ *  without allocating it. */
+function fileOfSize(size, name = "holiday.mp4", type = "video/mp4") {
+  const file = new File(["data"], name, { type });
+  Object.defineProperty(file, "size", { value: size, configurable: true });
+  return file;
+}
+
+/** Note a session down the way a reloaded page would find it. `file` is the
+ *  file it was started from, so the identity the page checks comes from the
+ *  same place it does. */
+function rememberUpload(file, overrides = {}) {
+  localStorage.setItem(
+    "flickpond.pending-upload",
+    JSON.stringify({
+      uploadId: "up-1",
+      partSize: 2,
+      partCount: 3,
+      userId: "u-1",
+      filename: file.name,
+      size: file.size,
+      lastModified: file.lastModified,
+      startedAt: 1,
+      ...overrides,
+    }),
+  );
+}
+
+/** Everything a direct upload asks for *after* its session exists: one signed
+ *  URL, one PUT, one completion, and a poll that answers but never advances. */
+function mockUploadRest({ jobId = "job-1", etag = '"e1"' } = {}) {
+  fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "1": "http://minio/part-1" } }));
+  fetchMock.mockResolvedValueOnce(partResponse(etag));
+  fetchMock.mockResolvedValueOnce(jsonResponse({ job_id: jobId }));
+  fetchMock.mockResolvedValue(jsonResponse({ id: jobId, status: "queued" }));
+}
+
+/** A whole single-part direct upload, in the order app.js asks for it. */
+function mockDirectUpload({ jobId = "job-1" } = {}) {
+  fetchMock.mockResolvedValueOnce(
+    jsonResponse({ upload_id: "up-1", part_size: 16777216, part_count: 1 }),
+  );
+  mockUploadRest({ jobId });
+}
+
 /** Select a file (via the hidden input's change event) and let the upload
  * plus first poll settle -- the dropzone's real trigger, not a form submit. */
 async function uploadFile(el, file = fileNamed()) {
@@ -138,35 +209,59 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  // jsdom has no object URLs at all. The one test that needs them adds them,
+  // and this puts the environment back so every other upload test keeps
+  // taking the "the browser cannot measure this file" path.
+  URL.createObjectURL = undefined;
+  URL.revokeObjectURL = undefined;
+  // The resume note outlives a page load by design; between tests it must not.
+  localStorage.clear();
 });
 
 describe("upload", () => {
-  it("posts the chosen file to /upload as multipart", async () => {
+  it("opens a multipart session, then PUTs the part straight to storage", async () => {
     const el = await loadApp();
-    fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-1", status: "queued" }));
+    mockDirectUpload();
 
     await uploadFile(el);
 
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("/api/upload");
-    expect(init.method).toBe("POST");
-    expect(init.body.get("file")).toBeInstanceOf(File);
+    const [startUrl, startInit] = fetchMock.mock.calls[0];
+    expect(startUrl).toBe("/api/uploads");
+    expect(startInit.method).toBe("POST");
+    expect(JSON.parse(startInit.body)).toEqual({
+      filename: "holiday.mp4",
+      size: 4,
+      content_type: "video/mp4",
+    });
+
+    const [signUrl, signInit] = fetchMock.mock.calls[1];
+    expect(signUrl).toBe("/api/uploads/up-1/parts");
+    expect(JSON.parse(signInit.body)).toEqual({ part_numbers: [1] });
+
+    const [putUrl, putInit] = fetchMock.mock.calls[2];
+    expect(putUrl).toBe("http://minio/part-1");
+    expect(putInit.method).toBe("PUT");
+    // The API's session cookie has no business travelling to storage.
+    expect(putInit.credentials).toBe("omit");
+
+    const [completeUrl, completeInit] = fetchMock.mock.calls[3];
+    expect(completeUrl).toBe("/api/uploads/up-1/complete");
+    // The ETag goes back exactly as storage sent it, quotes and all.
+    expect(JSON.parse(completeInit.body)).toEqual({ parts: [{ n: 1, etag: '"e1"' }] });
   });
 
-  it("polls the job id the API returned", async () => {
+  it("polls the job id the upload created", async () => {
     const el = await loadApp();
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ job_id: "abc-123" }))
-      .mockResolvedValueOnce(jsonResponse({ status: "queued" }));
+    mockDirectUpload({ jobId: "abc-123" });
 
     await uploadFile(el);
 
-    expect(fetchMock.mock.calls[1][0]).toBe("/api/jobs/abc-123");
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/jobs/abc-123")).toBe(true);
   });
 
   it("shows the filename and a queued badge as soon as the job is accepted", async () => {
     const el = await loadApp();
-    fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-1", status: "queued" }));
+    mockDirectUpload();
 
     await uploadFile(el, fileNamed("holiday.mp4"));
 
@@ -178,24 +273,279 @@ describe("upload", () => {
   it("ignores a second file dropped while the first upload is still in flight", async () => {
     const el = await loadApp();
     let release;
-    fetchMock.mockReturnValueOnce(
-      new Promise((resolve) => {
-        release = resolve;
-      }),
-    );
+    // The session request is the one that hangs; the parts and the completion
+    // after it answer normally, so the released upload can actually finish.
+    fetchMock.mockReturnValueOnce(new Promise((resolve) => { release = resolve; }));
+    mockUploadRest();
 
     chooseFile(el.fileInput, fileNamed("first.mp4"));
     el.fileInput.dispatchEvent(new Event("change"));
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(el.dropzone.classList.contains("busy")).toBe(true);
 
-    // A second selection while the POST is still pending must not double-post.
+    // A second selection while the first is still pending must not double-post.
     chooseFile(el.fileInput, fileNamed("second.mp4"));
     el.fileInput.dispatchEvent(new Event("change"));
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    release(jsonResponse({ job_id: "job-1" }));
+    release(jsonResponse({ upload_id: "up-1", part_size: 16777216, part_count: 1 }));
     await vi.waitFor(() => expect(el.dropzone.classList.contains("busy")).toBe(false));
+  });
+
+  it("shows a percentage, a rate and a time left as the parts land", async () => {
+    const el = await loadApp();
+    let releaseSecond;
+    let releaseThird;
+    let releaseCompletion;
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ upload_id: "up-1", part_size: 2, part_count: 3 }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "1": "http://minio/p1" } }));
+    fetchMock.mockResolvedValueOnce(partResponse('"e1"'));
+    fetchMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        releaseSecond = () => resolve(jsonResponse({ urls: { "2": "http://minio/p2" } }));
+      }),
+    );
+    fetchMock.mockResolvedValueOnce(partResponse('"e2"'));
+    fetchMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        releaseThird = () => resolve(jsonResponse({ urls: { "3": "http://minio/p3" } }));
+      }),
+    );
+    fetchMock.mockResolvedValueOnce(partResponse('"e3"'));
+    fetchMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        releaseCompletion = () => resolve(jsonResponse({ job_id: "job-1" }));
+      }),
+    );
+    fetchMock.mockResolvedValue(jsonResponse({ id: "job-1", status: "queued" }));
+
+    // Six real bytes, so the three 2-byte parts are really 2 bytes each.
+    chooseFile(el.fileInput, new File(["abcdef"], "holiday.mp4", { type: "video/mp4" }));
+    el.fileInput.dispatchEvent(new Event("change"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Two of six bytes up: a third, and one measurement is not yet a rate.
+    expect(el.uploadProgress.hidden).toBe(false);
+    expect(el.uploadProgressPercent.textContent).toBe("33%");
+    expect(el.uploadProgressFill.style.width).toBe("33%");
+    expect(el.uploadProgressTrack.getAttribute("aria-valuenow")).toBe("33");
+    expect(el.uploadProgressRate.textContent).toBe("");
+    expect(el.uploadProgressEta.textContent).toBe("");
+
+    // Two seconds later the second part lands, so the window has a rate.
+    await vi.advanceTimersByTimeAsync(2000);
+    releaseSecond();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.uploadProgressPercent.textContent).toBe("67%");
+    expect(el.uploadProgressRate.textContent).toBe("1 B/s");
+    expect(el.uploadProgressEta.textContent).toBe("about 2s left");
+
+    await vi.advanceTimersByTimeAsync(2000);
+    releaseThird();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.uploadProgressPercent.textContent).toBe("100%");
+    expect(el.uploadProgressEta.textContent).toBe("almost done");
+
+    // The bar belongs to the transfer, so it goes when the transfer does.
+    releaseCompletion();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(el.uploadProgress.hidden).toBe(true);
+    expect(el.jobBadge.textContent).toBe("Queued");
+  });
+
+  it("falls back to the one-shot POST when the server has no direct upload", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not found" }, false, 404));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }));
+    fetchMock.mockResolvedValue(jsonResponse({ id: "job-1", status: "queued" }));
+
+    await uploadFile(el);
+
+    const [url, init] = fetchMock.mock.calls[1];
+    expect(url).toBe("/api/upload");
+    expect(init.body.get("file")).toBeInstanceOf(File);
+    expect(el.jobBadge.textContent).toBe("Queued");
+  });
+
+  it("takes a file past the legacy limit when the direct path is available", async () => {
+    const el = await loadApp();
+    mockDirectUpload();
+
+    await uploadFile(el, fileOfSize(101 * 1024 * 1024));
+
+    // The 100 MB ceiling belongs to the one-shot endpoint, not to this path.
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).size).toBe(101 * 1024 * 1024);
+    expect(el.status.textContent).not.toContain("larger than");
+  });
+
+  it("refuses a large file that neither path can take", async () => {
+    const el = await loadApp();
+
+    // No declared type: the direct path cannot name one, and the one-shot
+    // endpoint stops at 100 MB.
+    chooseFile(el.fileInput, fileOfSize(101 * 1024 * 1024, "raw.mkv", ""));
+    el.fileInput.dispatchEvent(new Event("change"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.status.textContent).toContain("larger than");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(el.dropzone.classList.contains("busy")).toBe(false);
+  });
+
+  it("says the duration limit the API reports, next to the picker", async () => {
+    const el = await loadApp({ limits: { max_duration_seconds: 300, max_edit_height: 2160 } });
+
+    expect(el.dropzoneHint.textContent).toBe("MP4, MOV, WebM, MKV, or AVI, up to 5 minutes.");
+  });
+
+  it("refuses an over-long video before spending the upload on it", async () => {
+    const el = await loadApp({ limits: { max_duration_seconds: 300, max_edit_height: 2160 } });
+
+    // The browser half of this check is a <video> reading the file's own
+    // metadata. jsdom has no demuxer, so the element is stood in for: what is
+    // under test is what the page does with the number, not how it got it.
+    URL.createObjectURL = () => "blob:probe";
+    URL.revokeObjectURL = () => {};
+    const listeners = {};
+    const probe = document.createElement("video");
+    Object.defineProperty(probe, "duration", { value: 754.2, configurable: true });
+    probe.addEventListener = (name, handler) => {
+      listeners[name] = handler;
+    };
+    const realCreate = document.createElement.bind(document);
+    let served = false;
+    vi.spyOn(document, "createElement").mockImplementation((tag, ...rest) => {
+      if (tag === "video" && !served) {
+        served = true;
+        return probe;
+      }
+      return realCreate(tag, ...rest);
+    });
+
+    chooseFile(el.fileInput, fileNamed("long.mp4"));
+    el.fileInput.dispatchEvent(new Event("change"));
+    listeners.loadedmetadata();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // 12:34 against a 5 minute limit, and nothing was sent to find that out.
+    expect(el.status.textContent).toContain("longer than 5 minutes");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(el.dropzone.classList.contains("busy")).toBe(false);
+    expect(el.uploadProgress.hidden).toBe(true);
+  });
+
+  it("says the size limit beside the duration limit, in whole gigabytes", async () => {
+    const el = await loadApp({
+      limits: { max_duration_seconds: 300, max_edit_height: 2160, max_upload_bytes: 2 * 1024 ** 3 },
+    });
+
+    expect(el.dropzoneHint.textContent).toBe(
+      "MP4, MOV, WebM, MKV, or AVI, up to 5 minutes and 2 GB.",
+    );
+  });
+
+  it("refuses a file over the size limit before sending any of it", async () => {
+    const el = await loadApp({
+      limits: { max_duration_seconds: 0, max_edit_height: 2160, max_upload_bytes: 2 * 1024 ** 3 },
+    });
+
+    chooseFile(el.fileInput, fileOfSize(3 * 1024 ** 3));
+    el.fileInput.dispatchEvent(new Event("change"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.status.textContent).toBe("That file is larger than the 2 GB limit.");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("turns a 413 into the limit in words, not a byte count", async () => {
+    const el = await loadApp({
+      limits: { max_duration_seconds: 0, max_edit_height: 2160, max_upload_bytes: 2 * 1024 ** 3 },
+    });
+    // The cap was lowered after this page loaded, so the page's own check
+    // passes and the server is the one that says no.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ error: "upload exceeds maximum size of 2147483648 bytes" }, false, 413),
+    );
+
+    await uploadFile(el, fileOfSize(1024));
+
+    expect(el.status.textContent).toBe("That file is larger than the 2 GB limit.");
+    expect(el.dropzone.classList.contains("busy")).toBe(false);
+  });
+
+  it("says a 413 plainly even when the server has no /limits", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "too big" }, false, 413));
+
+    await uploadFile(el, fileOfSize(1024));
+
+    expect(el.status.textContent).toBe("That file is larger than this server accepts.");
+  });
+
+  it("retries a part that hit a storage error, and finishes the upload", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ upload_id: "up-1", part_size: 2, part_count: 1 }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "1": "http://minio/p1" } }));
+    fetchMock.mockResolvedValueOnce(partResponse(null, false, 503));
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    fetchMock.mockResolvedValueOnce(partResponse('"e1"'));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }));
+    fetchMock.mockResolvedValue(jsonResponse({ id: "job-1", status: "queued" }));
+
+    await uploadFile(el);
+    await vi.advanceTimersByTimeAsync(3000);
+
+    const puts = fetchMock.mock.calls.filter(([url]) => url === "http://minio/p1");
+    expect(puts).toHaveLength(3);
+    const complete = fetchMock.mock.calls.find(([url]) => url === "/api/uploads/up-1/complete");
+    expect(JSON.parse(complete[1].body)).toEqual({ parts: [{ n: 1, etag: '"e1"' }] });
+    expect(el.jobBadge.textContent).toBe("Queued");
+  });
+
+  it("gives up on a part after three failed tries", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ upload_id: "up-1", part_size: 2, part_count: 1 }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "1": "http://minio/p1" } }));
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    await uploadFile(el);
+    await vi.advanceTimersByTimeAsync(3000);
+
+    const puts = fetchMock.mock.calls.filter(([url]) => url === "http://minio/p1");
+    expect(puts).toHaveLength(3);
+    expect(el.status.textContent).toContain("connection dropped");
+    expect(el.dropzone.classList.contains("busy")).toBe(false);
+  });
+
+  it("does not retry a part storage refused outright", async () => {
+    // A 403 is an expired or refused signature: the same request fails again.
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ upload_id: "up-1", part_size: 2, part_count: 1 }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "1": "http://minio/p1" } }));
+    fetchMock.mockResolvedValueOnce(partResponse(null, false, 403));
+
+    await uploadFile(el);
+    await vi.advanceTimersByTimeAsync(3000);
+
+    const puts = fetchMock.mock.calls.filter(([url]) => url === "http://minio/p1");
+    expect(puts).toHaveLength(1);
+    expect(el.status.textContent).toContain("HTTP 403");
+  });
+
+  it("names the CORS rule when storage does not expose the ETag", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ upload_id: "up-1", part_size: 2, part_count: 1 }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "1": "http://minio/p1" } }));
+    fetchMock.mockResolvedValueOnce(partResponse(null));
+
+    await uploadFile(el);
+
+    expect(el.status.textContent).toContain("ETag");
+    expect(el.dropzone.classList.contains("busy")).toBe(false);
+    expect(el.uploadProgress.hidden).toBe(true);
   });
 
   it("surfaces the API error message and clears the busy state", async () => {
@@ -236,13 +586,13 @@ describe("upload", () => {
 
   it("clears the previous job's player when a second upload starts", async () => {
     const el = await loadApp();
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }))
-      .mockResolvedValueOnce(jsonResponse({ status: "done", output_url: "http://minio/a.mp4" }));
+    mockDirectUpload();
+    fetchMock.mockResolvedValue(jsonResponse({ status: "done", output_url: "http://minio/a.mp4" }));
     await uploadFile(el);
     expect(el.player.hidden).toBe(false);
 
-    fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-2", status: "queued" }));
+    fetchMock.mockResolvedValue(jsonResponse({ id: "job-2", status: "queued" }));
+    mockDirectUpload({ jobId: "job-2" });
     await uploadFile(el);
 
     expect(el.player.hidden).toBe(true);
@@ -297,9 +647,8 @@ describe("upload", () => {
 
   it("stops polling once the active job is deleted", async () => {
     const el = await loadApp();
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }))
-      .mockResolvedValue(jsonResponse({ status: "processing" }));
+    mockDirectUpload();
+    fetchMock.mockResolvedValue(jsonResponse({ id: "job-1", status: "processing" }));
     await uploadFile(el);
     vi.spyOn(window, "confirm").mockReturnValue(true);
     fetchMock.mockClear();
@@ -362,18 +711,6 @@ describe("upload", () => {
     withFile.dataTransfer = { files: [fileNamed()] };
     el.dropzone.dispatchEvent(withFile);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
-  });
-
-  it("refuses a file over the size limit without asking the API", async () => {
-    const el = await loadApp();
-    const huge = fileNamed("huge.mp4");
-    Object.defineProperty(huge, "size", { value: 200 * 1024 * 1024 });
-
-    chooseFile(el.fileInput, huge);
-    el.fileInput.dispatchEvent(new Event("change"));
-
-    expect(el.status.textContent).toContain("100MB");
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("returns to the sign-in form if the session expired during the upload", async () => {
@@ -441,18 +778,154 @@ describe("upload", () => {
 
     el.jobRetry.dispatchEvent(new Event("click"));
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
 
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/upload");
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/upload")).toBe(true);
+  });
+});
+
+describe("resuming an upload", () => {
+  it("offers to finish an upload that was interrupted", async () => {
+    const file = new File(["abcdef"], "holiday.mp4", { type: "video/mp4" });
+    rememberUpload(file);
+
+    const el = await loadApp();
+
+    expect(el.resumePrompt.hidden).toBe(false);
+    expect(el.resumeText.textContent).toContain("holiday.mp4");
+  });
+
+  it("asks the server what it has, and sends only the missing parts", async () => {
+    const file = new File(["abcdef"], "holiday.mp4", { type: "video/mp4" });
+    rememberUpload(file);
+    const el = await loadApp();
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        parts_done: [{ n: 1, etag: '"e1"' }],
+        state: "open",
+        part_size: 2,
+        part_count: 3,
+        job_id: null,
+      }),
+    );
+    fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "2": "http://minio/p2" } }));
+    fetchMock.mockResolvedValueOnce(partResponse('"e2"'));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "3": "http://minio/p3" } }));
+    fetchMock.mockResolvedValueOnce(partResponse('"e3"'));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }));
+    fetchMock.mockResolvedValue(jsonResponse({ id: "job-1", status: "queued" }));
+
+    await uploadFile(el, file);
+
+    // The server is the authority on what is already in storage.
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/uploads/up-1");
+
+    const signed = fetchMock.mock.calls
+      .filter(([url]) => url === "/api/uploads/up-1/parts")
+      .map(([, init]) => JSON.parse(init.body).part_numbers);
+    expect(signed).toEqual([[2], [3]]);
+
+    // Completion takes the whole manifest, the part already in storage too.
+    const complete = fetchMock.mock.calls.find(([url]) => url === "/api/uploads/up-1/complete");
+    expect(JSON.parse(complete[1].body).parts).toEqual([
+      { n: 1, etag: '"e1"' },
+      { n: 2, etag: '"e2"' },
+      { n: 3, etag: '"e3"' },
+    ]);
+
+    // There is a job now, so there is nothing left to come back to.
+    expect(localStorage.getItem("flickpond.pending-upload")).toBeNull();
+    expect(el.jobBadge.textContent).toBe("Queued");
+  });
+
+  it("starts over when the server no longer has the session", async () => {
+    const file = new File(["abcdef"], "holiday.mp4", { type: "video/mp4" });
+    rememberUpload(file);
+    const el = await loadApp();
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not found" }, false, 404));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ upload_id: "up-2", part_size: 2, part_count: 1 }),
+    );
+    mockUploadRest();
+
+    await uploadFile(el, file);
+
+    // It asked, was told there was nothing, and opened a new session.
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/uploads/up-1");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/uploads");
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).size).toBe(6);
+  });
+
+  it("does not offer one account's unfinished upload to another", async () => {
+    const file = new File(["abcdef"], "holiday.mp4", { type: "video/mp4" });
+    rememberUpload(file, { userId: "someone-else" });
+    const el = await loadApp();
+
+    expect(el.resumePrompt.hidden).toBe(true);
+
+    mockDirectUpload();
+    await uploadFile(el, file);
+
+    // A fresh session rather than someone else's.
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/uploads");
+  });
+
+  it("lets the reader abandon an unfinished upload", async () => {
+    const file = new File(["abcdef"], "holiday.mp4", { type: "video/mp4" });
+    rememberUpload(file);
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 204, json: async () => ({}) });
+
+    el.resumeDiscard.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock.mock.calls[0]).toEqual(["/api/uploads/up-1", { method: "DELETE" }]);
+    expect(el.resumePrompt.hidden).toBe(true);
+    expect(localStorage.getItem("flickpond.pending-upload")).toBeNull();
+  });
+
+  it("uploads anyway when the browser refuses to keep anything", async () => {
+    const el = await loadApp();
+    mockDirectUpload();
+    const refuse = () => {
+      throw new Error("storage disabled");
+    };
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(refuse);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(refuse);
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(refuse);
+
+    await uploadFile(el);
+
+    // Having nowhere to write the note is not a reason to refuse the upload.
+    expect(el.jobBadge.textContent).toBe("Queued");
+    expect(el.resumePrompt.hidden).toBe(true);
+  });
+
+  it("reopens the picker from the prompt", async () => {
+    const file = new File(["abcdef"], "holiday.mp4", { type: "video/mp4" });
+    rememberUpload(file);
+    const el = await loadApp();
+    const clicked = vi.spyOn(el.fileInput, "click").mockImplementation(() => {});
+
+    el.resumeChoose.dispatchEvent(new Event("click"));
+
+    expect(clicked).toHaveBeenCalled();
   });
 });
 
 describe("polling", () => {
+  // Every upload makes four requests before its first poll: the session, the
+  // part's signed URL, the part itself, and the completion.
+  const UPLOAD_CALLS = 4;
+
   /** Upload, then have every poll return the given job document. */
   async function pollReturning(job) {
     const el = await loadApp();
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }))
-      .mockResolvedValue(jsonResponse(job));
+    mockDirectUpload();
+    fetchMock.mockResolvedValue(jsonResponse(job));
     await uploadFile(el);
     return el;
   }
@@ -464,7 +937,7 @@ describe("polling", () => {
     expect(el.player.hidden).toBe(false);
     expect(el.jobBadge.textContent).toBe("Done");
     await vi.advanceTimersByTimeAsync(10000);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(UPLOAD_CALLS + 1);
   });
 
   it("shows the error, offers a retry, and stops polling once the job has failed", async () => {
@@ -474,7 +947,7 @@ describe("polling", () => {
     expect(el.player.hidden).toBe(true);
     expect(el.jobActions.hidden).toBe(false);
     await vi.advanceTimersByTimeAsync(10000);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(UPLOAD_CALLS + 1);
   });
 
   it("does not print undefined when a failed job carries no error text", async () => {
@@ -492,14 +965,37 @@ describe("polling", () => {
 
     expect(el.status.textContent).toBe(label);
     await vi.advanceTimersByTimeAsync(10000);
-    // 1 upload + 1 immediate poll + 5 more at 2s intervals over the next 10s.
-    expect(fetchMock).toHaveBeenCalledTimes(7);
+    // 4 upload calls + 1 immediate poll + 5 more at 2s intervals over the next 10s.
+    expect(fetchMock).toHaveBeenCalledTimes(UPLOAD_CALLS + 6);
   });
 
   it("shows the progress sweep only while the job is processing", async () => {
     const el = await pollReturning({ status: "processing" });
 
     expect(el.jobProgress.hidden).toBe(false);
+  });
+
+  it("says HD is still coming while the ladder is being built", async () => {
+    const el = await loadApp();
+    mockDirectUpload();
+    // Done and playable, with the ladder still in flight -- exactly the state
+    // `hls_status` exists to describe, and one a missing `hls_url` cannot tell
+    // apart from a ladder that is never coming.
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: "job-1",
+        status: "done",
+        output_url: "http://minio/out.mp4",
+        hls_status: "pending",
+      }),
+    );
+
+    await uploadFile(el);
+
+    expect(el.status.textContent).toBe("Ready to play — HD versions are still processing.");
+    // Playable now, rather than after the ladder: that is the whole point of
+    // the ladder running as its own job.
+    expect(el.player.hidden).toBe(false);
   });
 
   // --- a job that never finishes (P4) -------------------------------------
@@ -1601,6 +2097,49 @@ describe("player", () => {
     expect(FakePlyr.created[0].media.getAttribute("src")).toBe(DONE.output_url);
   });
 
+  it("swaps the upload card's MP4 for the ladder when the ladder lands", async () => {
+    const el = await loadAppWithLibraries();
+    mockDirectUpload();
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: "job-1",
+          status: "done",
+          output_url: DONE.output_url,
+          hls_status: "pending",
+        }),
+      )
+      .mockResolvedValue(
+        jsonResponse({
+          id: "job-1",
+          status: "done",
+          output_url: DONE.output_url,
+          hls_url: ADAPTIVE.hls_url,
+          hls_status: "ready",
+        }),
+      );
+
+    await uploadFile(el);
+
+    expect(FakePlyr.created).toHaveLength(1);
+    expect(FakePlyr.created[0].media.getAttribute("src")).toBe(DONE.output_url);
+
+    await vi.advanceTimersByTimeAsync(2000);
+
+    // Rebuilt once, onto the adaptive source -- not once per poll. The MP4's
+    // player is torn down rather than left running against an element nobody
+    // can see.
+    expect(FakeHls.instances).toHaveLength(1);
+    expect(FakeHls.instances[0].loadedSource).toBe(ADAPTIVE.hls_url);
+    expect(FakePlyr.created[0].destroyed).toBe(true);
+
+    // Plyr still waits for the manifest, exactly as it does from a Library
+    // card, so the quality menu is built from the ladder's real rungs.
+    FakeHls.instances[0].emit(HLS_EVENTS.MANIFEST_PARSED);
+    expect(FakePlyr.created).toHaveLength(2);
+    expect(el.status.textContent).toBe("Processing complete.");
+  });
+
   it("gives an operator's admin preview the same player", async () => {
     const el = await loadAppWithLibraries({ role: "operator" });
     fetchMock.mockResolvedValueOnce(jsonResponse([DONE]));
@@ -1732,12 +2271,11 @@ describe("editor", () => {
 
   it("opens from the upload card once its job is done, and not before", async () => {
     const el = await loadApp();
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }))
-      .mockResolvedValueOnce(jsonResponse({ id: "job-1", status: "processing" }))
-      .mockResolvedValue(
-        jsonResponse({ ...SOURCE, id: "job-1", filename: "uploaded.mp4" }),
-      );
+    mockDirectUpload();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: "job-1", status: "processing" }));
+    fetchMock.mockResolvedValue(
+      jsonResponse({ ...SOURCE, id: "job-1", filename: "uploaded.mp4" }),
+    );
 
     await uploadFile(el);
     expect(el.jobEdit.hidden).toBe(true);
@@ -1799,6 +2337,72 @@ describe("editor", () => {
       { operation: "clip", params: { start: 5, end: 12.5 } },
       { operation: "crop", params: { x: 0, y: 140, w: 1080, h: 1080 } },
     ]);
+  });
+
+  it("builds the scale dropdowns from the video's own edit_options", async () => {
+    const el = await loadApp();
+    await openEditor(el, [
+      {
+        ...SOURCE,
+        height: 720,
+        edit_options: { downscale: [480, 360, 240], upscale: [1080, 1440, 2160] },
+      },
+    ]);
+
+    expect([...el.editDownscaleHeight.options].map((o) => o.value)).toEqual(["480", "360", "240"]);
+    expect([...el.editUpscaleHeight.options].map((o) => o.value)).toEqual(["1080", "1440", "2160"]);
+    expect(el.editDownscaleSection.hidden).toBe(false);
+    expect(el.editUpscaleSection.hidden).toBe(false);
+
+    el.editUpscale.checked = true;
+    el.editUpscale.dispatchEvent(new Event("change"));
+    submit(el);
+
+    // The dropdown the API filled is the height that goes on the wire.
+    expect(sentOperations()).toEqual([{ operation: "upscale", params: { height: 1080 } }]);
+  });
+
+  it("hides the operation this video has no use for", async () => {
+    const el = await loadApp();
+    // A 2160p source: there is nothing above it to upscale to, so the API
+    // sends an empty list and the section goes away rather than sitting there
+    // permanently disabled.
+    await openEditor(el, [
+      {
+        ...SOURCE,
+        height: 2160,
+        edit_options: { downscale: [1440, 1080, 720, 480, 360, 240], upscale: [] },
+      },
+    ]);
+
+    expect(el.editUpscaleSection.hidden).toBe(true);
+    expect(el.editUpscale.disabled).toBe(true);
+    expect(el.editDownscaleSection.hidden).toBe(false);
+  });
+
+  it("keeps its own lists for a job the API has not measured", async () => {
+    const el = await loadApp();
+    // No stored dimensions means no edit_options, and the fixed lists -- with
+    // the worker doing the checking -- are what sprint 3 shipped.
+    await openEditor(el, [{ ...SOURCE }]);
+
+    expect([...el.editDownscaleHeight.options].map((o) => o.value)).toEqual(["480", "360", "240"]);
+    expect([...el.editUpscaleHeight.options].map((o) => o.value)).toEqual(["1080", "1440"]);
+    expect(el.editDownscaleSection.hidden).toBe(false);
+    expect(el.editUpscaleSection.hidden).toBe(false);
+  });
+
+  it("gives the fixed lists back after a job that replaced them", async () => {
+    const el = await loadApp();
+    await openEditor(el, [
+      { ...SOURCE, height: 720, edit_options: { downscale: [480], upscale: [1080] } },
+    ]);
+    expect([...el.editDownscaleHeight.options].map((o) => o.value)).toEqual(["480"]);
+
+    await openEditor(el, [{ ...SOURCE, id: "2" }]);
+
+    expect([...el.editDownscaleHeight.options].map((o) => o.value)).toEqual(["480", "360", "240"]);
+    expect([...el.editUpscaleHeight.options].map((o) => o.value)).toEqual(["1080", "1440"]);
   });
 
   it("cannot be made to send downscale and upscale together", async () => {
