@@ -85,4 +85,24 @@ resource "aws_s3_bucket_lifecycle_configuration" "videos" {
       days_after_initiation = 2
     }
   }
+
+  # Originals are read twice in their life -- by the MP4 and ladder jobs right
+  # after upload -- and after that only when someone edits the video. Standard
+  # -IA stores them for about 45% less, at a small per-GB charge on the rare
+  # read. 30 days is IA's own minimum, so nothing moves early enough to be
+  # charged for leaving early. Outputs and ladders stay in Standard: every
+  # view reads them.
+  rule {
+    id     = "originals-to-infrequent-access"
+    status = "Enabled"
+
+    filter {
+      prefix = "uploads/"
+    }
+
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA"
+    }
+  }
 }
