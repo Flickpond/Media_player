@@ -133,6 +133,7 @@ async def _transition(
     width: int | None = None,
     height: int | None = None,
     duration_seconds: float | None = None,
+    thumbnail_key: str | None = None,
     error: str | None = None,
 ) -> Job:
     values: dict[str, object | None] = {
@@ -150,6 +151,9 @@ async def _transition(
         "width": width,
         "height": height,
         "duration_seconds": duration_seconds,
+        # Same rule as the dimensions: only `mark_done` sets it, so a retried
+        # job never shows the previous run's picture while it is reprocessed.
+        "thumbnail_key": thumbnail_key,
         "error": error,
         "updated_at": func.now(),
     }
@@ -197,6 +201,7 @@ async def mark_done(
     width: int | None = None,
     height: int | None = None,
     duration_seconds: float | None = None,
+    thumbnail_key: str | None = None,
 ) -> Job:
     """`hls_key` is optional because the adaptive ladder is best-effort.
 
@@ -205,10 +210,13 @@ async def mark_done(
 
     A `done` job with no ladder is a legitimate state, not a missing write:
     the MP4 in `output_key` is the fallback, and the database deliberately
-    carries no constraint tying the two together.
+    carries no constraint tying the two together. `thumbnail_key` is
+    best-effort in the same way.
     """
     if not output_key.strip():
         raise ValueError("output_key must not be empty")
+    if thumbnail_key is not None and not thumbnail_key.strip():
+        raise ValueError("thumbnail_key must not be empty when given")
     return await _transition(
         session,
         job_id=job_id,
@@ -220,6 +228,7 @@ async def mark_done(
         width=width,
         height=height,
         duration_seconds=duration_seconds,
+        thumbnail_key=thumbnail_key,
     )
 
 

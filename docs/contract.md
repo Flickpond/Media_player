@@ -43,9 +43,9 @@ code that split is `ObjectStoreError`: `str(exc)` is the operator's half,
 | `hls_key` | Text, nullable | MinIO key of the HLS master playlist. Null when no ladder was built — including on a `done` job, since the ladder is best-effort and `output_key` is the fallback |
 | `operations` | JSONB, nullable | Null on an upload. On an edit job, the operations requested. **The array's order is not execution order** — the worker runs clip → crop → scale → convert regardless |
 | `hls_status` | Text, NOT NULL, default `pending` | `pending`, `ready` or `unavailable`. **`ready` exactly when `hls_key` exists** — enforced by `ck_jobs_hls_ready_has_key`, so the two are always written together. Always returned by `GET /jobs/{id}` |
-| `width`, `height` | Integer, nullable | The real dimensions of what this job plays: the upload for an upload, the edited output for an edit (a crop or scale changes them). Set once the worker has probed it. Positive when set |
+| `width`, `height` | Integer, nullable | The real dimensions of what this job plays: the upload for an upload, the edited output for an edit (a crop or scale changes them). Set once the worker has probed it. Positive when set. **As displayed**: a phone video recorded upright is stored as landscape frames plus a rotation flag, and the probe reports it portrait, the way FFmpeg encodes it |
 | `duration_seconds` | Float, nullable | The real duration, on the same rule as `width` and `height`. Positive when set |
-| `thumbnail_key` | Text, nullable | Object key of the poster frame, once extracted. The API returns it as a signed `thumbnail_url` |
+| `thumbnail_key` | Text, nullable | Object key of the poster frame (`outputs/<id>/thumbnail.jpg`), once extracted. Set by `mark_done` with the MP4 and cleared by every other transition. Best-effort: a done job may have none. The API returns it as a signed `thumbnail_url` |
 | `error` | Text, nullable | Present only for `failed` jobs. **User-facing** — see the rule above |
 | `created_at` | Timestamp with time zone | Set when the API creates the job |
 | `updated_at` | Timestamp with time zone | Updated on every worker transition |
@@ -87,8 +87,12 @@ POST /upload
 
 GET /jobs/{id}
   200 { "id", "filename", "status", "hls_status",
-        "output_url"?, "hls_url"?, "width"?, "height"?, "duration_seconds"?, "error"? }
+        "output_url"?, "hls_url"?, "width"?, "height"?, "duration_seconds"?,
+        "thumbnail_url"?, "edit_options"?, "error"? }
   404 { "error": "not found" }
+
+  edit_options: { "downscale": [480, 360, 240], "upscale": [1080, 1440, 2160] }
+                // only on a done job with known dimensions; see "Media rules"
 
 POST /jobs/{id}/retry
   202 { "job_id": "<same uuid>" } // no request body; only the owner's failed job
@@ -103,7 +107,14 @@ POST /jobs/{id}/edit
   409 { "error": "only completed jobs can be edited" }
   422 { "detail": [...] }       // empty, unknown, malformed, duplicate, or
                                   // downscale and upscale together
+  422 { "error": "<readable>" } // breaks a media rule: a scale height that is
+                                  // not a rung, not below/above the video, or
+                                  // crop/scale with MP3 -- see "Media rules"
   503 { "error": "edit could not be queued; please try again" }
+
+GET /limits                     // public, no sign-in
+  200 { "max_duration_seconds": 300, "max_edit_height": 2160 }
+                                  // 0 = no duration limit configured
 
 DELETE /jobs/{id}
   204                          // no body. Deletes regardless of status.
@@ -172,7 +183,7 @@ get_job(session, job_id, *, owner_id=None)  # None = any owner (worker, reaper)
 list_jobs(session, *, owner_id=None, limit=50, offset=0)  # None = every owner
 mark_processing(session, job_id)
 mark_done(session, job_id, *, output_key, hls_key=None, hls_status=None,
-          width=None, height=None, duration_seconds=None)
+          width=None, height=None, duration_seconds=None, thumbnail_key=None)
 mark_failed(session, job_id, *, error)
 mark_ladder_ready(session, job_id, *, hls_key)   # -> Job, or None if not waiting
 mark_ladder_unavailable(session, job_id)         # -> Job, or None if not waiting
@@ -225,6 +236,46 @@ shape, supported operation names, and downscale/upscale conflicts remain B's
 responsibility. See [C's handoff](c-recovery-input-safety.md) for the required
 `ObjectStoreError` adapter that preserves these messages in `GET /jobs/{id}`.
 
+## Sprint 4 media rules (Track C)
+
+The rules live in `app/services/media_rules.py`, which both the API and the
+worker read, so the page, the API and the worker can never disagree.
+Details and the reasoning: [C's sprint 4 handoff](c-media-rules-thumbnails.md).
+
+**Probe-first rejection.** The MP4 processor probes every upload right after
+download and before anything is encoded. A file ffprobe cannot read, one with
+no video stream, or one longer than `MEDIA_MAX_DURATION_SECONDS` fails the job
+in seconds with a readable `error`:
+
+| Case | `error` |
+| --- | --- |
+| Corrupt or unreadable | `the video could not be processed; it may be corrupt or in a format we cannot read` |
+| No video stream | `this file has no video track; please upload a video file` |
+| Too long | `this video is 12:35 long; the limit is 5 minutes. Trim it and upload it again` |
+
+**Thumbnails.** One JPEG per upload, taken one second in (the middle of a
+shorter clip), within a 640x360 box, never enlarged. Taken right after the
+probe, stored after the MP4 so a failed encode leaves nothing behind, and
+recorded by `mark_done`. Best-effort: no thumbnail never fails a job. Edit
+jobs have none yet.
+
+**Scale rules.** An edit may scale only to a rung: 240, 360, 480, 720, 1080,
+1440 or 2160. Downscale must be below, and upscale above, the height of the
+frame it is applied to: the crop's height when there is a crop, otherwise
+the height of the copy the edit starts from. Today that copy is the MP4, so
+for an upload it is `min(height, WORKER_FFMPEG_MAX_HEIGHT)`; for an edit job
+it is the edit's own stored `height`. Crop or scale combined with MP3 is
+refused. `edit_options` on the job lists exactly the heights these rules
+accept, and the API answers anything else with a 422 before creating a job.
+With no stored dimensions the API checks only the rung, and the worker
+applies the full rules against the downloaded file (`validate_edit_rules`).
+Crop and clip ranges are still checked by the worker only.
+
+```python
+validate_source(probe, *, max_duration_seconds) -> None          # A's MP4 processor
+validate_edit_rules(operations: list[tuple[str, dict]], probe) -> None   # B's edit processor
+```
+
 ## Shared configuration
 
 | Variable | Purpose |
@@ -240,3 +291,5 @@ responsibility. See [C's handoff](c-recovery-input-safety.md) for the required
 | `STORAGE_USE_INSTANCE_ROLE` | `true` on AWS: S3 credentials come from the instance role, and the two keys above are ignored |
 | `WORKER_FFMPEG_MAX_HEIGHT` | Tallest MP4 fallback, default `1080` |
 | `WORKER_HLS_MAX_HEIGHT` | Tallest ladder rung, default `1080`; `2160` on a host that can encode 4K inside the job timeout. Never above the source |
+| `MEDIA_MAX_DURATION_SECONDS` | Longest source the worker accepts, checked after the probe (default 300; 0 = off) |
+| `THUMBNAIL_MAX_WIDTH`, `THUMBNAIL_MAX_HEIGHT` | The poster frame's bounding box (default 640x360) |

@@ -54,6 +54,9 @@ class ProcessingResult:
     width: int | None = None
     height: int | None = None
     duration_seconds: float | None = None
+    # The poster frame, when one could be taken. Best-effort, like the ladder:
+    # a job without one is still done and still playable.
+    thumbnail_key: str | None = None
 
 
 class ObjectStoreError(RuntimeError):
@@ -186,6 +189,8 @@ class FfmpegProcessor:
         runner=subprocess.run,
         builds_ladder: bool = False,
         prober=None,
+        source_check=None,
+        thumbnailer=None,
     ) -> None:
         self._store = store
         self._output_prefix = output_prefix.strip("/")
@@ -202,27 +207,80 @@ class FfmpegProcessor:
         # `app.worker.tasks.build_ladder_async`); this only says one is due.
         self._builds_ladder = builds_ladder
         self._prober = prober
+        # Track C's probe-first rejection: `source_check(probe)` raises a
+        # ValueError whose message is written for the uploader. Supplying it
+        # also makes the probe mandatory -- a source that cannot be probed is
+        # refused in seconds instead of being encoded blind.
+        self._source_check = source_check
+        # Track C's poster frame: `thumbnailer(source_path, output_path, probe)`
+        # writes a JPEG. Best-effort; see `_take_thumbnail`.
+        self._thumbnailer = thumbnailer
 
     def output_key_for(self, *, job_id: UUID, source_key: str) -> str:
         stem = PurePosixPath(source_key).stem or str(job_id)
         return f"{self._output_prefix}/{job_id}/{stem}.mp4"
 
+    def thumbnail_key_for(self, *, job_id: UUID) -> str:
+        from app.worker.thumbnail import THUMBNAIL_FILENAME
+
+        return f"{self._output_prefix}/{job_id}/{THUMBNAIL_FILENAME}"
+
     def _probe(self, *, job_id: UUID, source_path: Path):
         """What the source is, or None if it couldn't be read.
 
         Runs first, before any encoding, so the result can be stored on the job
-        and reused by the ladder instead of probing twice. A failure is logged,
-        not raised: whether an unreadable source should fail the job outright
-        is the probe-first rejection rule, which belongs to the validation
-        step, not to this one.
+        and reused by the ladder instead of probing twice.
+
+        Without a `source_check` a failure is logged, not raised, and costs only
+        the dimensions and the ladder. With one, this is the probe-first
+        rejection: a source that is corrupt, has no video stream or breaks a
+        media rule fails the job here, before a second is spent encoding it.
         """
         if self._prober is None:
             return None
+        if self._source_check is None:
+            try:
+                return self._prober(source_path)
+            except Exception:
+                logger.exception("job %s: could not probe the source", job_id)
+                return None
+
+        # The probe's own ObjectStoreError already carries a message for the
+        # uploader ("corrupt", "no video track"), so it propagates unchanged.
+        probe = self._prober(source_path)
         try:
-            return self._prober(source_path)
-        except Exception:
-            logger.exception("job %s: could not probe the source", job_id)
+            self._source_check(probe)
+        except ValueError as exc:
+            raise ObjectStoreError(
+                f"source refused by media rules: {exc}", user_message=str(exc)
+            ) from exc
+        return probe
+
+    def _take_thumbnail(self, *, job_id: UUID, source_path: Path, probe, temp_dir: Path):
+        """The poster frame's local path, or None. Never fails the job."""
+        if self._thumbnailer is None or probe is None:
             return None
+        try:
+            return self._thumbnailer(source_path, temp_dir / "thumbnail.jpg", probe)
+        except Exception:
+            logger.warning("job %s: no thumbnail", job_id, exc_info=True)
+            return None
+
+    def _store_thumbnail(self, *, job_id: UUID, thumbnail_path) -> str | None:
+        """Upload the poster frame. Its key, or None if it could not be stored."""
+        if thumbnail_path is None:
+            return None
+        from app.worker.thumbnail import THUMBNAIL_CONTENT_TYPE
+
+        key = self.thumbnail_key_for(job_id=job_id)
+        try:
+            self._store.upload_file(
+                key=key, source=str(thumbnail_path), content_type=THUMBNAIL_CONTENT_TYPE
+            )
+        except Exception:
+            logger.warning("job %s: thumbnail could not be stored", job_id, exc_info=True)
+            return None
+        return key
 
     def run(self, *, job_id: UUID, source_key: str) -> ProcessingResult:
         if not self._store.object_exists(source_key):
@@ -238,6 +296,12 @@ class FfmpegProcessor:
         try:
             self._store.download_file(key=source_key, destination=str(source_path))
             probe = self._probe(job_id=job_id, source_path=source_path)
+            # Taken now, right after the probe and before the long encode, but
+            # only uploaded once the MP4 is: a job that fails mid-encode then
+            # leaves no picture behind in storage that no row points at.
+            thumbnail_path = self._take_thumbnail(
+                job_id=job_id, source_path=source_path, probe=probe, temp_dir=temp_dir
+            )
             command = [
                 self._ffmpeg_binary,
                 "-hide_banner",
@@ -297,6 +361,7 @@ class FfmpegProcessor:
                 width=probe.width if probe else None,
                 height=probe.height if probe else None,
                 duration_seconds=probe.duration_seconds if probe else None,
+                thumbnail_key=self._store_thumbnail(job_id=job_id, thumbnail_path=thumbnail_path),
             )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -333,6 +398,8 @@ def get_processing_step() -> ProcessingStep:
     from functools import partial
 
     from app.worker.probe import probe_source
+    from app.worker.thumbnail import extract_thumbnail
+    from app.worker.validation import validate_source
 
     settings = get_settings()
     # The internal client: the worker only ever reads and writes objects.
@@ -349,6 +416,16 @@ def get_processing_step() -> ProcessingStep:
         prober=partial(
             probe_source,
             ffprobe_binary=settings.worker_ffprobe_binary,
+            timeout_seconds=settings.worker_ffprobe_timeout_seconds,
+        ),
+        source_check=partial(
+            validate_source, max_duration_seconds=settings.media_max_duration_seconds
+        ),
+        thumbnailer=partial(
+            extract_thumbnail,
+            ffmpeg_binary=settings.worker_ffmpeg_binary,
+            max_width=settings.thumbnail_max_width,
+            max_height=settings.thumbnail_max_height,
             timeout_seconds=settings.worker_ffprobe_timeout_seconds,
         ),
     )

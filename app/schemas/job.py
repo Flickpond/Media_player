@@ -5,6 +5,17 @@ from pydantic import BaseModel, ConfigDict
 from app.models.job import HlsStatus, JobStatus
 
 
+class EditOptions(BaseModel):
+    """The scale heights an edit of this job may ask for, from Track C's rules.
+
+    Computed by the same function the edit endpoint enforces, so a page that
+    offers exactly these can never build a request the API refuses.
+    """
+
+    downscale: list[int]
+    upscale: list[int]
+
+
 class JobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -24,6 +35,12 @@ class JobResponse(BaseModel):
     width: int | None = None
     height: int | None = None
     duration_seconds: float | None = None
+    # A signed URL for the poster frame. Omitted until the job is done, and on
+    # any job whose frame could not be taken -- show a placeholder then.
+    thumbnail_url: str | None = None
+    # Only on a done job whose dimensions are known. Describes the copy an edit
+    # starts from (the MP4), which can be shorter than `height` (the original).
+    edit_options: EditOptions | None = None
     error: str | None = None
 
 
