@@ -53,7 +53,6 @@ about 20 s of phone 4K; B's direct upload is what lifts that.
 
 **TODO (Track A):**
 - The same run with a real phone clip, to confirm the synthetic figure.
-- Whether the admin password was rotated, and on which server.
 
 ### Tracks B, C, D, E
 
