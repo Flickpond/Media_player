@@ -1,0 +1,65 @@
+#!/bin/bash
+# Autoscaling worker, first boot. Rendered by Terraform (compute.tf): the
+# values in dollar-brace are filled in there; shell expansions are escaped.
+#
+# Holds no secrets. The Redis and Postgres passwords are read from Parameter
+# Store with the instance role, so anyone who can read this launch template
+# learns where the datastores are, but not how to get in.
+set -euo pipefail
+
+region='${region}'
+parameter_path='${parameter_path}'
+
+dnf install -y docker
+systemctl enable --now docker
+
+secret() {
+  aws ssm get-parameter --region "$region" --with-decryption \
+    --name "$parameter_path/$1" --query Parameter.Value --output text
+}
+redis_password="$(secret redis-password)"
+postgres_password="$(secret postgres-password)"
+# Percent-encoded: the password lands in the DSN's userinfo, and an `@` or
+# `/` in it would silently repoint the connection (the same trap as T-10).
+postgres_password_url="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$postgres_password")"
+
+# Root-only, and the reason --env-file is used rather than -e on the command
+# line: process arguments are readable by every user on the host.
+#
+# Sprint 4 shape: both datastores on the core host, plain connections. With
+# RDS and ElastiCache (#62) these become their endpoints, with REDIS_SSL=true
+# and ?sslmode=require -- both services refuse unencrypted clients.
+install -d -m 700 /etc/flickpond
+umask 077
+cat > /etc/flickpond/worker.env <<EOF
+REDIS_HOST=${core_private_ip}
+REDIS_PORT=6379
+REDIS_PASSWORD=$redis_password
+REDIS_QUEUE=video_jobs
+POSTGRES_DSN=postgresql://flickpond:$postgres_password_url@${core_private_ip}:5432/flickpond
+MINIO_ENDPOINT=s3.${region}.amazonaws.com
+MINIO_USE_SSL=true
+MINIO_BUCKET=${bucket_name}
+MINIO_REGION=${region}
+STORAGE_USE_INSTANCE_ROLE=true
+%{ for key, value in worker_settings ~}
+${key}=${value}
+%{ endfor ~}
+EOF
+unset redis_password postgres_password postgres_password_url
+
+aws ecr get-login-password --region "$region" \
+  | docker login --username AWS --password-stdin '${registry}'
+docker pull '${image}'
+
+# --stop-timeout: when the instance shuts down (spot reclaim, scale-in),
+# Docker sends SIGTERM and RQ starts a warm shutdown, finishing the current
+# job if it can. A spot warning gives two minutes, so Docker waits 110 s
+# before SIGKILL. A job cut off there is recovered by the reaper's lease.
+docker run -d --name worker \
+  --restart unless-stopped \
+  --stop-timeout 110 \
+  --env-file /etc/flickpond/worker.env \
+  --log-opt max-size=20m --log-opt max-file=3 \
+  '${image}' \
+  python -m app.worker

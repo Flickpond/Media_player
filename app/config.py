@@ -100,6 +100,17 @@ class Settings(BaseSettings):
     reaper_lease_seconds: int = 1800
     reaper_orphan_grace_seconds: int = 3600
 
+    # Queue depth published to CloudWatch (app/metrics/queue_depth.py), the
+    # signal sprint 5's worker Auto Scaling Group scales on. The environment
+    # is a dimension, so staging and production can share an account without
+    # one scaling on the other's queue.
+    metrics_namespace: str = "Flickpond"
+    metrics_environment: str = "local"
+    # No default: the region has to be where the scaling alarms live, and a
+    # guessed one publishes a metric that nothing ever reads.
+    metrics_region: str = ""
+    metrics_interval_seconds: int = 60
+
     @property
     def redis_url(self) -> str:
         scheme = "rediss" if self.redis_ssl else "redis"

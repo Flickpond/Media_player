@@ -1,0 +1,147 @@
+name: Worker image
+
+# Pushes the image sprint 5's worker Auto Scaling Group boots, for every
+# commit on main that CI passed, tagged with the full commit SHA. One
+# Dockerfile builds api, worker and reaper alike; "worker" names what pulls
+# it from a registry instead of building it.
+#
+# Off until infra/registry is applied and its outputs are set as repository
+# variables; until then every run explains itself and pushes nothing.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  decide:
+    name: Decide whether to push
+    runs-on: ubuntu-latest
+    outputs:
+      push: ${{ steps.decide.outputs.push }}
+      sha: ${{ steps.decide.outputs.sha }}
+    steps:
+      - id: decide
+        env:
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          ROLE_ARN: ${{ vars.AWS_ECR_PUSH_ROLE_ARN }}
+          REGION: ${{ vars.AWS_REGION }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+        run: |
+          skip() {
+            echo "::notice::Worker image not pushed: $1"
+            echo "push=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          }
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_run" ]; then
+            [ "${RUN_CONCLUSION}" = "success" ] || skip "CI concluded '${RUN_CONCLUSION}'."
+            # `branches: [main]` matches the head branch's *name*, and a pull
+            # request from a fork can name its branch main too. Only a push
+            # to this repository is a commit on main.
+            if [ "${RUN_EVENT}" != "push" ] || [ "${RUN_REPOSITORY}" != "${GITHUB_REPOSITORY}" ]; then
+              skip "CI ran for a ${RUN_EVENT} from ${RUN_REPOSITORY}, not a push to ${GITHUB_REPOSITORY}."
+            fi
+            sha="${RUN_SHA}"
+          else
+            [ "${GITHUB_REF}" = "refs/heads/main" ] || skip "manual runs push from main only; the role trusts nothing else."
+            sha="${GITHUB_SHA}"
+          fi
+          if [ -z "${ROLE_ARN}" ] || [ -z "${REGION}" ] || [ -z "${ECR_REPOSITORY}" ]; then
+            skip "ECR is not configured. Apply infra/registry, then set the AWS_ECR_PUSH_ROLE_ARN, AWS_REGION and ECR_REPOSITORY repository variables from its outputs."
+          fi
+          echo "push=true" >> "${GITHUB_OUTPUT}"
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+
+  push:
+    name: Build, scan and push (linux/arm64)
+    needs: decide
+    if: needs.decide.outputs.push == 'true'
+    # arm64 because the base host is Graviton and so will the spot workers
+    # be. A native arm64 runner rather than QEMU on x86, which takes several
+    # times as long for the same image.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SHA: ${{ needs.decide.outputs.sha }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.decide.outputs.sha }}
+          persist-credentials: false
+
+      # Pinned by commit: these two hold AWS credentials.
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ECR_PUSH_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      - name: Skip a commit that is already in ECR
+        id: existing
+        run: |
+          if out="$(aws ecr describe-images --repository-name "${ECR_REPOSITORY}" \
+              --image-ids imageTag="${SHA}" 2>&1)"; then
+            echo "::notice::${SHA} is already in ECR. Tags are immutable, so there is nothing to do."
+            echo "found=true" >> "${GITHUB_OUTPUT}"
+          elif printf '%s' "${out}" | grep -q ImageNotFoundException; then
+            echo "found=false" >> "${GITHUB_OUTPUT}"
+          else
+            printf '%s\n' "${out}" >&2
+            exit 1
+          fi
+
+      - name: Build
+        if: steps.existing.outputs.found == 'false'
+        env:
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ needs.decide.outputs.sha }}
+        run: |
+          docker build --platform linux/arm64 \
+            --label "org.opencontainers.image.revision=${SHA}" \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --tag "${IMAGE}" .
+          echo "IMAGE=${IMAGE}" >> "${GITHUB_ENV}"
+
+      # The same gate CI applies to the amd64 build, on the image that is
+      # actually pushed: the arm64 base and packages are separate artifacts.
+      - name: Scan
+        if: steps.existing.outputs.found == 'false'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+      - name: Push
+        if: steps.existing.outputs.found == 'false'
+        run: |
+          docker push "${IMAGE}"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "${IMAGE}")"
+          {
+            echo "## Worker image"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Commit | \`${SHA}\` |"
+            echo "| Image | \`${IMAGE}\` |"
+            echo "| Digest | \`${digest}\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"

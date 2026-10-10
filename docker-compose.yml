@@ -146,6 +146,38 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Queue depth to CloudWatch, for sprint 5's worker autoscaling. Behind a
+  # profile because it needs AWS: a host that publishes sets
+  # COMPOSE_PROFILES=metrics (plus METRICS_ENVIRONMENT and METRICS_REGION)
+  # in .env. Locally, `docker compose run --rm queue-metrics --once --dry-run`
+  # prints what it would send. Exactly one per Redis -- two would double-count.
+  queue-metrics:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flickpond-worker:dev
+    profiles: ["metrics"]
+    entrypoint: ["python", "-m", "app.metrics.queue_depth"]
+    environment:
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-flickpond_dev_redis_password}
+      REDIS_SSL: ${REDIS_SSL:-false}
+      REDIS_QUEUE: video_jobs
+      METRICS_NAMESPACE: ${METRICS_NAMESPACE:-Flickpond}
+      METRICS_ENVIRONMENT: ${METRICS_ENVIRONMENT:-local}
+      METRICS_REGION: ${METRICS_REGION:-}
+      METRICS_INTERVAL_SECONDS: ${METRICS_INTERVAL_SECONDS:-60}
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "from app.queue import get_redis_connection; get_redis_connection().ping()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     environment:
@@ -268,6 +300,13 @@ services:
     depends_on:
       api:
         condition: service_healthy
+        # nginx resolves `api` once, at startup. A deploy that recreates the
+        # API can hand it a new address, and nginx keeps proxying to the old
+        # one -- 502 on every /api/ call while every container reports healthy
+        # (T-25). Restarting nginx whenever Compose recreates the API makes it
+        # resolve again. Not triggered when `api` is created from scratch or
+        # brought up on its own -- see T-25 for those cases.
+        restart: true
     healthcheck:
       # /healthz, not /index.html: a cheap endpoint that stays reachable
       # regardless of what the app requires of real callers.

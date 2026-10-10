@@ -46,6 +46,7 @@ browser -> nginx -> FastAPI -> MinIO + PostgreSQL + Redis queue
 | MinIO            | Original and processed video objects                                 | API `127.0.0.1:9000`, console `127.0.0.1:9001` (both loopback only) |
 | Worker           | FFmpeg transcode to 720p MP4, one-way state transitions              | Internal Compose service                                            |
 | Reaper           | Fails rows a dead worker abandoned; sweeps orphaned objects          | Internal Compose service                                            |
+| Queue metrics    | Queue depth to CloudWatch for worker autoscaling (`metrics` profile, off by default) | Internal Compose service                            |
 
 The queue coordinates work, PostgreSQL records state, and MinIO stores the video bytes. Workers remain stateless, so any worker replica can process any queued job.
 
@@ -93,6 +94,7 @@ Media_player/
 |   |-- services/security.py      # Password hashing and JWT issue/verify
 |   |-- api/auth.py               # register / login / logout / me
 |   |-- worker/                   # RQ worker, state machine, FFmpeg step, reaper
+|   |-- metrics/queue_depth.py    # Queue depth to CloudWatch, for autoscaling
 |   |-- queue.py                  # Shared enqueue/consume seam
 |   |-- config.py                 # Environment configuration
 |   |-- database.py               # Async SQLAlchemy engine and sessions
@@ -112,12 +114,16 @@ Media_player/
 |   |-- sprint2-report.md         # Sprint 2 record: contributions, bugs, evidence
 |   |-- s2-03-auth-design.md      # Why auth is shaped the way it is
 |   |-- known-traps.md            # Traps already hit here -- read before coding
+|   |-- login-latency-investigation.md  # Why login p90 was 5.8 s, and the fix
 |   |-- a-worker.md               # Worker and state machine notes
 |   |-- proposal.md               # Full module proposal
 |   `-- sprint1-plan.md           # Sprint 1 plan
 |-- Dockerfile                    # Python 3.12 API image
 |-- docker-compose.yml            # Frontend, API, worker, reaper, Redis, PostgreSQL, MinIO
 |-- deploy/                       # nginx config, TLS, certbot renewal
+|-- infra/terraform/              # AWS base: S3, IAM, EC2 (track A)
+|-- infra/registry/               # ECR and the CI push role (track D)
+|-- infra/workers/                # Spot worker autoscaling, plan only (track D)
 |-- alembic.ini                   # Migration configuration
 |-- pyproject.toml                # Runtime and development dependencies
 `-- .env.example                  # Safe local configuration template
@@ -347,24 +353,41 @@ npm test                                    # unit tests, mocked fetch
 RUN_LIVE_TESTS=1 npx vitest run app.live.test.js   # against the running stack
 ```
 
-CI sends Python and frontend coverage to SonarCloud for static security
+CI sends Python coverage (unit and integration tests, as two reports that
+SonarCloud merges) and frontend coverage to SonarCloud for static security
 analysis. Create the SonarCloud project with Automatic Analysis disabled, then
 configure the repository with the `SONAR_TOKEN` secret and the
 `SONAR_PROJECT_KEY` and `SONAR_ORGANIZATION` variables. The Quality Gate should
-require an A security rating on new code. The scan currently reports its gate
-result without blocking the PR while the initial baseline is reviewed; forked
-PRs without access to the secret skip the scan with a warning.
+require an A security rating on new code. **A failed Quality Gate fails the
+`SonarCloud SAST` job**, and so does missing configuration: a gate that quietly
+stops running looks exactly like one that passed. Only PRs from forks, which
+get no secrets, skip the scan with a warning.
 
 The separate DAST workflow runs an authenticated OWASP ZAP API scan against an
-isolated Compose stack on relevant pull requests, every Monday at 03:00 UTC,
-and on manual dispatch. It never targets the deployed site. High, medium, low,
-and informational findings are summarized without blocking the PR while the
-baseline is reviewed; a ZAP infrastructure failure still fails the workflow.
+isolated Compose stack on pull requests that touch the API or what serves it,
+every Monday at 03:00 UTC, and on manual dispatch. It never targets the
+deployed site. **Medium and High findings fail the `OWASP ZAP API scan` job**
+unless [`deploy/dast/accepted-alerts.tsv`](deploy/dast/accepted-alerts.tsv)
+accepts that ZAP rule with a written reason; Low and Informational findings
+are summarized only. The gate is
+[`deploy/dast/gate.jq`](deploy/dast/gate.jq). It judges risk levels, so a rule
+added in a later ZAP release blocks by default. PRs that change nothing the
+scan covers report the job as skipped, which counts as passed.
 HTML, JSON, Markdown, XML, and application logs are retained as workflow
 artifacts for 30 days. No repository secret is required because every DAST
 credential exists only for the lifetime of the disposable runner. The DAST
 stack is the plain `docker-compose.yml`, so it also proves a fresh checkout
 builds and starts.
+
+Both jobs only block a merge if they are required status checks on `main`
+(repository settings, admin only).
+
+The **Worker image** workflow runs after CI passes on a push to `main`. It
+builds the image for linux/arm64 (Graviton), runs the same Trivy gate on it,
+and pushes it to ECR tagged with the full commit SHA, for sprint 5's
+autoscaling workers to boot from. Until
+[`infra/registry`](infra/registry/README.md) is applied and its three
+repository variables are set, it pushes nothing and says why.
 
 ## Environment variables
 
@@ -378,6 +401,8 @@ builds and starts.
 | `MINIO_BUCKET`              | Source and output object bucket          | `videos`                   |
 | `MINIO_REGION`              | Signing region                           | `us-east-1`                |
 | `MINIO_USE_SSL`             | Whether MinIO uses TLS                   | `false`                    |
+| `METRICS_ENVIRONMENT`       | CloudWatch dimension for queue depth     | `local`                    |
+| `METRICS_REGION`            | CloudWatch region; required to publish   | unset                      |
 
 See [`.env.example`](.env.example) for the complete list. Never commit `.env` or real credentials.
 

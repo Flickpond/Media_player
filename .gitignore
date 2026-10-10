@@ -7,6 +7,7 @@ __pycache__/
 .ruff_cache/
 .coverage
 coverage.xml
+coverage-integration.xml
 htmlcov/
 frontend/coverage/
 .scannerwork/

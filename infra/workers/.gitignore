@@ -1,0 +1,13 @@
+# State holds account IDs, ARNs and the core host's address.
+.terraform/
+*.tfstate
+*.tfstate.*
+# base.auto.tfvars.json is generated from the base's outputs (README.md);
+# workers.tfvars holds the image and the core host's private IP.
+*.tfvars
+*.tfvars.json
+!example.tfvars
+crash.log
+# Saved plans embed variable values.
+*.plan
+plan.txt

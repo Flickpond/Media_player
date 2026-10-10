@@ -38,6 +38,7 @@ read that entry, then work. If you hit something new, add an entry.
 | [T-22](#t-22) | Errors | An exception message is not a user message |
 | [T-23](#t-23) | Deploy | `docker compose up` silently resets a `--scale` replica count |
 | [T-24](#t-24) | Deploy | Serving `www` identically to the bare domain breaks host-only session cookies |
+| [T-25](#t-25) | Deploy | nginx keeps proxying to the API's old address after a deploy recreates it |
 
 ---
 
@@ -610,3 +611,71 @@ radius to every subdomain that ever exists on the domain -- the opposite of
 what a security review asks for. One canonical origin is the actual fix; see
 [`deploy/nginx-tls/README.md`](../deploy/nginx-tls/README.md) for the
 corrected template.
+
+---
+
+### T-25
+
+**nginx keeps proxying to the API's old address after a deploy recreates the
+API.**
+
+*Symptom:* straight after a deploy, the page loads but every call under
+`/api/` returns **502 Bad Gateway**: sign-in fails, the library is empty.
+`docker compose ps` shows every container `healthy`, and the API answers
+directly on `127.0.0.1:8000/health`. The nginx log shows `connect() failed
+(111: Connection refused) while connecting to upstream` against an address
+that is no longer the API's.
+
+*Cause:* `proxy_pass http://api:8000/` names a host, and nginx resolves it
+**once, at startup**, then uses that address for the life of the process. A
+deploy with `--build` recreates `api`, `worker` and `reaper` (new image) but
+not `frontend` (nginx's image and config did not change). The new `api`
+container gets whatever address Docker has free at that moment. If that is a
+different address, nginx is still sending every request to the old one.
+
+*Why it hides:* most of the time Docker hands the recreated container its old
+address back, and nothing breaks, so a deploy that worked last time proves
+nothing. When it does break, every signal says healthy. nginx's healthcheck
+requests `/healthz`, which nginx answers itself without touching the API. The
+API's healthcheck goes straight to the API, which is fine. Only a request that
+crosses nginx to the API fails.
+
+*How it surfaced:* the sprint 4 plan carried "then restart `frontend`" as a
+deploy rule, with no cause written down. Reproduced on 7 October 2026 against
+a local stack. A plain recreate got the same address back and kept working.
+Once another container held the old address before `api` came back (the
+order of a multi-replica recreate is not fixed), `/api/health` through nginx
+returned 502 while `api` itself returned 200, and all seven containers
+reported healthy. `docker compose restart frontend` fixed it immediately.
+
+*Avoid:* `frontend` declares `restart: true` on its `api` dependency in
+`docker-compose.yml`, so whenever `docker compose up` **recreates** the API
+it restarts nginx as well, and nginx resolves `api` again. That needs Compose
+2.17 or newer; check `docker compose version` on a new host. The normal
+deploy command is covered:
+
+```bash
+docker compose up -d --build --scale worker=2
+```
+
+Two cases are not, and both were reproduced. Follow either one with
+`docker compose restart frontend`:
+
+- a **targeted** `docker compose up -d api` (or `--no-deps`), which leaves
+  nginx out of the operation;
+- an API container that was **removed** first (`docker compose rm api`,
+  `docker compose down api`). The next `up` *creates* it rather than
+  recreating it, and creating a dependency does not trigger the restart.
+
+Verify through nginx, not the container. This crosses the hop that breaks:
+
+```bash
+curl -fsS https://flickpond.com/api/health      # locally: http://127.0.0.1:3000/api/health
+```
+
+Making nginx re-resolve at request time (`resolver 127.0.0.11` and a variable
+in `proxy_pass`) would also fix it. It was not chosen because a variable
+changes how nginx rewrites the `/api/` prefix, so both locations would need
+rewriting, and it changes what nginx does when an upstream does not resolve,
+which the AWS overlay's MinIO placeholder relies on. Same family as T-21 and
+T-23: the running system quietly differs from the one the deploy describes.
