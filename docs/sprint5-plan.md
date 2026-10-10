@@ -61,6 +61,13 @@ on the current server — it already runs everything sprint 4 shipped.
   failing 40 minutes later.
 - **The ladder cap is 2160p on the workers, the MP4 stays ≤ 1080p.** As
   sprint 4 decided.
+- **4K costs less to encode** (Track A, landing before the sprint starts):
+  every rung capped at **30 fps** (a 60 fps phone video costs half);
+  **480p only when it is the video's top rung** — 1440p stays; the lower
+  rungs scaled down **from the 1080p rendition** instead of from 4K; the
+  audio encoded **once** and shared by every rung. Measured on staging
+  before and after with the same 4K phone clip; both numbers go in the PR.
+  This is what lets a 4-vCPU spot worker carry 4K comfortably.
 
 ---
 
