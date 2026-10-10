@@ -1,0 +1,4 @@
+# Local state for the one bucket that holds everyone else's.
+.terraform/
+*.tfstate
+*.tfstate.*

@@ -40,6 +40,28 @@ data "aws_iam_policy_document" "videos_bucket" {
   }
 }
 
+# The connection secrets in SSM, for this environment only. The core host
+# fetches them into its .env at deploy time; the workers read the same path.
+# The AWS-managed aws/ssm key needs no kms:Decrypt grant here: its key policy
+# already allows any principal in the account to decrypt through SSM.
+data "aws_iam_policy_document" "environment_secrets" {
+  statement {
+    sid     = "ReadThisEnvironmentsSecrets"
+    actions = ["ssm:GetParameter", "ssm:GetParameters"]
+    resources = [
+      "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter/flickpond/${var.environment}/*",
+    ]
+  }
+}
+
+data "aws_caller_identity" "current" {}
+
+resource "aws_iam_role_policy" "environment_secrets" {
+  name   = "environment-secrets"
+  role   = aws_iam_role.app.id
+  policy = data.aws_iam_policy_document.environment_secrets.json
+}
+
 resource "aws_iam_role_policy" "videos_bucket" {
   name   = "videos-bucket"
   role   = aws_iam_role.app.id

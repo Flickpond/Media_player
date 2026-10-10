@@ -421,7 +421,8 @@ def reaper_env(monkeypatch):
         return []
 
     async def list_stale_ladders(_session, *, before):
-        assert before < datetime.now(UTC) - timedelta(seconds=1700)
+        # Checked after the abandoned window (5 min), not the whole lease.
+        assert before < datetime.now(UTC) - timedelta(seconds=290)
         return state.ladders
 
     async def mark_ladder_unavailable(_session, job_id):
@@ -432,7 +433,7 @@ def reaper_env(monkeypatch):
         return set()
 
     monkeypatch.setattr(reaper, "get_settings", lambda: SimpleNamespace(
-        reaper_lease_seconds=1800, reaper_orphan_grace_seconds=3600
+        reaper_lease_seconds=1800, reaper_abandoned_seconds=300, reaper_orphan_grace_seconds=3600
     ))
     monkeypatch.setattr(reaper, "get_session_factory", lambda: sessions)
     monkeypatch.setattr(reaper, "list_stale", nothing)
@@ -484,3 +485,24 @@ def test_the_reaper_reads_a_ladders_queue_state_by_its_traceable_id():
 
     assert reaper._ladder_queue_status(job_id, connection) is reaper.RqStatus.QUEUED
     assert reaper._ladder_queue_status(uuid4(), connection) is None
+
+
+
+async def test_a_started_ladder_whose_worker_died_is_given_up_on(reaper_env, monkeypatch):
+    """RQ still says started -- its worker never got to say otherwise."""
+    job = SimpleNamespace(id=uuid4())
+    reaper_env.ladders = [job]
+    reaper_env.queue_status = {job.id: reaper.RqStatus.STARTED}
+    monkeypatch.setattr(reaper, "_heartbeat_alive", lambda *_args: False)
+
+    assert await reaper.run_once() == (1, 0, 0)
+    assert reaper_env.given_up == [job.id]
+
+
+async def test_a_started_ladder_on_a_live_worker_is_left_alone(reaper_env, monkeypatch):
+    job = SimpleNamespace(id=uuid4())
+    reaper_env.ladders = [job]
+    reaper_env.queue_status = {job.id: reaper.RqStatus.STARTED}
+    monkeypatch.setattr(reaper, "_heartbeat_alive", lambda *_args: True)
+
+    assert await reaper.run_once() == (0, 0, 0)
