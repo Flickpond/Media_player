@@ -1,185 +1,280 @@
-# Moving Flickpond to AWS
+# Moving Flickpond to the split AWS design
 
-The steps for sprint 4's cutover, in order, with what to check after each.
-Written for whoever runs it — every command is meant to be copied as is.
+The sprint 5 staging rehearsal and production cutover, in order. Commands are
+written to be copied; replace values in angle brackets locally and never paste
+credentials into a terminal shared with somebody else.
 
-| | Current server | AWS |
+| | Current production | AWS production |
 |---|---|---|
-| Host | Alibaba ECS `47.238.64.156`, Hong Kong | EC2 `c7g.2xlarge`, Singapore, Elastic IP `47.128.86.77` |
-| Storage | MinIO container | S3 bucket from `terraform output bucket_name` |
-| Storage credentials | Keys in `.env` | Instance role — no keys anywhere |
-| Ladder | Up to 1080p | Up to 2160p |
-| Built by | Hand | [`infra/terraform`](../infra/terraform/README.md) |
+| Public entry point | Alibaba ECS `47.238.64.156` | `t4g.small` core: nginx, API, reaper, queue metrics |
+| Database | Local PostgreSQL container | Private RDS PostgreSQL 16, TLS required |
+| Queue | Local Redis container | Private ElastiCache Valkey, TLS and auth token |
+| Storage | Local MinIO | Private S3 bucket through instance roles |
+| Encoding | Two local workers | Spot worker group, queue-depth scaling |
+| Built by | Hand | `infra/terraform` (A) + `infra/workers` (D) |
 
-**The rule that decides Saturday:** move only if staging passed step 4. If it
-did not, stay on the current server — it already works, and sprint 4's code
-runs there with the ladder capped at 1080p.
+**The Saturday rule:** move only if staging passed the datastore, worker,
+interruption, restore and 4K gates below. Otherwise leave production on the
+current server. It already runs sprint 4 and is the safer result.
 
 ---
 
-## 1. Build staging
+## 1. Put Terraform state in the remote backend
 
-From `infra/terraform`, with the AWS CLI signed in:
+State contains generated datastore passwords. Before D applies the worker
+module, create the private versioned state bucket and migrate the existing
+local state. Follow [`infra/terraform/README.md`](../infra/terraform/README.md)
+exactly; use a separate backend key for staging and production.
 
-```bash
-docker run --rm -it -v "$PWD:/work" -w /work -v "$HOME/.aws:/root/.aws:ro" \
-  hashicorp/terraform:1.9 apply -var-file=staging.tfvars
-```
-
-> **First time only — 4 Oct.** The first apply failed on the two outbound
-> security-group rules (an apostrophe AWS rejects; fixed in #55). The
-> instance booted without internet access, so its first-boot install never
-> ran. Add `-replace=aws_instance.app` once to rebuild it; the Elastic IP
-> keeps its address.
-
-**Check:** `terraform output` prints `public_ip = "47.128.86.77"`, and
+Checks:
 
 ```bash
-ssh -i ~/.ssh/flickpond-staging.pem ec2-user@47.128.86.77 'docker --version && docker compose version && git --version'
+aws s3api get-public-access-block --bucket <state-bucket>
+aws s3api get-bucket-versioning --bucket <state-bucket>
 ```
 
-prints three versions. If SSH times out, your IP changed since
-`staging.tfvars` was written: update `admin_cidrs` and apply again, or skip
-SSH entirely with `aws ssm start-session --target <instance_id>`.
+All four public-access flags must be `true`; versioning must be `Enabled`.
+Run `terraform plan` a second time after migration. It must describe the same
+infrastructure, not a fresh copy of it.
 
-## 2. Give staging a name and a certificate
+## 2. Review, then create the managed datastores
 
-Staging has no DNS record of its own. `47-128-86-77.sslip.io` resolves to the
-Elastic IP with no setup, and Let's Encrypt issues certificates for it. It
-needs a real HTTPS origin, not an IP address: the session cookie and the
-bucket's CORS both need one.
+Read [`datastore-review.md`](datastore-review.md). Someone other than the
+person running `apply` must read the plan before the first apply that creates
+RDS or ElastiCache.
 
-1. Add it to the bucket's CORS: in `staging.tfvars` set
-   `site_origins = ["https://47-128-86-77.sslip.io", "https://flickpond.com"]`
-   and apply. Both origins, so the same bucket works after the cutover.
-2. On the instance:
+For staging, include both the staging HTTPS origin and `https://flickpond.com`
+in `site_origins`; direct browser uploads need the exact origin in S3 CORS.
+The existing Elastic IP can use `<dashed-ip>.sslip.io` as its staging name.
+
+```bash
+cd infra/terraform
+terraform init -backend-config=staging.backend.hcl
+terraform plan -var-file=staging.tfvars -out=staging.plan
+terraform show staging.plan
+# Stop here until the independent review is recorded.
+terraform apply staging.plan
+```
+
+The apply also shrinks the always-on core to `t4g.small`. Its Elastic IP stays
+with it. Check the contract D consumes:
+
+```bash
+terraform output core_private_ip
+terraform output db_security_group_id
+terraform output cache_security_group_id
+terraform output db_secret_parameter
+terraform output cache_secret_parameter
+```
+
+The last two outputs are parameter names, never secret values.
+
+## 3. Configure the core host
+
+Clone the repository on the core, create the non-secret half of `.env`, then
+fetch the datastore values through its instance role:
 
 ```bash
 sudo mkdir -p /srv && sudo chown ec2-user /srv && cd /srv
 git clone https://github.com/Flickpond/Media_player.git && cd Media_player
-cp deploy/aws/env.aws.example .env      # then fill in the FILL values
-alias dc='docker compose -f docker-compose.yml -f deploy/aws/compose.aws.yml'
-dc up -d --build --scale worker=2       # both flags matter (T-21, T-23)
+cp deploy/aws/env.aws.example .env
+# Fill MINIO_BUCKET from `terraform output bucket_name`, generate JWT_SECRET
+# with `openssl rand -base64 48`, and set METRICS_ENVIRONMENT=staging.
+deploy/aws/fetch-secrets.sh staging
+chmod 600 .env
+
+dc() {
+  docker compose -f docker-compose.yml \
+    -f deploy/aws/compose.aws.yml \
+    -f deploy/aws/compose.core.yml "$@"
+}
+dc config --quiet
+dc up -d --build
 ```
 
-3. Issue the certificate and turn TLS on exactly as in
-   [`deploy/nginx-tls/README.md`](../deploy/nginx-tls/README.md), with
-   `-d 47-128-86-77.sslip.io` and that name as `server_name`. Then
-   `dc restart frontend`.
+The core overlay deliberately runs zero workers and replaces the local
+PostgreSQL and Redis services with empty placeholders. Those names must still
+resolve because the base Compose file uses health-gated dependencies; the
+application itself connects to RDS and ElastiCache from `.env`.
 
-**Check:** `https://47-128-86-77.sslip.io` loads with a valid certificate.
+Issue the staging certificate as described in
+[`deploy/nginx-tls/README.md`](../deploy/nginx-tls/README.md), then restart the
+frontend so nginx reads it.
 
-## 3. Ask the application, not the environment
+Checks — ask the application, not only its environment:
 
 ```bash
-dc exec api python -c "from app.config import get_settings as g; s=g(); print(s.minio_endpoint, s.storage_use_instance_role)"
-dc exec api python -c "from app.services.minio_client import internal_client, bucket; print(internal_client().bucket_exists(bucket()))"
-dc exec worker python -c "from app.config import get_settings as g; s=g(); print(s.worker_hls_max_height, s.worker_ffmpeg_max_height)"
+dc ps
+dc exec api python -c "from app.config import get_settings as g; s=g(); \
+print(s.postgres_dsn.split('@')[-1], s.redis_host, s.redis_ssl)"
+dc exec api python -c "from app.services.minio_client import internal_client, bucket; \
+print(internal_client().bucket_exists(bucket()))"
+dc run --rm queue-metrics --once --dry-run
 ```
 
-Expect `s3.ap-southeast-1.amazonaws.com True`, then `True`, then `2160 1080`.
-A `False` or an access-denied error on the second means the role is not
-reaching the containers: check that the instance has the profile from
-`terraform output instance_profile_name` and that IMDS has a hop limit of 2.
+Expect every running service healthy, an RDS hostname, an ElastiCache hostname
+and `True`, then `True` for the S3 bucket. `dc ps` must show no worker and no
+local PostgreSQL or Redis image holding user data.
 
-## 4. Prove 4K works — the gate for Saturday
+## 4. Prove the network boundary
 
-Register an account, then upload **a real 4K clip of about 60 seconds** —
-phone footage, not a test pattern. A test pattern compresses to almost
-nothing and makes the encoder look much faster than it is.
+From the core and from one worker, connect to RDS on 5432 with TLS and Valkey
+on 6379 with TLS. From a machine outside AWS, both endpoints must be
+unreachable. Test the actual endpoint, not only the Terraform plan.
 
 ```bash
-dc logs worker --no-log-prefix | grep <job id>
+# Outside AWS: both should time out, never connect.
+nc -vz -w 5 <rds-endpoint> 5432
+nc -vz -w 5 <valkey-endpoint> 6379
 ```
 
-Record three times from the log lines: upload → `processing -> done` (the
-MP4), `done` → `ladder ready`, and the total.
+Also inspect both security groups. Their inbound rules may reference only the
+core and worker security groups; no CIDR rule is allowed.
 
-**Passes when:** the ladder reaches `ready`, the player offers 2160p, and the
-ladder took well under `WORKER_FFMPEG_TIMEOUT_SECONDS` (1770 s) — under half,
-so a longer upload still fits. Put the numbers in the sprint report either
-way; a failure here is a result, not a problem to hide.
+## 5. Prove the worker path and interruption recovery
 
-**Also check:** an edit of that clip (downscale to 720p) finishes and gets a
-720p-topped ladder, and the Library shows the upload's thumbnail.
+D applies the worker group only after the datastore review. With staging idle,
+queue a video and verify a spot worker starts, takes it and writes the result
+to S3. Then run the agreed interruption test:
 
-## 5. Saturday: the cutover
+1. start a long encode;
+2. send the worker `docker stop --time 100` (or use AWS FIS);
+3. verify the job returns to `queued` and its partial output is gone;
+4. verify another worker completes it;
+5. repeat only as needed to show the third-interruption cap fails readably.
 
-Decide at **12:00**. If moving:
+Separately, a `docker kill` test proves the heartbeat/reaper path for a worker
+that disappears without warning.
 
-**a. A day earlier — lower the DNS TTL** for `flickpond.com` to 300 seconds
-at the DNS provider, so the switch takes minutes rather than hours.
+## 6. Time a real 4K phone clip
 
-**b. Stop writes on the current server**, so nothing changes during the copy:
+Upload a real 4K phone clip of about 60 seconds. A generated test pattern is
+not evidence: it compresses too easily. Record upload → MP4, MP4 → ladder, and
+total time from the job and worker logs.
+
+Passes when the ladder reaches `ready`, the player offers 2160p, any kept
+60-fps label is correct, and the encode is comfortably inside the timeout.
+Also edit it to 720p and verify that edit's ladder tops out at 720p.
+
+## 7. Rehearse the database move
+
+`pg_dump` is transactionally consistent, so production can stay online for
+the rehearsal. On the current server:
+
+```bash
+cd /root/Media_player
+docker compose exec -T postgres \
+  pg_dump -U flickpond -Fc flickpond > /root/flickpond-rehearsal.dump
+```
+
+Copy the dump to `/srv/` on the staging core. Stop staging writers and make
+sure D's staging worker desired count is zero, then restore through a temporary
+PostgreSQL client container:
+
+```bash
+dc stop api reaper queue-metrics
+docker run --rm -i --env-file .env postgres:16-alpine \
+  sh -c 'exec pg_restore --dbname="$POSTGRES_DSN" --clean --if-exists \
+  --no-owner --no-privileges' < /srv/flickpond-rehearsal.dump
+dc up -d
+```
+
+Because `POSTGRES_DSN` ends in `sslmode=require`, `pg_restore` also refuses a
+plaintext connection. Verify the old users and jobs exist, an old object's key
+still resolves after its matching object is copied to S3, and `alembic current`
+reports the expected revision.
+
+## 8. Friday preparation
+
+- Every track has an open, green PR and the cutover commit is known.
+- Lower the `flickpond.com` A-record TTL to 300 seconds at Spaceship.
+- Create the AWS monthly budget alert at **USD 80** and confirm its recipient.
+- Take a fresh size reading of MinIO (expected about 465 MB).
+- Confirm the Alibaba host has enough free disk for one dump and one object
+  export.
+- Confirm the rollback host will be kept untouched for one week.
+
+## 9. Saturday cutover
+
+Decide at **12:00 Asia/Singapore**. Announce the write freeze before stopping
+anything.
+
+### a. Freeze writes and take the final database dump
 
 ```bash
 ssh -i <key>.pem root@47.238.64.156
-cd /root/Media_player && docker compose stop api worker reaper
+cd /root/Media_player
+docker compose stop api worker reaper
+docker compose exec -T postgres \
+  pg_dump -U flickpond -Fc flickpond > /root/flickpond-cutover.dump
 ```
 
-The site shows errors from here until DNS moves. Say so in the group first.
-
-**c. Copy the database.**
+Copy the dump to `/srv/flickpond-cutover.dump` on the AWS core. Stop AWS
+writers and set the production worker group desired count to zero, then:
 
 ```bash
-# on the current server
-docker compose exec -T postgres pg_dump -U flickpond -Fc flickpond > /root/flickpond-cutover.dump
-# copy it to AWS (from your machine)
-scp -i <key>.pem root@47.238.64.156:/root/flickpond-cutover.dump .
-scp -i ~/.ssh/flickpond-staging.pem flickpond-cutover.dump ec2-user@47.128.86.77:/srv/
-# on AWS: the staging rows go -- they were test data
-dc stop api worker reaper
-dc exec -T postgres pg_restore -U flickpond -d flickpond --clean --if-exists < /srv/flickpond-cutover.dump
+dc stop api reaper queue-metrics
+docker run --rm -i --env-file .env postgres:16-alpine \
+  sh -c 'exec pg_restore --dbname="$POSTGRES_DSN" --clean --if-exists \
+  --no-owner --no-privileges' < /srv/flickpond-cutover.dump
 ```
 
-**d. Copy the objects.** Check the size first (`du -sh` on MinIO's volume);
-the AWS host has 50 GB of disk. On the current server, export MinIO's bucket
-to disk, then copy the folder to AWS and upload it with the role:
+### b. Copy MinIO to S3
+
+On the current server, export the bucket without putting credentials in the
+command line:
 
 ```bash
-# on the current server
-# --env-file hands the container this server's MinIO keys; single quotes keep
-# them unexpanded until they are inside it.
 docker run --rm --network media_player_default --env-file .env \
   -v /root/minio-export:/out --entrypoint sh minio/mc \
   -c 'mc alias set old http://minio:9000 "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" && mc mirror old/videos /out'
-# copy /root/minio-export to /srv/minio-export on AWS (scp -r, or rsync -e ssh), then on AWS:
-aws s3 sync /srv/minio-export "s3://$(grep ^MINIO_BUCKET .env | cut -d= -f2)/"
 ```
 
-The object keys (`uploads/…`, `outputs/…`) are the same in both stores, so
-the restored rows point at the right objects without any rewriting.
-If the network is named differently, `docker network ls` on that server
-shows it.
-
-**e. Bring the certificate across** so HTTPS works the moment DNS moves:
-copy `deploy/certbot/conf/` from the current server into the same path on
-AWS, add `flickpond.com` to `deploy/nginx-tls/tls.conf` as the current
-server has it, and run `dc up -d`.
-
-**f. Point DNS** — `flickpond.com` A record → `47.128.86.77`.
-
-**g. Verify on production:** sign in; an old video still plays; a new 4K
-upload plays in 4K; thumbnails show; a 1 GB upload completes with a progress
-bar.
-
-### Rolling back
-
-Point DNS back to `47.238.64.156` and `docker compose start api worker
-reaper` on the current server. **Anything uploaded on AWS after the cutover
-is not on the old server** — the longer AWS runs before a rollback, the more
-that is. Keep the current server, untouched, for a week before shutting it
-down.
-
-## 6. Rotate the admin password
-
-The operator password has been in chat logs since 11 September. Rotate it on
-whichever server is live after Saturday — and on the other one too, if both
-are kept. You type the new password; it is never shown, logged or stored in
-shell history.
+Copy `/root/minio-export` to `/srv/minio-export` on the core, then:
 
 ```bash
-docker compose exec api python -c "
+aws s3 sync /srv/minio-export "s3://$(sed -n 's/^MINIO_BUCKET=//p' .env)/"
+```
+
+The object keys remain unchanged, so restored rows need no rewrite. Compare
+object counts and total bytes before continuing.
+
+### c. Certificates, services and DNS
+
+Copy `deploy/certbot/conf/` from the current server to the same path on the
+core. Configure the canonical `flickpond.com` TLS block and the `www` redirect,
+then:
+
+```bash
+git fetch origin
+git reset --hard <cutover-commit>
+deploy/aws/fetch-secrets.sh production
+dc up -d --build
+curl -fsS http://127.0.0.1/api/health
+```
+
+Point the `flickpond.com` A record to the core's Elastic IP. Do not widen the
+session cookie domain; `www` must redirect to the bare domain (T-24).
+
+### d. Production verification
+
+- Sign in and play an old video.
+- Upload a new 4K phone clip and play it at 2160p.
+- Complete and resume a 1 GB direct upload.
+- Confirm thumbnails and editing.
+- Delete a test account and confirm its S3 objects are gone.
+- Confirm the health alarm is armed.
+- With the queue empty, confirm the worker group returns to its scheduled
+  minimum.
+
+## 10. Rotate the operator password
+
+The old operator password appeared in chat logs. Rotate it on the AWS core
+after production verification, and on the rollback host while that host is
+retained. Enter it interactively; never place it in shell history or chat.
+
+```bash
+dc exec api python -c "
 import asyncio, getpass
 from sqlalchemy import update
 from app.database import get_session_factory
@@ -198,18 +293,20 @@ asyncio.run(main())
 "
 ```
 
-**Check:** signing in with the old password fails and the new one works.
-Sessions already open stay valid until their token expires (30 minutes at
-most) — a JWT cannot be revoked early.
+Signing in with the old password must fail. Existing JWT sessions remain valid
+until their 30-minute maximum lifetime expires.
 
-Keep the new password in a password manager. **Do not paste it into chat**,
-including into an AI assistant: that is how the last one leaked.
+## 11. Rollback
 
-## 7. Afterwards
+Point DNS back to `47.238.64.156` and start `api`, two workers and the reaper
+there:
 
-- **Stop paying for idle staging.** If staging and production are separate
-  instances, stop staging when it isn't being tested:
-  `aws ec2 stop-instances --instance-ids <id>`.
-- **Remote Terraform state** (sprint 5), before D's autoscaling module is
-  applied: state is on one laptop today.
-- **Close the old server** after a quiet week; take a final `pg_dump` first.
+```bash
+docker compose start api reaper
+docker compose up -d --scale worker=2
+docker compose restart frontend
+```
+
+Anything uploaded after AWS opened for writes is not on the old host. Record
+those job IDs before rolling back. Keep the Alibaba server untouched for one
+week, then take one final dump before shutting it down.

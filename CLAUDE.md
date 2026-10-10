@@ -55,11 +55,13 @@ exactly — those are the only two CORS origins.
 
 1. **Never commit credentials or keys.** `*.pem`, `*.key` and `deploy/certbot/`
    are gitignored; check `git diff --cached --name-only` before committing.
-2. **Only nginx is published beyond loopback.** PostgreSQL, Redis, MinIO and the
-   API are pinned to `127.0.0.1` in `docker-compose.yml` and that is not
-   configurable. Use an SSH tunnel to reach them. The API enforces per-user
-   ownership since S2-03; the datastores behind it do not, so anything that
-   reaches one of them directly still reads every user's data.
+2. **Only nginx is public.** In the local and current-server Compose stack,
+   PostgreSQL, Redis, MinIO and the API are pinned to `127.0.0.1` and that is
+   not configurable; use an SSH tunnel. On AWS, RDS and ElastiCache have no
+   public address and admit only the core and worker security groups. Do not
+   add a CIDR ingress rule, even temporarily. The API enforces per-user
+   ownership; the datastores do not, so direct access still reaches every
+   user's data, and write access to RQ is code execution on a worker.
 3. **Every file under `tests/integration/` needs the `RUN_POSTGRES_TESTS`
    skip guard.** An ungated one breaks CI and every teammate's test run.
 4. **The worker is the sole writer** to `status`, `output_key`, `error`,
