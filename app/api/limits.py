@@ -24,11 +24,17 @@ class LimitsResponse(BaseModel):
     # The tallest an edit may scale to. The editor's per-video choices are on
     # each job as `edit_options`; this is the ceiling they are all under.
     max_edit_height: int
+    # The largest file `POST /uploads` accepts. Here so the page can say
+    # "up to 2 GB" and refuse a bigger file before sending any of it, rather
+    # than quoting the number from a 413 after the fact.
+    max_upload_bytes: int
 
 
 @router.get("/limits", response_model=LimitsResponse)
 async def get_limits() -> LimitsResponse:
+    settings = get_settings()
     return LimitsResponse(
-        max_duration_seconds=max(0, get_settings().media_max_duration_seconds),
+        max_duration_seconds=max(0, settings.media_max_duration_seconds),
         max_edit_height=MAX_SCALE_HEIGHT,
+        max_upload_bytes=settings.max_upload_bytes,
     )

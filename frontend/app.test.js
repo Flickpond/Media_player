@@ -437,6 +437,104 @@ describe("upload", () => {
     expect(el.uploadProgress.hidden).toBe(true);
   });
 
+  it("says the size limit beside the duration limit, in whole gigabytes", async () => {
+    const el = await loadApp({
+      limits: { max_duration_seconds: 300, max_edit_height: 2160, max_upload_bytes: 2 * 1024 ** 3 },
+    });
+
+    expect(el.dropzoneHint.textContent).toBe(
+      "MP4, MOV, WebM, MKV, or AVI, up to 5 minutes and 2 GB.",
+    );
+  });
+
+  it("refuses a file over the size limit before sending any of it", async () => {
+    const el = await loadApp({
+      limits: { max_duration_seconds: 0, max_edit_height: 2160, max_upload_bytes: 2 * 1024 ** 3 },
+    });
+
+    chooseFile(el.fileInput, fileOfSize(3 * 1024 ** 3));
+    el.fileInput.dispatchEvent(new Event("change"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.status.textContent).toBe("That file is larger than the 2 GB limit.");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("turns a 413 into the limit in words, not a byte count", async () => {
+    const el = await loadApp({
+      limits: { max_duration_seconds: 0, max_edit_height: 2160, max_upload_bytes: 2 * 1024 ** 3 },
+    });
+    // The cap was lowered after this page loaded, so the page's own check
+    // passes and the server is the one that says no.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ error: "upload exceeds maximum size of 2147483648 bytes" }, false, 413),
+    );
+
+    await uploadFile(el, fileOfSize(1024));
+
+    expect(el.status.textContent).toBe("That file is larger than the 2 GB limit.");
+    expect(el.dropzone.classList.contains("busy")).toBe(false);
+  });
+
+  it("says a 413 plainly even when the server has no /limits", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "too big" }, false, 413));
+
+    await uploadFile(el, fileOfSize(1024));
+
+    expect(el.status.textContent).toBe("That file is larger than this server accepts.");
+  });
+
+  it("retries a part that hit a storage error, and finishes the upload", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ upload_id: "up-1", part_size: 2, part_count: 1 }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "1": "http://minio/p1" } }));
+    fetchMock.mockResolvedValueOnce(partResponse(null, false, 503));
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    fetchMock.mockResolvedValueOnce(partResponse('"e1"'));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }));
+    fetchMock.mockResolvedValue(jsonResponse({ id: "job-1", status: "queued" }));
+
+    await uploadFile(el);
+    await vi.advanceTimersByTimeAsync(3000);
+
+    const puts = fetchMock.mock.calls.filter(([url]) => url === "http://minio/p1");
+    expect(puts).toHaveLength(3);
+    const complete = fetchMock.mock.calls.find(([url]) => url === "/api/uploads/up-1/complete");
+    expect(JSON.parse(complete[1].body)).toEqual({ parts: [{ n: 1, etag: '"e1"' }] });
+    expect(el.jobBadge.textContent).toBe("Queued");
+  });
+
+  it("gives up on a part after three failed tries", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ upload_id: "up-1", part_size: 2, part_count: 1 }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "1": "http://minio/p1" } }));
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    await uploadFile(el);
+    await vi.advanceTimersByTimeAsync(3000);
+
+    const puts = fetchMock.mock.calls.filter(([url]) => url === "http://minio/p1");
+    expect(puts).toHaveLength(3);
+    expect(el.status.textContent).toContain("connection dropped");
+    expect(el.dropzone.classList.contains("busy")).toBe(false);
+  });
+
+  it("does not retry a part storage refused outright", async () => {
+    // A 403 is an expired or refused signature: the same request fails again.
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ upload_id: "up-1", part_size: 2, part_count: 1 }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "1": "http://minio/p1" } }));
+    fetchMock.mockResolvedValueOnce(partResponse(null, false, 403));
+
+    await uploadFile(el);
+    await vi.advanceTimersByTimeAsync(3000);
+
+    const puts = fetchMock.mock.calls.filter(([url]) => url === "http://minio/p1");
+    expect(puts).toHaveLength(1);
+    expect(el.status.textContent).toContain("HTTP 403");
+  });
+
   it("names the CORS rule when storage does not expose the ETag", async () => {
     const el = await loadApp();
     fetchMock.mockResolvedValueOnce(jsonResponse({ upload_id: "up-1", part_size: 2, part_count: 1 }));

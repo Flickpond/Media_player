@@ -534,6 +534,12 @@ function describeLimit(seconds) {
   return `${seconds} seconds`;
 }
 
+/** A size limit the way a person would say it: "2 GB", not "2.0 GB". */
+function describeSize(bytes) {
+  const gib = 1024 ** 3;
+  return bytes % gib === 0 ? `${bytes / gib} GB` : formatBytes(bytes);
+}
+
 /** Say the duration limit next to the picker, when there is one.
  *
  * The size figure that used to live here is gone with the limit it described:
@@ -542,8 +548,11 @@ function describeLimit(seconds) {
  * still goes through the one-shot endpoint, which still stops at 100 MB, and
  * `sendWholeFile` is where that is said. */
 function applyLimitHint() {
-  if (limits?.max_duration_seconds > 0) {
-    el.dropzoneHint.textContent = `MP4, MOV, WebM, MKV, or AVI, up to ${describeLimit(limits.max_duration_seconds)}.`;
+  const bounds = [];
+  if (limits?.max_duration_seconds > 0) bounds.push(describeLimit(limits.max_duration_seconds));
+  if (limits?.max_upload_bytes > 0) bounds.push(describeSize(limits.max_upload_bytes));
+  if (bounds.length > 0) {
+    el.dropzoneHint.textContent = `MP4, MOV, WebM, MKV, or AVI, up to ${bounds.join(" and ")}.`;
   }
 }
 
@@ -699,6 +708,34 @@ async function signPart(uploadId, number) {
   return url;
 }
 
+// Parts go one at a time, so without a retry one dropped connection on part
+// 40 of 64 ends the whole upload -- resumable, but only after the reader picks
+// the file again. Three tries, a second then two apart, cover the blip. Only
+// failures that can come out differently next time are retried: the network
+// (fetch rejects), a 5xx, 408 and 429. A 403 is an expired or refused URL, and
+// the same request would be refused the same way.
+const PART_ATTEMPTS = 3;
+const PART_RETRY_DELAY_MS = 1000;
+
+function isWorthRetrying(status) {
+  return status >= 500 || status === 408 || status === 429;
+}
+
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function putPartWithRetries(url, blob) {
+  for (let attempt = 1; ; attempt += 1) {
+    const last = attempt === PART_ATTEMPTS;
+    try {
+      const res = await fetch(url, { method: "PUT", body: blob, credentials: "omit" });
+      if (res.ok || last || !isWorthRetrying(res.status)) return res;
+    } catch (err) {
+      if (last) throw new Error(`the connection dropped while sending a part (${err.message})`);
+    }
+    await pause(PART_RETRY_DELAY_MS * attempt);
+  }
+}
+
 /** PUT one part straight to storage and hand back its ETag.
  *
  * The API cookie must not follow this request: storage is a different service
@@ -707,7 +744,7 @@ async function signPart(uploadId, number) {
  * every part succeeds and completion fails for a reason that looks nothing
  * like the cause -- so it is worth naming. */
 async function putPart(url, blob) {
-  const res = await fetch(url, { method: "PUT", body: blob, credentials: "omit" });
+  const res = await putPartWithRetries(url, blob);
   if (!res.ok) throw new Error(`storage rejected a part (HTTP ${res.status})`);
   const etag = res.headers.get("ETag");
   if (!etag) {
@@ -953,6 +990,13 @@ async function handleFile(file) {
     setStatus(`That file is larger than the ${formatBytes(MAX_FILE_SIZE_BYTES)} limit.`);
     return;
   }
+  // The direct path's own cap, from /limits: refused here before a single part
+  // goes, instead of by a 413 once the session is asked for.
+  const maxUpload = limits?.max_upload_bytes ?? 0;
+  if (canUploadDirectly(file) && maxUpload > 0 && file.size > maxUpload) {
+    setStatus(`That file is larger than the ${describeSize(maxUpload)} limit.`);
+    return;
+  }
 
   // A new upload always wins over whatever the previous job was doing.
   stopPolling();
@@ -996,6 +1040,18 @@ async function handleFile(file) {
     if (err.status === 401) {
       showSignedOut();
       setAuthStatus("Your session expired. Sign in again.");
+      setBusy(false);
+      return;
+    }
+    if (err.status === 413) {
+      // A server without /limits, or one whose cap changed since this page
+      // loaded: still say it plainly, rather than "exceeds 2147483648 bytes".
+      const maxUpload = limits?.max_upload_bytes ?? 0;
+      setStatus(
+        maxUpload > 0
+          ? `That file is larger than the ${describeSize(maxUpload)} limit.`
+          : "That file is larger than this server accepts.",
+      );
       setBusy(false);
       return;
     }
