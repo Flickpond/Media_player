@@ -98,6 +98,12 @@ class Settings(BaseSettings):
     thumbnail_max_height: int = 360
     reaper_interval_seconds: int = 60
     reaper_lease_seconds: int = 1800
+    # How long a job may be processing before the reaper asks RQ whether its
+    # worker is still alive (the heartbeat in the started registry). A dead
+    # worker is then found within minutes; `reaper_lease_seconds` remains the
+    # backstop for one that is alive but stuck. Longer than RQ's 90-second
+    # heartbeat expiry, so a slow heartbeat is never mistaken for a death.
+    reaper_abandoned_seconds: int = 300
     reaper_orphan_grace_seconds: int = 3600
 
     # Queue depth published to CloudWatch (app/metrics/queue_depth.py), the
