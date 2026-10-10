@@ -28,7 +28,7 @@ dependencies = [
   "bcrypt>=4.2,<5",
   # RSA signing for CloudFront signed URLs (botocore's CloudFrontSigner takes
   # the signing function from the caller).
-  "cryptography>=43,<47",
+  "cryptography>=50.0.2,<51",
   # CloudWatch, for the queue-depth publisher. The S3 path keeps using the
   # minio client; this is not a second storage client.
   "boto3>=1.35,<2",
