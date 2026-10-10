@@ -36,6 +36,11 @@ services:
   api:
     environment:
       <<: *instance-role
+      # HLS segments through CloudFront once cdn.tf is applied; empty keeps
+      # them on S3. Written by fetch-secrets.sh. Only the API signs URLs.
+      CLOUDFRONT_DOMAIN: ${CLOUDFRONT_DOMAIN:-}
+      CLOUDFRONT_KEY_PAIR_ID: ${CLOUDFRONT_KEY_PAIR_ID:-}
+      CLOUDFRONT_PRIVATE_KEY_B64: ${CLOUDFRONT_PRIVATE_KEY_B64:-}
 
   worker:
     # A stopped worker gives its job back (app.worker.interruption) in a few

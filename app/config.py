@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     # or the page blocks them as mixed content. One flag cannot be both.
     minio_public_use_ssl: bool = False
     output_url_expiry_seconds: int = 3600
+    # CloudFront in front of the bucket, for HLS segments: the traffic that
+    # grows with every viewer. All three empty -- the default, and every
+    # local and Compose stack -- keeps signing segments against storage
+    # directly. On AWS they come from SSM via deploy/aws/fetch-secrets.sh.
+    # The key is a base64-encoded PEM, so it fits on one .env line.
+    cloudfront_domain: str = ""
+    cloudfront_key_pair_id: str = ""
+    cloudfront_private_key_b64: str = ""
     # Bound each multipart upload before creating a session or storage object.
     max_upload_bytes: int = Field(default=2 * 1024**3, gt=0)
 

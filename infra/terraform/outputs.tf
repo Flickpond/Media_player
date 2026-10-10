@@ -87,3 +87,8 @@ output "db_secret_parameter" {
 output "cache_secret_parameter" {
   value = aws_ssm_parameter.cache_token.name
 }
+
+output "cdn_domain" {
+  description = "Where HLS segments are served from, behind signed URLs."
+  value       = aws_cloudfront_distribution.videos.domain_name
+}
