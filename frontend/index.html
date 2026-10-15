@@ -247,12 +247,18 @@
             >
               <div id="upload-progress-fill" class="progress-fill"></div>
             </div>
-            <!-- The bar above is the accessible control; this line is the same
-                 number spelled out, so it does not need announcing twice. -->
-            <div class="upload-progress-line" aria-hidden="true">
-              <span id="upload-progress-percent" class="upload-progress-percent">0%</span>
-              <span id="upload-progress-rate"></span>
-              <span id="upload-progress-eta"></span>
+            <div class="upload-progress-foot">
+              <!-- The bar above is the accessible control; this line is the same
+                   number spelled out, so it does not need announcing twice. -->
+              <div class="upload-progress-line" aria-hidden="true">
+                <span id="upload-progress-percent" class="upload-progress-percent">0%</span>
+                <span id="upload-progress-rate"></span>
+                <span id="upload-progress-eta"></span>
+              </div>
+              <!-- Outside the line above on purpose: that line is hidden from
+                   assistive tech, and this is the only control in here. It goes
+                   away with the bar, which is what says the transfer is over. -->
+              <button type="button" id="upload-cancel" class="btn-ghost upload-cancel">Cancel</button>
             </div>
           </div>
 

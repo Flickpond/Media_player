@@ -61,6 +61,7 @@ async function loadApp({ signedIn = true, role = "user", limits = null } = {}) {
     uploadProgressPercent: document.getElementById("upload-progress-percent"),
     uploadProgressRate: document.getElementById("upload-progress-rate"),
     uploadProgressEta: document.getElementById("upload-progress-eta"),
+    uploadCancel: document.getElementById("upload-cancel"),
     jobActions: document.getElementById("job-actions"),
     jobRetry: document.getElementById("job-retry"),
     player: document.getElementById("player"),
@@ -156,10 +157,14 @@ function fileOfSize(size, name = "holiday.mp4", type = "video/mp4") {
 
 /** Note a session down the way a reloaded page would find it. `file` is the
  *  file it was started from, so the identity the page checks comes from the
- *  same place it does. */
+ *  same place it does.
+ *
+ * One key per upload, as the app writes them: a second tab's note is a second
+ * key, never a replacement. `startedAt` is now, because a note older than the
+ * server's 24 hour session is dropped as un-resumable. */
 function rememberUpload(file, overrides = {}) {
   localStorage.setItem(
-    "flickpond.pending-upload",
+    `flickpond.pending-upload.${overrides.uploadId ?? "up-1"}`,
     JSON.stringify({
       uploadId: "up-1",
       partSize: 2,
@@ -168,7 +173,7 @@ function rememberUpload(file, overrides = {}) {
       filename: file.name,
       size: file.size,
       lastModified: file.lastModified,
-      startedAt: 1,
+      startedAt: Date.now(),
       ...overrides,
     }),
   );
@@ -189,6 +194,62 @@ function mockDirectUpload({ jobId = "job-1" } = {}) {
     jsonResponse({ upload_id: "up-1", part_size: 16777216, part_count: 1 }),
   );
   mockUploadRest({ jobId });
+}
+
+/** Storage that answers only when the test says so.
+ *
+ * Parts stay in flight until the test lands them, which is what lets a test
+ * watch the pool and act on a transfer while it is still going. The PUT
+ * honours its abort signal the way a real fetch does -- with `onAbort` saying
+ * whether the bytes had already reached storage when the page gave up, since
+ * both really happen. */
+function holdParts({ partCount = 3, partSize = 2, uploadId = "up-1", onAbort = "reject" } = {}) {
+  const started = [];
+  const held = new Map();
+  let finished = null;
+
+  fetchMock.mockImplementation(async (url, init = {}) => {
+    if (url === "/api/uploads") {
+      return jsonResponse({ upload_id: uploadId, part_size: partSize, part_count: partCount });
+    }
+    if (url.endsWith("/parts")) {
+      const n = JSON.parse(init.body).part_numbers[0];
+      return jsonResponse({ urls: { [n]: `http://minio/p${n}` } });
+    }
+    if (url === `/api/uploads/${uploadId}`) {
+      return { ok: true, status: 204, json: async () => ({}) };
+    }
+    if (url.endsWith("/complete")) {
+      // Held like the parts: the readout of the last part is only visible
+      // until completion answers, which on a real link is a round trip away.
+      return new Promise((resolve) => {
+        finished = () => resolve(jsonResponse({ job_id: "job-1" }));
+      });
+    }
+    if (url.startsWith("http://minio/")) {
+      const n = Number(url.slice("http://minio/p".length));
+      started.push(n);
+      return new Promise((resolve, reject) => {
+        const answer = partResponse(`"e${n}"`);
+        held.set(n, () => resolve(answer));
+        init.signal?.addEventListener("abort", () => {
+          if (onAbort === "reject") reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          else resolve(answer);
+        });
+      });
+    }
+    return jsonResponse({ id: "job-1", status: "queued" });
+  });
+
+  return {
+    started,
+    land: (n) => held.get(n)(),
+    complete: async () => {
+      // Completion is asked for a microtask after the last part lands.
+      await vi.waitFor(() => expect(finished).not.toBeNull());
+      finished();
+    },
+  };
 }
 
 /** Select a file (via the hidden input's change event) and let the upload
@@ -296,38 +357,15 @@ describe("upload", () => {
 
   it("shows a percentage, a rate and a time left as the parts land", async () => {
     const el = await loadApp();
-    let releaseSecond;
-    let releaseThird;
-    let releaseCompletion;
-
-    fetchMock.mockResolvedValueOnce(jsonResponse({ upload_id: "up-1", part_size: 2, part_count: 3 }));
-    fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "1": "http://minio/p1" } }));
-    fetchMock.mockResolvedValueOnce(partResponse('"e1"'));
-    fetchMock.mockReturnValueOnce(
-      new Promise((resolve) => {
-        releaseSecond = () => resolve(jsonResponse({ urls: { "2": "http://minio/p2" } }));
-      }),
-    );
-    fetchMock.mockResolvedValueOnce(partResponse('"e2"'));
-    fetchMock.mockReturnValueOnce(
-      new Promise((resolve) => {
-        releaseThird = () => resolve(jsonResponse({ urls: { "3": "http://minio/p3" } }));
-      }),
-    );
-    fetchMock.mockResolvedValueOnce(partResponse('"e3"'));
-    fetchMock.mockReturnValueOnce(
-      new Promise((resolve) => {
-        releaseCompletion = () => resolve(jsonResponse({ job_id: "job-1" }));
-      }),
-    );
-    fetchMock.mockResolvedValue(jsonResponse({ id: "job-1", status: "queued" }));
+    const storage = holdParts();
 
     // Six real bytes, so the three 2-byte parts are really 2 bytes each.
-    chooseFile(el.fileInput, new File(["abcdef"], "holiday.mp4", { type: "video/mp4" }));
-    el.fileInput.dispatchEvent(new Event("change"));
-    await vi.advanceTimersByTimeAsync(0);
+    await uploadFile(el, new File(["abcdef"], "holiday.mp4", { type: "video/mp4" }));
+    await vi.waitFor(() => expect(storage.started).toEqual([1, 2, 3]));
 
     // Two of six bytes up: a third, and one measurement is not yet a rate.
+    storage.land(1);
+    await vi.advanceTimersByTimeAsync(0);
     expect(el.uploadProgress.hidden).toBe(false);
     expect(el.uploadProgressPercent.textContent).toBe("33%");
     expect(el.uploadProgressFill.style.width).toBe("33%");
@@ -337,7 +375,7 @@ describe("upload", () => {
 
     // Two seconds later the second part lands, so the window has a rate.
     await vi.advanceTimersByTimeAsync(2000);
-    releaseSecond();
+    storage.land(2);
     await vi.advanceTimersByTimeAsync(0);
 
     expect(el.uploadProgressPercent.textContent).toBe("67%");
@@ -345,17 +383,111 @@ describe("upload", () => {
     expect(el.uploadProgressEta.textContent).toBe("about 2s left");
 
     await vi.advanceTimersByTimeAsync(2000);
-    releaseThird();
+    storage.land(3);
     await vi.advanceTimersByTimeAsync(0);
 
     expect(el.uploadProgressPercent.textContent).toBe("100%");
     expect(el.uploadProgressEta.textContent).toBe("almost done");
 
     // The bar belongs to the transfer, so it goes when the transfer does.
-    releaseCompletion();
+    await storage.complete();
     await vi.advanceTimersByTimeAsync(0);
     expect(el.uploadProgress.hidden).toBe(true);
     expect(el.jobBadge.textContent).toBe("Queued");
+  });
+
+  it("keeps three parts in the air, and starts another as one lands", async () => {
+    const el = await loadApp();
+    const storage = holdParts({ partCount: 6 });
+
+    await uploadFile(el, fileOfSize(12));
+
+    // Six parts, three at a time: the fourth waits for one of the first three
+    // to land instead of queueing up behind nothing.
+    await vi.waitFor(() => expect(storage.started).toEqual([1, 2, 3]));
+    storage.land(2);
+    await vi.waitFor(() => expect(storage.started).toEqual([1, 2, 3, 4]));
+
+    storage.land(1);
+    storage.land(3);
+    await vi.waitFor(() => expect(storage.started).toEqual([1, 2, 3, 4, 5, 6]));
+
+    storage.land(4);
+    storage.land(5);
+    storage.land(6);
+    await storage.complete();
+    await vi.waitFor(() => expect(el.jobBadge.textContent).toBe("Queued"));
+  });
+
+  // --- cancelling an upload in progress (#67) -------------------------------
+
+  it("stops the part in flight, the parts behind it and the session on the server", async () => {
+    const el = await loadApp();
+    const storage = holdParts({ partCount: 6 });
+
+    await uploadFile(el, fileOfSize(12));
+    await vi.waitFor(() => expect(storage.started).toEqual([1, 2, 3]));
+
+    // Two presses: the second must not send a second DELETE.
+    el.uploadCancel.dispatchEvent(new Event("click"));
+    el.uploadCancel.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(el.status.textContent).toBe("Upload cancelled."));
+    await vi.advanceTimersByTimeAsync(0);
+
+    const deletes = fetchMock.mock.calls.filter(
+      ([url, init]) => url === "/api/uploads/up-1" && init?.method === "DELETE",
+    );
+    expect(deletes).toHaveLength(1);
+    // Nothing further is signed or sent, and no session is completed.
+    expect(storage.started).toEqual([1, 2, 3]);
+    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/parts"))).toHaveLength(3);
+    expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/complete"))).toBe(false);
+
+    // The card is back to where it was before a file was picked, with no note
+    // left for a prompt the reader did not ask for.
+    expect(el.uploadProgress.hidden).toBe(true);
+    expect(el.dropzone.classList.contains("busy")).toBe(false);
+    expect(el.resumePrompt.hidden).toBe(true);
+    expect(localStorage.getItem("flickpond.pending-upload.up-1")).toBeNull();
+  });
+
+  it("starts no further part after a cancel, even when the part in flight lands anyway", async () => {
+    const el = await loadApp();
+    const storage = holdParts({ partCount: 4, onAbort: "land" });
+
+    await uploadFile(el, fileOfSize(8));
+    await vi.waitFor(() => expect(storage.started).toEqual([1, 2, 3]));
+
+    el.uploadCancel.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(el.status.textContent).toBe("Upload cancelled."));
+
+    // The three parts were already on their way; the fourth is never signed.
+    expect(storage.started).toEqual([1, 2, 3]);
+    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/parts"))).toHaveLength(3);
+  });
+
+  it("cancels without the server's answer when the DELETE cannot be made", async () => {
+    const el = await loadApp();
+    const storage = holdParts();
+
+    await uploadFile(el, new File(["abcdef"], "holiday.mp4", { type: "video/mp4" }));
+    await vi.waitFor(() => expect(storage.started).toEqual([1, 2, 3]));
+
+    fetchMock.mockRejectedValueOnce(new Error("connection refused"));
+    el.uploadCancel.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(el.status.textContent).toBe("Upload cancelled."));
+
+    expect(el.dropzone.classList.contains("busy")).toBe(false);
+    expect(el.uploadProgress.hidden).toBe(true);
+  });
+
+  it("does nothing when Cancel is pressed with no upload running", async () => {
+    const el = await loadApp();
+
+    el.uploadCancel.dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("asks to keep 60 fps when the box is ticked", async () => {
@@ -834,9 +966,11 @@ describe("resuming an upload", () => {
         job_id: null,
       }),
     );
+    // Both missing parts are signed before either is sent: they are in the air
+    // together, and the responses answer them in the order they were asked for.
     fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "2": "http://minio/p2" } }));
-    fetchMock.mockResolvedValueOnce(partResponse('"e2"'));
     fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "3": "http://minio/p3" } }));
+    fetchMock.mockResolvedValueOnce(partResponse('"e2"'));
     fetchMock.mockResolvedValueOnce(partResponse('"e3"'));
     fetchMock.mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }));
     fetchMock.mockResolvedValue(jsonResponse({ id: "job-1", status: "queued" }));
@@ -860,7 +994,7 @@ describe("resuming an upload", () => {
     ]);
 
     // There is a job now, so there is nothing left to come back to.
-    expect(localStorage.getItem("flickpond.pending-upload")).toBeNull();
+    expect(localStorage.getItem("flickpond.pending-upload.up-1")).toBeNull();
     expect(el.jobBadge.textContent).toBe("Queued");
   });
 
@@ -909,7 +1043,7 @@ describe("resuming an upload", () => {
 
     expect(fetchMock.mock.calls[0]).toEqual(["/api/uploads/up-1", { method: "DELETE" }]);
     expect(el.resumePrompt.hidden).toBe(true);
-    expect(localStorage.getItem("flickpond.pending-upload")).toBeNull();
+    expect(localStorage.getItem("flickpond.pending-upload.up-1")).toBeNull();
   });
 
   it("uploads anyway when the browser refuses to keep anything", async () => {
@@ -938,6 +1072,109 @@ describe("resuming an upload", () => {
     el.resumeChoose.dispatchEvent(new Event("click"));
 
     expect(clicked).toHaveBeenCalled();
+  });
+
+  // --- one note per upload (#69) --------------------------------------------
+
+  it("keeps a note per upload, so a second tab does not overwrite the first", async () => {
+    const older = new File(["abcdef"], "first.mp4", { type: "video/mp4" });
+    const newer = new File(["ghijkl"], "second.mp4", { type: "video/mp4" });
+    rememberUpload(older, { uploadId: "up-1", startedAt: Date.now() - 60_000 });
+    rememberUpload(newer, { uploadId: "up-2" });
+    const el = await loadApp();
+
+    // Both notes are still there, and the prompt names the newest.
+    expect(el.resumePrompt.hidden).toBe(false);
+    expect(el.resumeText.textContent).toContain("second.mp4");
+    expect(localStorage.getItem("flickpond.pending-upload.up-1")).not.toBeNull();
+
+    // Choosing the older file picks up its own session, not the newest note.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        parts_done: [{ n: 1, etag: '"e1"' }],
+        state: "open",
+        part_size: 2,
+        part_count: 3,
+        job_id: null,
+      }),
+    );
+    fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "2": "http://minio/p2" } }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ urls: { "3": "http://minio/p3" } }));
+    fetchMock.mockResolvedValueOnce(partResponse('"e2"'));
+    fetchMock.mockResolvedValueOnce(partResponse('"e3"'));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }));
+    fetchMock.mockResolvedValue(jsonResponse({ id: "job-1", status: "queued" }));
+
+    await uploadFile(el, older);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/uploads/up-1");
+    const complete = fetchMock.mock.calls.find(([url]) => url === "/api/uploads/up-1/complete");
+    expect(JSON.parse(complete[1].body).parts).toEqual([
+      { n: 1, etag: '"e1"' },
+      { n: 2, etag: '"e2"' },
+      { n: 3, etag: '"e3"' },
+    ]);
+
+    // The finished upload's note is gone; the other tab's is untouched.
+    expect(localStorage.getItem("flickpond.pending-upload.up-1")).toBeNull();
+    expect(localStorage.getItem("flickpond.pending-upload.up-2")).not.toBeNull();
+    expect(el.resumeText.textContent).toContain("second.mp4");
+  });
+
+  it("discards the note the prompt is naming, not the newest one", async () => {
+    const older = new File(["abcdef"], "first.mp4", { type: "video/mp4" });
+    const newer = new File(["ghijkl"], "second.mp4", { type: "video/mp4" });
+    rememberUpload(older, { uploadId: "up-1", startedAt: Date.now() - 60_000 });
+    rememberUpload(newer, { uploadId: "up-2" });
+    const el = await loadApp();
+    expect(el.resumeText.textContent).toContain("second.mp4");
+
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 204, json: async () => ({}) });
+    el.resumeDiscard.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock.mock.calls[0]).toEqual(["/api/uploads/up-2", { method: "DELETE" }]);
+    expect(localStorage.getItem("flickpond.pending-upload.up-2")).toBeNull();
+    // The other upload is still offered, because it is still unfinished.
+    expect(el.resumePrompt.hidden).toBe(false);
+    expect(el.resumeText.textContent).toContain("first.mp4");
+  });
+
+  it("drops a note whose session the server has already expired", async () => {
+    const file = new File(["abcdef"], "holiday.mp4", { type: "video/mp4" });
+    rememberUpload(file, { startedAt: Date.now() - 25 * 60 * 60 * 1000 });
+
+    const el = await loadApp();
+
+    expect(el.resumePrompt.hidden).toBe(true);
+    expect(localStorage.getItem("flickpond.pending-upload.up-1")).toBeNull();
+  });
+
+  it("picks up a note written before the notes were split per upload", async () => {
+    const file = new File(["abcdef"], "holiday.mp4", { type: "video/mp4" });
+    // Sprint 4's one key for the whole browser, as a reload after the deploy
+    // would still find it.
+    rememberUpload(file, { uploadId: "up-old" });
+    const legacy = localStorage.getItem("flickpond.pending-upload.up-old");
+    localStorage.removeItem("flickpond.pending-upload.up-old");
+    localStorage.setItem("flickpond.pending-upload", legacy);
+
+    const el = await loadApp();
+
+    expect(el.resumePrompt.hidden).toBe(false);
+    expect(el.resumeText.textContent).toContain("holiday.mp4");
+    expect(localStorage.getItem("flickpond.pending-upload.up-old")).not.toBeNull();
+    expect(localStorage.getItem("flickpond.pending-upload")).toBeNull();
+  });
+
+  it("ignores a note it cannot read rather than offering it forever", async () => {
+    localStorage.setItem("flickpond.pending-upload.up-1", "{ not json");
+
+    const el = await loadApp();
+
+    expect(el.resumePrompt.hidden).toBe(true);
+    expect(localStorage.getItem("flickpond.pending-upload.up-1")).toBeNull();
   });
 });
 

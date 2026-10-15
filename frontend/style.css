@@ -737,6 +737,23 @@ main {
   font-size: 12.5px;
   color: var(--text-muted);
 }
+.upload-progress-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.upload-progress-foot .upload-progress-line {
+  /* The line keeps its own margin; this only lets Cancel sit at the far end
+     instead of under it. */
+  flex: 1;
+}
+.upload-cancel {
+  /* Same button as the ghost ones, sized for the readout it sits beside. */
+  padding: 3px 12px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
 .upload-progress-percent {
   min-width: 34px;
   font-weight: 600;
