@@ -69,6 +69,14 @@ run "the_group_is_all_spot_and_starts_empty" {
     condition     = length(aws_autoscaling_group.worker.mixed_instances_policy[0].launch_template[0].override) == 5
     error_message = "Each allowed instance type should be an override."
   }
+
+  assert {
+    condition = alltrue([
+      for o in aws_autoscaling_group.worker.mixed_instances_policy[0].launch_template[0].override :
+      endswith(o.instance_type, ".xlarge")
+    ])
+    error_message = "Sprint 5 sized workers at 4 vCPU (c7g.xlarge); larger is a tfvars decision, not a default."
+  }
 }
 
 run "schedules_change_only_the_minimum" {

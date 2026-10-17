@@ -153,7 +153,9 @@ terraform show -no-color workers.plan > plan.txt   # gitignored; share this
 more rules, one on `flickpond-staging-db` and one on
 `flickpond-staging-cache`, each naming the worker security group and no
 `cidr_ipv4`. **Rule 7:** whoever applies that is not whoever reviews it —
-if A applies, D reads `plan.txt` first; and the other way round.
+if A applies, D reads `plan.txt` first; and the other way round. The
+reviewer's checklist, and what to test after the apply, is
+[`d-worker-datastore-review.md`](d-worker-datastore-review.md).
 
 ## Asks for Track A
 

@@ -111,7 +111,9 @@ the queue, and restart forever, on a spot instance billed by the second.
    `redis_password`. This root creates none of them.
 2. The plan with `open_datastores_to_workers = true` read by someone other
    than whoever applies it ([`docs/datastore-review.md`](../../docs/datastore-review.md),
-   sprint 5 rule 7). After the apply, repeat that note's reachability test:
+   sprint 5 rule 7). The reviewer's checklist is
+   [`docs/d-worker-datastore-review.md`](../../docs/d-worker-datastore-review.md).
+   After the apply, repeat that note's reachability test:
    both datastores still unreachable from outside AWS.
 3. The queue-metrics publisher running on the core host with
    `METRICS_ENVIRONMENT` equal to `environment` here, and reaching

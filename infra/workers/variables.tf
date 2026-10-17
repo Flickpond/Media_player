@@ -93,11 +93,14 @@ variable "instance_types" {
   description = <<-EOT
     Graviton types the group may use, in no particular order: spot draws from
     whichever pool is cheapest and least likely to be reclaimed, so more types
-    means fewer interruptions. All 8 vCPU, the size A's timing showed encodes
-    a 4K ladder inside the job timeout.
+    means fewer interruptions. All 4 vCPU: sprint 5 sized workers at
+    c7g.xlarge once the ladder got cheaper to encode (30 fps cap, lower rungs
+    from the 1080p rendition, audio encoded once). If the Thursday 4K timing
+    misses the job timeout, set instance_types to the 2xlarge sizes in
+    workers.tfvars.
   EOT
   type        = list(string)
-  default     = ["c7g.2xlarge", "c6g.2xlarge", "c6gn.2xlarge", "m7g.2xlarge", "m6g.2xlarge"]
+  default     = ["c7g.xlarge", "c6g.xlarge", "c6gn.xlarge", "m7g.xlarge", "m6g.xlarge"]
 
   validation {
     condition     = length(var.instance_types) > 0 && alltrue([for t in var.instance_types : can(regex("^[a-z0-9]+g[a-z0-9]*\\.", t))])
@@ -106,7 +109,7 @@ variable "instance_types" {
 }
 
 variable "max_workers" {
-  description = "The cost ceiling. Each is one 8 vCPU spot instance running one job at a time."
+  description = "The cost ceiling. Each is one 4 vCPU spot instance running one job at a time."
   type        = number
   default     = 4
 
