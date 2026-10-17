@@ -26,15 +26,24 @@ ElastiCache 6379  ◀─┴── worker Auto Scaling Group  ◀── step scal
 
 | File | What |
 |---|---|
-| `compute.tf` | Launch template (AL2023 arm64, IMDSv2, encrypted gp3) and the group: 100% spot, `price-capacity-optimized`, five instance types, capacity rebalance. Two schedules: one warm worker 08:00–24:00 Asia/Shanghai, none overnight |
+| `compute.tf` | Launch template (AL2023 arm64, IMDSv2, encrypted gp3) and the group: 100% spot, `price-capacity-optimized`, five 4 vCPU instance types, capacity rebalance, a termination lifecycle hook for the drain. Two schedules: one warm worker 08:00–24:00 Asia/Shanghai, none overnight |
 | `scaling.tf` | Out: jobs still queued at two consecutive one-minute samples → +1/+2/+4 by backlog. In: nothing queued or running for 15 minutes → back to the scheduled minimum. An alarm for when queue-depth data stops |
 | `network.tf` | Worker security group: no inbound; out 443, and Postgres and Valkey to their own security groups. The matching ingress on those groups, behind `open_datastores_to_workers` (off) |
-| `iam.tf` | One inline policy on the base's role: PutMetricData (namespace `Flickpond` only), pull from the worker repository, read `/flickpond/<env>/*` parameters |
-| `user-data.sh.tftpl` | Boot: Docker, the datastore settings from Parameter Store, ECR login, `python -m app.worker` |
+| `iam.tf` | One inline policy on the base's role: PutMetricData (namespace `Flickpond` only), pull from the worker repository, read `/flickpond/<env>/*` parameters, complete this group's lifecycle actions |
+| `user-data.sh.tftpl` | Boot: Docker, the datastore settings from Parameter Store, ECR login, `python -m app.worker`, and the `flickpond-drain` service (contract 2.3) |
 | `tests/` | `terraform test` with a mocked AWS provider: no account needed |
 
 ## Decisions, and why
 
+- **A worker about to go gives its job back first (contract 2.3).** A
+  systemd service on each instance polls its metadata every 5 s for a spot
+  interruption notice or a `Terminated` target lifecycle state (scale-in,
+  capacity rebalance), and answers both with `docker stop --time 100 worker`.
+  The worker then stops FFmpeg and requeues its job (#73). A scale-in waits
+  for that in the lifecycle hook (150 s, then CONTINUE); a spot reclaim does
+  not wait for anything, so the 5 s poll plus 100 s fits its two minutes.
+  An OS shutdown nobody warned about still gets `--stop-timeout 100`; a
+  worker that dies with no warning at all is the reaper's (#74).
 - **Scale out on "anything queued for two minutes".** RQ workers take a job
   the moment they are free, so a non-empty queue means every worker is busy.
 - **Scale in only when everything is idle, straight to the minimum.** AWS
@@ -61,7 +70,7 @@ ElastiCache 6379  ◀─┴── worker Auto Scaling Group  ◀── step scal
 ```bash
 cd infra/workers
 terraform init -backend=false
-terraform test          # 10 runs, Terraform 1.10+
+terraform test          # 11 runs, Terraform 1.10+
 ```
 
 Without Terraform installed, prefix each command with
@@ -118,6 +127,5 @@ the queue, and restart forever, on a spot instance billed by the second.
 3. The queue-metrics publisher running on the core host with
    `METRICS_ENVIRONMENT` equal to `environment` here, and reaching
    ElastiCache over TLS like the API (`REDIS_SSL=true` in its `.env`).
-4. Giving a job back on SIGTERM landed in #73 (contract 2.3). The
-   `--stop-timeout` in `user-data.sh.tftpl` is still sprint 4's 110 s; 2.3
-   sets 100 s, changed with the spot interruption handling.
+4. Giving a job back on SIGTERM (#73) on the `main` commit the image is
+   built from: the drain only sends the signal.

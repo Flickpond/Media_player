@@ -157,6 +157,70 @@ if A applies, D reads `plan.txt` first; and the other way round. The
 reviewer's checklist, and what to test after the apply, is
 [`d-worker-datastore-review.md`](d-worker-datastore-review.md).
 
+## 5. Apply the worker group on staging (Wednesday)
+
+Only after the plan with `open_datastores_to_workers = true` has been read
+by someone other than whoever applies it. Apply from `main` once D's
+`infra/workers` PR has merged, with `worker_image` pointing at a commit that
+includes #73 (every image CI pushes from now on does).
+
+```bash
+cd infra/workers
+terraform plan -var-file=workers.tfvars -out=workers.plan   # flag on; reviewed
+terraform apply workers.plan
+terraform output     # autoscaling_group_name, worker_security_group_id, ...
+```
+
+Then prove Wednesday's checkpoint, one line at a time
+(`G=flickpond-staging-workers`):
+
+```bash
+# The hook and the two schedules exist.
+aws autoscaling describe-lifecycle-hooks --auto-scaling-group-name $G \
+  --query 'LifecycleHooks[].[LifecycleHookName,LifecycleTransition,HeartbeatTimeout,DefaultResult]'
+#   drain-worker  autoscaling:EC2_INSTANCE_TERMINATING  150  CONTINUE
+aws autoscaling describe-scheduled-actions --auto-scaling-group-name $G \
+  --query 'ScheduledUpdateGroupActions[].[ScheduledActionName,Recurrence,TimeZone,MinSize]'
+
+# One worker now, without waiting for 08:00. It is spot.
+aws autoscaling set-desired-capacity --auto-scaling-group-name $G --desired-capacity 1
+aws ec2 describe-instances --filters "Name=tag:aws:autoscaling:groupName,Values=$G" \
+  "Name=instance-state-name,Values=pending,running" \
+  --query 'Reservations[].Instances[].[InstanceId,InstanceLifecycle,InstanceType]' --output table
+#   InstanceLifecycle = spot
+
+# On it: the worker is listening and the drain is watching.
+aws ssm start-session --target <instance id>
+sudo docker logs worker 2>&1 | tail          # "worker starting", queues video_jobs, video_jobs-ladder
+systemctl is-active flickpond-drain          # active
+sudo tail -50 /var/log/cloud-init-output.log # only if either of those is wrong
+```
+
+1. **A spot worker takes a job:** upload a video on staging; it reaches
+   `done`, and `docker logs worker` on the instance shows it.
+2. **Queue-depth scaling:** upload four or five videos at once. Within about
+   three minutes `flickpond-staging-jobs-waiting` goes to ALARM and the
+   group's desired capacity rises
+   (`aws cloudwatch describe-alarms --alarm-name-prefix flickpond-staging --query 'MetricAlarms[].[AlarmName,StateValue]'`).
+   Fifteen idle minutes after the last job, it returns to the minimum.
+3. **`docker stop` mid-encode gives the job back and another worker finishes
+   it:** with two workers up (`--desired-capacity 2`) and a long upload
+   encoding, on the instance running it:
+   `sudo docker stop --time 100 worker`. The job goes back to `queued`
+   within seconds, the other worker takes it, and it ends `done`.
+   `sudo docker start worker` afterwards.
+4. **A scale-in drains:** while a job encodes,
+   `aws autoscaling terminate-instance-in-auto-scaling-group --instance-id <id> --should-decrement-desired-capacity`.
+   On that instance `journalctl -u flickpond-drain` shows
+   `scale-in: stopping the worker…`, the job is requeued, and the instance
+   terminates within seconds of that rather than after the hook's 150 s.
+   (The spot path — an interruption notice — is Thursday's FIS test.)
+
+**Undo:** `terraform destroy -var-file=workers.tfvars` removes every resource
+this root made, including the two datastore rules and the policy on the
+base's role; the base is untouched. That policy is also what lets the
+core's queue-metrics publisher write to CloudWatch, so its metric stops too.
+
 ## Asks for Track A
 
 1. **`redis_host` is not in contract 2.1's list** but the workers read it,
@@ -172,3 +236,8 @@ reviewer's checklist, and what to test after the apply, is
 | 2. Three variables set | | | |
 | 3. First image in ECR (tag) | | | |
 | 4. Parameters present on staging | | | |
+| 5. Worker group applied (reviewed by) | | | |
+| 5.1 Spot worker took a job | | | |
+| 5.2 Scaled out on queue depth, back to minimum | | | |
+| 5.3 `docker stop` mid-encode → requeued → done elsewhere | | | |
+| 5.4 Scale-in drained the job | | | |

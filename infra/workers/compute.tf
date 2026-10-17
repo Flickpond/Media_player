@@ -1,5 +1,12 @@
 # Spot workers, 0..max_workers, booting the image CI pushed for one commit.
 
+locals {
+  # Named here rather than read from the group, because the launch template
+  # (which the group depends on) needs both.
+  group_name      = "flickpond-${var.environment}-workers"
+  drain_hook_name = "drain-worker"
+}
+
 data "aws_ssm_parameter" "al2023_arm64" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
 }
@@ -50,6 +57,8 @@ resource "aws_launch_template" "worker" {
     cache_port      = var.cache_port
     bucket_name     = var.bucket_name
     worker_settings = var.worker_settings
+    group_name      = local.group_name
+    drain_hook_name = local.drain_hook_name
   }))
 
   tag_specifications {
@@ -68,7 +77,7 @@ resource "aws_launch_template" "worker" {
 }
 
 resource "aws_autoscaling_group" "worker" {
-  name                = "flickpond-${var.environment}-workers"
+  name                = local.group_name
   vpc_zone_identifier = var.subnet_ids
 
   # The schedules below own min_size, and the scaling policies own desired
@@ -87,6 +96,20 @@ resource "aws_autoscaling_group" "worker" {
   # Start a replacement as soon as AWS warns that a spot instance is at
   # elevated risk, rather than only after it is reclaimed.
   capacity_rebalance = true
+
+  # Contract 2.3. A scale-in or a rebalance holds the instance in
+  # Terminating:Wait until the drain service in user data has stopped the
+  # worker -- which gives its job back -- and says so. Part of the group
+  # rather than a separate resource, so no instance ever boots without it.
+  # 150 s covers the 5 s poll and the 100 s stop; CONTINUE on timeout, so a
+  # drain that hangs cannot keep a billed instance forever. A spot reclaim
+  # does not wait for the hook: the drain catches its notice directly.
+  initial_lifecycle_hook {
+    name                 = local.drain_hook_name
+    lifecycle_transition = "autoscaling:EC2_INSTANCE_TERMINATING"
+    heartbeat_timeout    = 150
+    default_result       = "CONTINUE"
+  }
 
   mixed_instances_policy {
     instances_distribution {

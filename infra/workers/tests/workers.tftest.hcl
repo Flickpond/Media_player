@@ -195,6 +195,46 @@ run "user_data_carries_the_image_and_no_secret" {
   }
 }
 
+run "a_stopping_worker_gets_100_seconds_to_give_its_job_back" {
+  command = plan
+
+  # Datastores closed by default: the check warns, as it should.
+  expect_failures = [check.workers_can_reach_the_datastores]
+
+  assert {
+    condition = alltrue([
+      for s in [
+        "spot/instance-action",
+        "autoscaling/target-lifecycle-state",
+        "docker stop --time 100 worker",
+        "--stop-timeout 100",
+        "GROUP_NAME=flickpond-staging-workers",
+        "HOOK_NAME=drain-worker",
+        "systemctl enable --now flickpond-drain.service",
+      ] : strcontains(base64decode(aws_launch_template.worker.user_data), s)
+    ])
+    error_message = "Contract 2.3: a spot notice or a scale-in runs docker stop --time 100 on the worker, from a service started at boot."
+  }
+
+  assert {
+    condition = (
+      one(aws_autoscaling_group.worker.initial_lifecycle_hook).name == "drain-worker"
+      && one(aws_autoscaling_group.worker.initial_lifecycle_hook).lifecycle_transition == "autoscaling:EC2_INSTANCE_TERMINATING"
+      && one(aws_autoscaling_group.worker.initial_lifecycle_hook).default_result == "CONTINUE"
+      && one(aws_autoscaling_group.worker.initial_lifecycle_hook).heartbeat_timeout >= 105
+    )
+    error_message = "A scale-in must wait for the 5 s poll and the 100 s stop, and terminate anyway if the drain never answers."
+  }
+
+  assert {
+    condition = anytrue([
+      for s in data.aws_iam_policy_document.workers.statement :
+      s.sid == "FinishDrainingThisGroup" && s.actions == toset(["autoscaling:CompleteLifecycleAction"]) && length(s.resources) == 1
+    ])
+    error_message = "Completing the lifecycle action is allowed on this group only: the core host shares the role."
+  }
+}
+
 run "datastores_stay_closed_unless_asked" {
   command = plan
 

@@ -57,6 +57,15 @@ data "aws_iam_policy_document" "workers" {
       "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${local.parameter_path}/*",
     ]
   }
+
+  # The drain service (user data) tells the group its worker has given its
+  # job back, so a scale-in ends in seconds rather than at the hook's
+  # timeout. This group only: the core host shares the role.
+  statement {
+    sid       = "FinishDrainingThisGroup"
+    actions   = ["autoscaling:CompleteLifecycleAction"]
+    resources = [aws_autoscaling_group.worker.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "workers" {

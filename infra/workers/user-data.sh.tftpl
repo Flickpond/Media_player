@@ -55,14 +55,82 @@ aws ecr get-login-password --region "$region" \
   | docker login --username AWS --password-stdin '${registry}'
 docker pull '${image}'
 
-# --stop-timeout: when the instance shuts down (spot reclaim, scale-in),
-# Docker sends SIGTERM and RQ starts a warm shutdown, finishing the current
-# job if it can. A spot warning gives two minutes, so Docker waits 110 s
-# before SIGKILL. A job cut off there is recovered by the reaper's lease.
+# --stop-timeout: Docker's grace before SIGKILL whenever the container is
+# stopped, including by an OS shutdown the drain below did not see coming.
+# 100 s, contract 2.3: on SIGTERM the worker stops FFmpeg and gives its job
+# back (app.worker.interruption), which takes seconds, inside AWS's two-minute
+# spot warning either way.
 docker run -d --name worker \
   --restart unless-stopped \
-  --stop-timeout 110 \
+  --stop-timeout 100 \
   --env-file /etc/flickpond/worker.env \
   --log-opt max-size=20m --log-opt max-file=3 \
   '${image}' \
   python -m app.worker
+
+# The drain (contract 2.3): a worker about to disappear gives its job back
+# first. Two warnings reach the instance through its metadata, and both get
+# the same answer, `docker stop --time 100 worker`:
+#
+#   spot/instance-action                 a spot reclaim, two minutes out
+#   autoscaling/target-lifecycle-state   Terminated: a scale-in or a capacity
+#                                        rebalance, held by the group's
+#                                        lifecycle hook until the drain is done
+#
+# Polled every 5 s, so after a spot warning the worker has stopped at worst
+# 105 s into the 120. Not secret: the group's name and the hook's.
+cat > /etc/flickpond/drain.env <<EOF
+REGION=${region}
+GROUP_NAME=${group_name}
+HOOK_NAME=${drain_hook_name}
+EOF
+
+cat > /usr/local/bin/flickpond-drain <<'DRAIN'
+#!/bin/bash
+set -uo pipefail
+
+imds() {
+  local token
+  token="$(curl -sf -X PUT http://169.254.169.254/latest/api/token \
+    -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')" || return 1
+  curl -sf -H "X-aws-ec2-metadata-token: $token" \
+    "http://169.254.169.254/latest/meta-data/$1"
+}
+
+while sleep 5; do
+  if imds spot/instance-action >/dev/null; then
+    reason='spot interruption notice'
+  elif [ "$(imds autoscaling/target-lifecycle-state)" = Terminated ]; then
+    reason='scale-in'
+  else
+    continue
+  fi
+  echo "$reason: stopping the worker so it gives its job back"
+  docker stop --time 100 worker || true
+  # Lets the group terminate now instead of at the hook's timeout. Fails
+  # harmlessly after a spot notice, which is not held by the hook.
+  aws autoscaling complete-lifecycle-action --region "$REGION" \
+    --auto-scaling-group-name "$GROUP_NAME" --lifecycle-hook-name "$HOOK_NAME" \
+    --instance-id "$(imds instance-id)" --lifecycle-action-result CONTINUE || true
+  exit 0
+done
+DRAIN
+chmod 755 /usr/local/bin/flickpond-drain
+
+cat > /etc/systemd/system/flickpond-drain.service <<'UNIT'
+[Unit]
+Description=Stop the worker, so it gives its job back, before this instance goes
+After=docker.service
+Requires=docker.service
+
+[Service]
+EnvironmentFile=/etc/flickpond/drain.env
+ExecStart=/usr/local/bin/flickpond-drain
+# Exits 0 once it has drained: nothing left to watch for.
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now flickpond-drain.service

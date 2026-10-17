@@ -44,7 +44,8 @@ Ask for `terraform show -no-color workers.plan`, and the base's plan.
 - [ ] `aws_iam_role_policy.workers`: SSM read scoped to
       `parameter/flickpond/<env>/*`; ECR pull scoped to the one
       `flickpond/worker` repository; PutMetricData conditioned on the
-      `Flickpond` namespace.
+      `Flickpond` namespace; `autoscaling:CompleteLifecycleAction` on this
+      worker group's ARN only.
 - [ ] The launch template's `user_data` decodes to a script that fetches
       `param postgres_dsn`, `param redis_host`, `param redis_password` and
       contains no password, DSN or endpoint:
