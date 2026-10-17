@@ -15,11 +15,6 @@ variable "subnet_ids" {
   }
 }
 
-variable "security_group_id" {
-  description = "The core host's security group: workers reach Postgres and Redis through it."
-  type        = string
-}
-
 variable "instance_profile_name" {
   description = "Workers need exactly the bucket access the core host has."
   type        = string
@@ -38,21 +33,27 @@ variable "region" {
   type = string
 }
 
-# --- Not in the base outputs yet ---------------------------------------------
+# --- The managed datastores (contract 2.1) ----------------------------------
+# Only the security groups and ports. The endpoints and credentials are read
+# from Parameter Store at boot, like the core host does, so they are in
+# neither this root's state nor the launch template.
 
-variable "core_private_ip" {
-  description = <<-EOT
-    The core host's private address, where workers reach Postgres and Redis
-    in the sprint 4 shape. Becomes a base output (#62); until then:
-      terraform -chdir=../terraform state show aws_instance.app | grep private_ip
-    Replaced by the RDS and ElastiCache endpoints when the datastores move.
-  EOT
+variable "db_security_group_id" {
+  description = "RDS PostgreSQL's security group. Workers are admitted to it by a rule this root adds."
   type        = string
+}
 
-  validation {
-    condition     = can(cidrhost("${var.core_private_ip}/32", 0))
-    error_message = "An IPv4 address, e.g. 172.31.5.20."
-  }
+variable "db_port" {
+  type = number
+}
+
+variable "cache_security_group_id" {
+  description = "ElastiCache Valkey's security group. Workers are admitted to it by a rule this root adds."
+  type        = string
+}
+
+variable "cache_port" {
+  type = number
 }
 
 # --- This root's own settings ------------------------------------------------
@@ -178,10 +179,10 @@ variable "alarm_topic_arn" {
 
 variable "open_datastores_to_workers" {
   description = <<-EOT
-    Adds Postgres and Redis ingress from the worker security group to the
-    datastores' security group. Off in sprint 4 (plan only). Today that group
-    is the base's app group; after #62 it is the RDS and ElastiCache groups,
-    so turning this on no longer needs any change on the core host.
+    Adds ingress from the worker security group to the RDS and ElastiCache
+    security groups. Off by default: anything that opens a datastore is
+    reviewed before it is applied, by someone other than whoever applies it
+    (docs/datastore-review.md). Nothing on the core host changes either way.
   EOT
   type        = bool
   default     = false

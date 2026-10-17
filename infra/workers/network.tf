@@ -1,13 +1,11 @@
-# Worker hosts accept no connections at all: they pull work from Redis. What
-# they may reach is listed here, and Postgres and Redis only on the core host.
-#
-# Sprint 4 shape. In sprint 5 Postgres and Redis move to RDS and ElastiCache
-# (#62); the datastore rules below then reference their security groups,
-# from base outputs, instead of the core host's. See README.md.
+# Worker hosts accept no connections at all: they pull work from the queue.
+# What they may reach is listed here: AWS APIs over HTTPS, and RDS and
+# ElastiCache through the security groups the base gives each of them
+# (contract 2.1). Nothing on the core host is opened to the workers.
 
 resource "aws_security_group" "worker" {
   name        = "flickpond-${var.environment}-worker"
-  description = "Autoscaling workers: no inbound; outbound to AWS APIs and the core datastores"
+  description = "Autoscaling workers: no inbound; outbound to AWS APIs and the managed datastores"
   vpc_id      = var.vpc_id
 }
 
@@ -24,40 +22,48 @@ resource "aws_vpc_security_group_egress_rule" "https" {
 }
 
 resource "aws_vpc_security_group_egress_rule" "datastores" {
-  for_each = local.datastore_ports
+  for_each = local.datastores
 
   security_group_id            = aws_security_group.worker.id
-  description                  = "${each.key} on the core host"
-  referenced_security_group_id = var.security_group_id
+  description                  = "${each.key}, managed by AWS"
+  referenced_security_group_id = each.value.security_group_id
   ip_protocol                  = "tcp"
-  from_port                    = each.value
-  to_port                      = each.value
+  from_port                    = each.value.port
+  to_port                      = each.value.port
 }
 
-# The other half, on the base's security group. A separate rule resource adds
-# to that group without taking ownership of it, so the base's own `apply`
-# neither removes these nor sees a diff. Off until sprint 5.
+# The other half, on the base's RDS and ElastiCache security groups. A
+# separate rule resource adds to a group without taking ownership of it, so
+# the base's own `apply` neither removes these nor sees a diff. Off by
+# default: opening a datastore is reviewed before it is applied (sprint 5
+# rule 7, docs/datastore-review.md).
 resource "aws_vpc_security_group_ingress_rule" "datastores_from_workers" {
-  for_each = var.open_datastores_to_workers ? local.datastore_ports : {}
+  for_each = var.open_datastores_to_workers ? local.datastores : {}
 
-  security_group_id            = var.security_group_id
+  security_group_id            = each.value.security_group_id
   description                  = "${each.key} from autoscaling workers only"
   referenced_security_group_id = aws_security_group.worker.id
   ip_protocol                  = "tcp"
-  from_port                    = each.value
-  to_port                      = each.value
+  from_port                    = each.value.port
+  to_port                      = each.value.port
 }
 
 locals {
-  datastore_ports = {
-    Postgres = 5432
-    Redis    = 6379
+  datastores = {
+    Postgres = {
+      security_group_id = var.db_security_group_id
+      port              = var.db_port
+    }
+    Valkey = {
+      security_group_id = var.cache_security_group_id
+      port              = var.cache_port
+    }
   }
 }
 
 check "workers_can_reach_the_datastores" {
   assert {
     condition     = var.open_datastores_to_workers
-    error_message = "open_datastores_to_workers is off: workers in this plan cannot reach Postgres or Redis. Expected in sprint 4 (plan only); do not apply like this."
+    error_message = "open_datastores_to_workers is off: workers in this plan cannot reach RDS or ElastiCache. Turn it on once docs/datastore-review.md has been read by someone other than whoever applies; do not apply like this."
   }
 }

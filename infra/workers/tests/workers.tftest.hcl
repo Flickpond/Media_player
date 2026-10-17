@@ -28,15 +28,17 @@ mock_provider "aws" {
 }
 
 variables {
-  vpc_id                = "vpc-0123456789abcdef0"
-  subnet_ids            = ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"]
-  security_group_id     = "sg-0core000000000000"
-  instance_profile_name = "flickpond-staging-app"
-  app_role_name         = "flickpond-staging-app"
-  bucket_name           = "flickpond-staging-videos-abcd1234"
-  region                = "ap-southeast-1"
-  core_private_ip       = "172.31.5.20"
-  worker_image          = "123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/flickpond/worker:0123456789abcdef0123456789abcdef01234567"
+  vpc_id                  = "vpc-0123456789abcdef0"
+  subnet_ids              = ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"]
+  instance_profile_name   = "flickpond-staging-app"
+  app_role_name           = "flickpond-staging-app"
+  bucket_name             = "flickpond-staging-videos-abcd1234"
+  region                  = "ap-southeast-1"
+  db_security_group_id    = "sg-0db0000000000000"
+  db_port                 = 5432
+  cache_security_group_id = "sg-0cache000000000"
+  cache_port              = 6379
+  worker_image            = "123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/flickpond/worker:0123456789abcdef0123456789abcdef01234567"
 }
 
 run "the_group_is_all_spot_and_starts_empty" {
@@ -144,8 +146,24 @@ run "user_data_carries_the_image_and_no_secret" {
   }
 
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.worker.user_data), "REDIS_HOST=172.31.5.20")
-    error_message = "Workers should reach Redis on the core host's private address."
+    condition = alltrue([
+      for name in ["postgres_dsn", "redis_host", "redis_password"] :
+      strcontains(base64decode(aws_launch_template.worker.user_data), "param ${name})")
+    ])
+    error_message = "Workers should read the same three parameters the base writes for the core host."
+  }
+
+  assert {
+    condition     = strcontains(base64decode(aws_launch_template.worker.user_data), "REDIS_SSL=true")
+    error_message = "ElastiCache has in-transit encryption on: a plain-text client cannot connect."
+  }
+
+  assert {
+    condition = (
+      strcontains(base64decode(aws_launch_template.worker.user_data), "POSTGRES_DSN=$postgres_dsn")
+      && strcontains(base64decode(aws_launch_template.worker.user_data), "REDIS_HOST=$redis_host")
+    )
+    error_message = "Addresses come from Parameter Store at boot, not from the launch template."
   }
 
   assert {
@@ -174,11 +192,29 @@ run "datastores_stay_closed_unless_asked" {
 
   assert {
     condition     = length(aws_vpc_security_group_ingress_rule.datastores_from_workers) == 0
-    error_message = "Sprint 4 must not open Postgres or Redis on the core host."
+    error_message = "RDS and ElastiCache must not be opened until the review has been read and the flag set."
   }
 
   # The check block warns about exactly this; a warning, not a failure.
   expect_failures = [check.workers_can_reach_the_datastores]
+}
+
+run "workers_reach_each_datastore_only_through_its_own_group" {
+  command = plan
+
+  # Datastores closed by default: the check warns, as it should.
+  expect_failures = [check.workers_can_reach_the_datastores]
+
+  assert {
+    condition = (
+      length(aws_vpc_security_group_egress_rule.datastores) == 2
+      && aws_vpc_security_group_egress_rule.datastores["Postgres"].referenced_security_group_id == "sg-0db0000000000000"
+      && aws_vpc_security_group_egress_rule.datastores["Postgres"].from_port == 5432
+      && aws_vpc_security_group_egress_rule.datastores["Valkey"].referenced_security_group_id == "sg-0cache000000000"
+      && aws_vpc_security_group_egress_rule.datastores["Valkey"].from_port == 6379
+    )
+    error_message = "Postgres egress goes to the RDS group on db_port, Valkey to the ElastiCache group on cache_port."
+  }
 }
 
 run "opening_the_datastores_admits_only_the_worker_group" {
@@ -191,9 +227,13 @@ run "opening_the_datastores_admits_only_the_worker_group" {
   assert {
     condition = (
       length(aws_vpc_security_group_ingress_rule.datastores_from_workers) == 2
-      && alltrue([for r in aws_vpc_security_group_ingress_rule.datastores_from_workers : r.security_group_id == "sg-0core000000000000" && r.cidr_ipv4 == null])
+      && aws_vpc_security_group_ingress_rule.datastores_from_workers["Postgres"].security_group_id == "sg-0db0000000000000"
+      && aws_vpc_security_group_ingress_rule.datastores_from_workers["Postgres"].from_port == 5432
+      && aws_vpc_security_group_ingress_rule.datastores_from_workers["Valkey"].security_group_id == "sg-0cache000000000"
+      && aws_vpc_security_group_ingress_rule.datastores_from_workers["Valkey"].from_port == 6379
+      && alltrue([for r in aws_vpc_security_group_ingress_rule.datastores_from_workers : r.cidr_ipv4 == null && r.cidr_ipv6 == null])
     )
-    error_message = "Two rules on the base's group, from the worker group, never from an address range."
+    error_message = "One rule on the RDS group and one on the ElastiCache group, from the worker group, never from an address range."
   }
 }
 

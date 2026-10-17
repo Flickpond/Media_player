@@ -47,7 +47,7 @@ resource "aws_launch_template" "worker" {
     registry        = local.registry
     image           = var.worker_image
     parameter_path  = local.parameter_path
-    core_private_ip = var.core_private_ip
+    cache_port      = var.cache_port
     bucket_name     = var.bucket_name
     worker_settings = var.worker_settings
   }))

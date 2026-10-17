@@ -1,5 +1,6 @@
 terraform {
-  required_version = ">= 1.6"
+  # 1.10 like the base, for the S3 backend's native lock file.
+  required_version = ">= 1.10"
 
   required_providers {
     aws = {
@@ -8,9 +9,10 @@ terraform {
     }
   }
 
-  # Local state, like the base, and for the same reason: one operator for
-  # now. It moves to the S3 backend with locking alongside the base, before
-  # the worker group is ever applied (sprint 5).
+  # In the base's state bucket, locked while anyone applies. One key for the
+  # account: the repository and CI role serve every environment.
+  #   terraform init -backend-config=registry.backend.hcl
+  backend "s3" {}
 }
 
 provider "aws" {

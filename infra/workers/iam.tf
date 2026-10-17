@@ -45,10 +45,11 @@ data "aws_iam_policy_document" "workers" {
     resources = [local.repository_arn]
   }
 
-  # The Redis and Postgres passwords, created by hand as SecureStrings (see
-  # README.md) so they never enter Terraform state or the launch template.
-  # Decryption uses the AWS-managed aws/ssm key, which needs no kms:Decrypt
-  # grant of its own.
+  # The datastore settings the base writes under /flickpond/<env>/
+  # (infra/terraform/datastores.tf): postgres_dsn and redis_password as
+  # SecureStrings, redis_host as a String. Read at boot, so they are in
+  # neither this root's state nor the launch template. Decryption uses the
+  # AWS-managed aws/ssm key, which needs no kms:Decrypt grant of its own.
   statement {
     sid     = "ReadThisEnvironmentsSecrets"
     actions = ["ssm:GetParameter", "ssm:GetParameters"]
