@@ -28,6 +28,7 @@ from app.repositories.jobs import (
 )
 from app.schemas.edit import EditRequest
 from app.schemas.job import EditOptions, ErrorResponse, JobResponse
+from app.services.job_cleanup import delete_job_storage
 from app.services.media_rules import (
     MediaRuleError,
     check_edit_operations,
@@ -268,27 +269,7 @@ async def _delete_job_and_storage(
     if job is None:
         return None
 
-    # An edit borrows another job's output as its source. Deleting the edit
-    # must not delete that shared object and break the original library item.
-    keys = list(filter(None, (job.output_key, job.thumbnail_key)))
-    if job.operations is None:
-        keys.insert(0, job.source_key)
-
-    # An HLS ladder is hundreds of objects under one prefix, so deleting
-    # `hls_key` alone would remove the master playlist and orphan every
-    # segment it pointed at -- invisible, and growing with each delete.
-    if job.hls_key:
-        prefix = job.hls_key.rsplit("/", 1)[0] + "/"
-        try:
-            keys.extend(name for name, _ in await storage.list_objects(prefix))
-        except Exception:
-            logger.warning("job %s: could not list HLS objects under %s", job_id, prefix)
-
-    for key in keys:
-        try:
-            await storage.delete_object(key)
-        except Exception:
-            logger.warning("job %s: could not delete storage object %s", job_id, key)
+    await delete_job_storage(storage, job, best_effort=True)
 
     return job
 
