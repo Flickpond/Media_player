@@ -93,14 +93,35 @@ python deploy/verify_direct_upload.py \
   --evidence /tmp/sprint5-b-staging.json
 ```
 
+For an actual stop between two CLI runs, add `--stop-after-first-part` to the
+command above. It writes the session ID to the evidence file before sending
+bytes, verifies the first part and exits with status `paused`. Run the same
+command again with `--resume`, using the same evidence path. It reads existing
+parts from the API and uploads only missing parts; it does not create a second
+session. You can also use `--resume` after a network failure or Ctrl+C.
+
+Resume requires the same filename, size, full-file SHA-256, API target, browser
+origin and account. Evidence writes use a temporary file and atomic replacement.
+A lost completion response resumes `completing`/`ready` with the saved server
+manifest; an already completed session returns its existing job ID. Neither
+case retransmits video parts.
+
 The script checks preflight PUT CORS and explicitly exposed ETag, sends real
-parts, drops/reconstructs its manifest after the first part using the resume
-API, sends only remaining parts, completes and waits for processing. It never
-sends application cookies to storage or records presigned URLs. It keeps the
-test video/job for browser playback verification; delete it after checking.
+parts, completes and waits for processing. It never sends application cookies
+to storage or records presigned URLs. It keeps the test video/job for browser
+playback verification; delete it after checking. Failed or deliberately paused
+sessions are retained for resume and consume an upload slot until completed,
+cancelled through `DELETE /uploads/{id}`, or cleaned after expiration.
 Use `--minimum-bytes 1073741824` if the evidence must prove a full 1 GiB.
-This script exercises resume state; also refresh the actual browser during
-transfer, reselect the same video and verify only missing parts are sent.
+Also refresh the actual browser during transfer, reselect the same video and
+verify only missing parts are sent.
+
+Script follow-up validation: `python -m pytest
+tests/test_direct_upload_verification.py -q`: **11 passed**. Tests cover separate
+invocations after an intentional pause and a transfer failure, missing-part byte
+offsets, CORS and cookie isolation, completion retries, and rejection of changed
+bytes or targets. Ruff passed for the script and tests. These mocked checks do
+not replace real S3 or browser acceptance.
 
 On isolated test services with migrations applied, run:
 
@@ -118,10 +139,9 @@ Repeat the real large-file upload against production only after the cutover
 owner confirms the intended target. Keep actual evidence separate from this
 local verification record.
 
-## Remote status
+## Git handoff
 
-Local commits are complete by feature. The first `git push -u origin
-feat/sprint5-part-b` was blocked by automatic approval review, which requires
-explicit confirmation that this code may be sent to the configured destination,
-`https://github.com/Flickpond/Media_player.git`. Push and PR creation remain pending
-that confirmation. No push or PR success is claimed.
+The user handles all pushes manually. After each new local commit, provide a
+copyable `git push origin feat/sprint5-part-b` command; do not run the push.
+The branch tracked `origin/feat/sprint5-part-b` at `955baab` when this follow-up
+started. Real S3 and production acceptance above are still pending.
