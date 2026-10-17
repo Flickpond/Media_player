@@ -3,6 +3,9 @@
 *.tfstate
 *.tfstate.*
 *.tfvars
+# Backend settings name the account's state bucket; the example is the template.
+*.backend.hcl
+!example.backend.hcl
 crash.log
 # Saved plans embed variable values.
 *.plan

@@ -1,12 +1,15 @@
-# State holds account IDs, ARNs and the core host's address.
+# State holds account IDs, ARNs and the datastores' security groups.
 .terraform/
 *.tfstate
 *.tfstate.*
 # base.auto.tfvars.json is generated from the base's outputs (README.md);
-# workers.tfvars holds the image and the core host's private IP.
+# workers.tfvars holds the image.
 *.tfvars
 *.tfvars.json
 !example.tfvars
+# Backend settings name the account's state bucket; the example is the template.
+*.backend.hcl
+!example.backend.hcl
 crash.log
 # Saved plans embed variable values.
 *.plan
