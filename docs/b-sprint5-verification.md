@@ -58,7 +58,7 @@ orphan sweep for output produced after account cleanup.
 
 After narrowing the scope:
 
-- `python -m pytest -q --cov=app`: **654 passed, 76 skipped**, **91.02% coverage**.
+- Final `python -m pytest -q --cov=app`: **667 passed, 76 skipped**, **91.03% coverage**.
 - `python -m ruff check .`: passed.
 - `git diff --exit-code 735da33 -- frontend load/fixture.py app/api/uploads.py
   app/repositories/users.py app/schemas/user.py tests/test_uploads.py
@@ -87,14 +87,27 @@ cases cover both ready/completed sessions, cleanup ordering, safe errors,
 database-record preservation and successful retry. This is local mocked
 storage evidence, not a claim of live S3 or PostgreSQL execution.
 
+## Real PostgreSQL verification before PR
+
+Docker Desktop became available during the final review. A temporary
+`postgres:16-alpine` container was created with a dedicated database, bound only
+to `127.0.0.1:15432`. No project Compose or infrastructure file was changed.
+
+- `alembic upgrade head`: passed, through `20261011_06`.
+- With `RUN_POSTGRES_TESTS=1`, these modules ran against that real database:
+  `test_multipart_postgres.py`, `test_admin_users_postgres.py`, and
+  `test_authorization_postgres.py`: **13 passed**, none skipped.
+- This exercised concurrent quota reservations and upload finalization, account
+  row rollback and deletion, owner scoping and database authorization constraints.
+- The temporary PostgreSQL container was stopped and automatically removed.
+
 ## Not executed
 
-There is no listening local PostgreSQL, Redis or object store. Docker Desktop
-integration is unavailable in this WSL distro. The guarded PostgreSQL and storage
-integration tests were collected but skipped, including new quota concurrency
-and account rollback/deletion checks. No staging credentials or real large video
-were supplied. S3 staging, production, browser playback and a real 1 GB transfer
-are **not verified** by the metadata-only and mocked tests.
+Real S3 staging/production, browser acceptance and a real 1 GB video transfer
+remain unverified. The separate full offline suite skips live-service tests;
+the selected real PostgreSQL run above was executed separately. No staging
+credentials or large video were supplied. Storage failure tests still use
+mocks, so PostgreSQL results do not prove S3 cleanup or browser CORS behavior.
 
 ## Real S3 acceptance
 
@@ -159,5 +172,6 @@ local verification record.
 
 The user handles all pushes manually. After each new local commit, provide a
 copyable `git push origin feat/sprint5-part-b` command; do not run the push.
-The branch tracked `origin/feat/sprint5-part-b` at `955baab` when this follow-up
-started. Real S3 and production acceptance above are still pending.
+The branch tracked `origin/feat/sprint5-part-b` at `fb7b597` before the final
+verification update. A Draft PR can be opened for backend review now. The
+coordinated upload retirement and real S3/production acceptance remain pending.
