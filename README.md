@@ -83,7 +83,7 @@ firewalled is not ([T-06](docs/known-traps.md#t-06)).
 Media_player/
 |-- app/
 |   |-- api/jobs.py               # GET /jobs and GET /jobs/{id}
-|   |-- api/uploads.py            # retired POST /upload + safe names
+|   |-- api/uploads.py            # POST /upload
 |   |-- models/job.py             # SQLAlchemy Job model and state names
 |   |-- repositories/jobs.py      # Shared DB functions for API and worker
 |   |-- schemas/job.py            # Public response schemas
@@ -228,20 +228,27 @@ Database constraints reject unknown states, a `done` row without `output_key`, a
 
 ## Upload API
 
-All videos use resumable direct uploads; the API only receives metadata.
+```http
+POST /upload
+```
 
-1. `POST /uploads` with `{filename, size, content_type?, max_fps?}` creates a session.
-2. `POST /uploads/{id}/parts` signs part URLs; PUT each part directly to storage.
-3. `GET /uploads/{id}` recovers uploaded part numbers and ETags after interruption.
-4. `POST /uploads/{id}/complete` validates size and video bytes, then returns
-   `202 {"job_id": "..."}`. Poll the existing job endpoint.
-5. `DELETE /uploads/{id}` cancels an unfinished upload.
+Multipart form with a single `file` field. Stores the object, inserts the job
+row, enqueues the job id, and returns immediately - it never waits for
+processing:
 
-Each user can reserve at most five unfinished sessions (429 at the limit).
-Unknown browser MIME types are accepted; non-video bytes are rejected with 415
-at completion. Storage metadata remains octet-stream + attachment.
-The old `POST /upload` returns 410 with migration instructions.
-See [the full contract](docs/b-direct-uploads.md).
+```json
+{"job_id": "9b4595b8-9bd3-4a71-b99d-488c7c7f381c"}
+```
+
+Returns `202`. Rejections:
+
+| Status | Body                                                         | When                                                                                                                                                                    |
+| ------ | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `413`  | `{"error": "file too large"}`                                | Above the 100MB limit. Checked against `Content-Length` before the body is read, and again against the bytes that arrived.                                              |
+| `415`  | `{"error": "unsupported media type"}`                        | The declared `Content-Type` is not an accepted video type.                                                                                                              |
+| `415`  | `{"error": "file content is not a recognized video format"}` | The bytes are not a recognised video container. The declared type is attacker-supplied — a browser fills it in from the file extension — so the content is checked too. |
+
+The stored object is served back under the *sniffed* type, not the client's claim.
 
 ## Status API
 

@@ -18,7 +18,3 @@ class UserResponse(BaseModel):
     id: UUID
     email: str
     role: UserRole
-
-
-class AdminUserResponse(UserResponse):
-    job_count: int

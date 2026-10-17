@@ -19,24 +19,34 @@ Date: 17 October 2026. Branch: `feat/sprint5-part-b`, based on `main` at `735da3
   sessions, jobs and user rows deleted, with one database commit. Failures return
   a safe 503, roll back the transaction and can be retried. Deleted-user cookies
   receive 401 on the next authenticated request.
-- Every browser file, including an empty or generic MIME type, uses direct
-  uploads. Actual bytes and sizes are checked at completion; invalid content is
-  removed without a job. Stored metadata remains octet-stream and attachment.
-- The old `POST /upload` returns 410 with migration instructions, without a File
-  dependency that would spool the request. Frontend fallback and its separate
-  100 MiB limit are removed. The load fixture uses direct multipart upload too.
+- The direct upload API accepts empty or generic MIME types. Actual bytes and
+  sizes are checked at completion; invalid content is removed without a job.
+  Stored metadata remains octet-stream and attachment.
 
-## Integration handoff
+## Integration handoff and scope
 
-The backend user list supplies the account name and video count for E's delete
-confirmation. E still owns the admin panel button; this branch does not add it.
-The backend and frontend upload migration must deploy together.
+B supplies the operator user list and deletion API. E owns the admin panel
+button and browser upload path. This branch leaves `frontend/*`, `load/fixture.py`,
+the original `app/api/uploads.py`, existing authentication repository/schema,
+and their pre-existing tests exactly as on the base commit. Account repository
+and response additions live in new B files, `app/repositories/admin_users.py`
+and `app/schemas/admin_user.py`.
 
-Files shared with other tracks and changed as necessary for Part B:
-`app/api/jobs.py` (extract cleanup only; existing best-effort deletion retained),
-`app/repositories/users.py`, `app/schemas/user.py`, `app/schemas/upload.py`,
-`app/main.py`, `frontend/app.js` and its tests, plus the load fixture and docs.
-No worker behavior, infrastructure, live accounts, or production settings were changed.
+The old `POST /upload` remains available. E must switch unknown MIME files
+and the frontend fallback to direct upload before B retires that endpoint;
+the load fixture must migrate at that coordinated handoff. This part of the
+Sprint 5 retirement is pending and is not claimed complete.
+
+Shared production-file changes are limited to:
+
+- `app/main.py`: register the new B account router (two lines).
+- `app/api/jobs.py`: extract the existing storage cleanup so B account deletion
+  can reuse it. The original best-effort individual deletion behavior remains.
+- `app/schemas/upload.py`: allow empty/omitted MIME metadata for B direct uploads.
+
+The old-cookie 401 check is a test of existing auth behavior, not a change
+to authentication, token lifetime or role checks. No worker, infrastructure,
+live account or production settings were changed.
 
 Storage and PostgreSQL cannot share an atomic transaction: successful object
 deletions are not undone if a later object deletion or DB commit fails. Rows are
@@ -46,12 +56,16 @@ orphan sweep for output produced after account cleanup.
 
 ## Executed locally
 
-- `python -m pytest -q --cov=app`: **633 passed, 76 skipped**,
-  **90.81% coverage**, exceeding the required 80%.
-- `npm test`: **157 passed, 3 skipped** (live browser tests require a server).
+After narrowing the scope:
+
+- `python -m pytest -q --cov=app`: **654 passed, 76 skipped**, **91.02% coverage**.
 - `python -m ruff check .`: passed.
-- Verification-script and load-safety tests: **10 passed**.
-- `git diff --cached --check`: passed before each implementation commit.
+- `git diff --exit-code 735da33 -- frontend load/fixture.py app/api/uploads.py
+  app/repositories/users.py app/schemas/user.py tests/test_uploads.py
+  tests/test_authorization.py README.md`: passed; all these files match the base.
+- Frontend tests were not rerun because its source and tests were restored
+  exactly to the base commit. Earlier frontend results applied to the previous
+  implementation, not this narrowed version.
 
 The existing WSL virtual environment was missing the current main branch's
 declared cryptography dependency; `pip install -e .[dev]` repaired the environment.

@@ -13,8 +13,12 @@ from app.config import get_settings
 from app.models.job import Job
 from app.models.upload import UploadSession
 from app.models.user import User
+from app.repositories.admin_users import (
+    account_contents,
+    delete_account_rows,
+    list_users_with_job_counts,
+)
 from app.repositories.uploads import add_upload, lock_owner
-from app.repositories.users import account_contents, delete_account_rows, list_users_with_job_counts
 from app.schemas.upload import PART_SIZE
 
 pytestmark = pytest.mark.skipif(

@@ -11,9 +11,13 @@ from app.api.deps import OperatorUser, SessionDependency
 from app.api.multipart_uploads import Storage as MultipartStorageDependency
 from app.api.uploads import StorageDependency
 from app.errors import ApiNotFoundError
+from app.repositories.admin_users import (
+    account_contents,
+    delete_account_rows,
+    list_users_with_job_counts,
+)
 from app.repositories.uploads import lock_owner
-from app.repositories.users import account_contents, delete_account_rows, list_users_with_job_counts
-from app.schemas.user import AdminUserResponse
+from app.schemas.admin_user import AdminUserResponse
 from app.services.job_cleanup import delete_job_storage
 
 logger = logging.getLogger(__name__)

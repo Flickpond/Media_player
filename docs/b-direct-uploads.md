@@ -1,8 +1,8 @@
 # B: direct resumable uploads
 
 The browser uploads 16 MiB parts directly to S3-compatible storage. The API
-receives metadata only, except a 4096-byte range read after assembly. `POST /upload` is retired (410); all files, including unknown browser MIME
-types, use direct uploads.
+receives metadata only, except a 4096-byte range read after assembly. The existing `POST /upload` is retained until E migrates the browser fallback.
+The direct API now also accepts unknown browser MIME types.
 
 ## API contract for E
 
@@ -103,8 +103,10 @@ and object store, with migrations applied.
 Browser acceptance with E: upload a 1 GiB real video, inspect part progress,
 interrupt and refresh, reselect the same file, resume missing parts, complete
 and play the result. Also check expired signatures, cancellation, another user's
-ID, renamed non-video input and that the retired one-shot route returns 410. Record real results here;
-unit mocks alone are not browser or production evidence.
+ID, renamed non-video input and the existing legacy upload UI. Retirement of
+`POST /upload` is a coordinated follow-up with E; this branch leaves E's frontend
+and the load fixture unchanged. Record real results here; unit mocks alone are
+not browser or production evidence.
 
 ## Implementation references
 
