@@ -88,7 +88,10 @@ async def test_storage_and_open_sessions_are_cleaned_before_rows_and_one_commit(
         hls_key=None, operations=[{"operation": "clip"}],
     )
     upload = SimpleNamespace(state="open")
-    s.contents.return_value = ([job, edit], [upload, SimpleNamespace(state="completed")])
+    s.contents.return_value = (
+        [job, edit],
+        [upload, SimpleNamespace(state="completed", job_id=job.id, source_key="source")],
+    )
     s.storage.list_objects.return_value = [("hls/id/master.m3u8", None), ("hls/id/seg.ts", None)]
     events = []
     s.multipart.abort.side_effect = lambda _: events.append("abort")
@@ -135,3 +138,42 @@ async def test_deleted_users_cookie_is_rejected_on_the_next_request(account_api,
     monkeypatch.setattr(deps, "get_user", AsyncMock(return_value=None))
     response = await s.client.get("/auth/me", headers={"Cookie": f"{COOKIE_NAME}=old-token"})
     assert response.status_code == 401
+
+
+@pytest.mark.parametrize("state", ["ready", "completed"])
+async def test_deleting_account_cleans_a_source_whose_job_was_already_deleted(account_api, state):
+    s = account_api
+    upload = SimpleNamespace(state=state, job_id=uuid4(), source_key="uploads/deleted/source.mp4")
+    s.contents.return_value = ([], [upload])
+    events = []
+    s.storage.delete_object.side_effect = lambda key: events.append(key)
+    s.remove.side_effect = lambda *_: events.append("rows")
+    s.session.commit.side_effect = lambda: events.append("commit")
+
+    response = await s.client.delete(f"/admin/users/{s.target.id}")
+
+    assert response.status_code == 204
+    assert events == [upload.source_key, "rows", "commit"]
+    s.multipart.abort.assert_not_awaited()
+
+
+@pytest.mark.parametrize("state", ["ready", "completed"])
+async def test_a_leftover_source_failure_preserves_account_rows_for_retry(account_api, state):
+    s = account_api
+    source_key = "uploads/deleted/private.mp4"
+    upload = SimpleNamespace(state=state, job_id=uuid4(), source_key=source_key)
+    s.contents.return_value = ([], [upload])
+    s.storage.delete_object.side_effect = RuntimeError(f"AccessDenied for {source_key}")
+
+    response = await s.client.delete(f"/admin/users/{s.target.id}")
+
+    assert response.status_code == 503
+    assert source_key not in response.text and "AccessDenied" not in response.text
+    s.remove.assert_not_awaited()
+    s.session.commit.assert_not_awaited()
+    s.session.rollback.assert_awaited_once()
+
+    s.storage.delete_object.side_effect = None
+    assert (await s.client.delete(f"/admin/users/{s.target.id}")).status_code == 204
+    s.remove.assert_awaited_once_with(s.session, s.target.id)
+    s.session.commit.assert_awaited_once()

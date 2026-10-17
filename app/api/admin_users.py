@@ -50,9 +50,14 @@ async def delete_account(
         if await lock_owner(session, user_id) is None:
             raise ApiNotFoundError("not found")
         jobs, uploads = await account_contents(session, user_id)
+        job_ids = {job.id for job in jobs}
         for upload in uploads:
             if upload.state not in {"ready", "completed", "aborted"}:
                 await multipart.abort(upload)
+            elif upload.state in {"ready", "completed"} and upload.job_id not in job_ids:
+                # Individual job deletion is best-effort in storage. Its durable
+                # upload session still identifies a source that cleanup may have missed.
+                await storage.delete_object(upload.source_key)
         for job in jobs:
             await delete_job_storage(storage, job)
         await delete_account_rows(session, user_id)

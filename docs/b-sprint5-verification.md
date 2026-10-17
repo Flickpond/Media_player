@@ -71,6 +71,22 @@ The existing WSL virtual environment was missing the current main branch's
 declared cryptography dependency; `pip install -e .[dev]` repaired the environment.
 An existing JWT test emits a warning for its intentionally short test secret.
 
+## Account cleanup follow-up
+
+An individual job delete commits its row before best-effort storage cleanup.
+If that storage operation fails, a ready/completed upload session can outlive
+the deleted job and still identify its source object. Account deletion now
+cleans that known source before deleting any rows. A failed cleanup returns
+503 and preserves account/session rows so the operator can retry. Sessions
+whose jobs still exist continue through the shared job cleanup path.
+
+Validation: `python -m pytest tests/test_admin_users.py tests/test_jobs_api.py
+tests/test_multipart_uploads.py tests/test_upload_limits.py -q`: **79 passed**.
+Ruff passed for the changed account API and tests. The four new regression
+cases cover both ready/completed sessions, cleanup ordering, safe errors,
+database-record preservation and successful retry. This is local mocked
+storage evidence, not a claim of live S3 or PostgreSQL execution.
+
 ## Not executed
 
 There is no listening local PostgreSQL, Redis or object store. Docker Desktop
