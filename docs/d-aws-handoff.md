@@ -221,12 +221,75 @@ this root made, including the two datastore rules and the policy on the
 base's role; the base is untouched. That policy is also what lets the
 core's queue-metrics publisher write to CloudWatch, so its metric stops too.
 
+## 6. Thursday: interruption test, login numbers, DAST on staging
+
+### 6.1 A real spot interruption (with A)
+
+`fis.tf` holds an AWS FIS experiment that sends one running worker of this
+group the same two-minute notice a reclaim does. Off by default; on for the
+test only:
+
+```bash
+cd infra/workers
+terraform plan -var-file=workers.tfvars -var interruption_test=true -out=fis.plan
+#   3 to add: the experiment's role, its policy, the template. Nothing else.
+terraform apply fis.plan
+
+# One worker, so it is the one the experiment picks.
+aws autoscaling set-desired-capacity --auto-scaling-group-name $G --desired-capacity 1
+```
+
+Upload a long video (A's 4K phone clip) and wait for `processing`. On the
+worker: `aws ssm start-session --target <id>`, then
+`sudo journalctl -u flickpond-drain -f`. From your machine:
+
+```bash
+aws fis start-experiment \
+  --experiment-template-id "$(terraform output -raw interruption_test_template_id)"
+```
+
+**Expected:** within 5 s the journal shows
+`spot interruption notice: stopping the worker so it gives its job back`;
+the job returns to `queued` within seconds (its first of three
+interruptions); about two minutes later the instance is terminated; the
+group launches a replacement, which takes the job and finishes it `done`.
+Then remove the test's resources:
+
+```bash
+terraform plan -var-file=workers.tfvars -out=workers.plan   # 3 to destroy, nothing else
+terraform apply workers.plan
+```
+
+### 6.2 Login latency on staging (§5 of `login-latency-investigation.md`)
+
+The fix (bcrypt off the event loop) is in D's Thursday PR. Measure staging
+**before** that PR is deployed there and again **after**, with the two
+commands in §5 of that document, and record both there.
+
+### 6.3 DAST against staging
+
+1. Repository variable **`DAST_STAGING_URL`** = the staging origin, e.g.
+   `https://staging.example.com` — `https://`, no path, no trailing route.
+   The workflow refuses anything else, and refuses `flickpond.com` and
+   `www.flickpond.com` outright.
+2. Actions → **DAST** → *Run workflow* → branch `main` → target **staging**.
+3. The run's summary has the findings table; the full report is the
+   `zap-reports-staging-<run id>` artifact. Medium or High findings not in
+   `deploy/dast/accepted-alerts.tsv` fail the run, as on pull requests.
+4. The scan registers `dast-<run id>@example.com` on staging and fuzzes the
+   API as that user. Delete the account with the operator's
+   `DELETE /admin/users/{id}` once it lands (contract 2.4).
+
 ## Asks for Track A
 
 1. **`redis_host` is not in contract 2.1's list** but the workers read it,
    as `deploy/aws/fetch-secrets.sh` does on the core. Please keep the name.
 2. `docs/aws-cutover.md` §2 lists `core_private_ip` among the outputs D
    consumes; the worker module no longer reads it. Yours to keep or drop.
+3. **D's Thursday PR edits your `app/api/auth.py`** (rule 5): the login fix
+   from `login-latency-investigation.md` §4 — `hash_password` and
+   `verify_password` through `run_in_threadpool`, nothing else changed —
+   with a regression test in `tests/test_auth.py`. Please review it.
 
 ## Record here
 
@@ -241,3 +304,6 @@ core's queue-metrics publisher write to CloudWatch, so its metric stops too.
 | 5.2 Scaled out on queue depth, back to minimum | | | |
 | 5.3 `docker stop` mid-encode → requeued → done elsewhere | | | |
 | 5.4 Scale-in drained the job | | | |
+| 6.1 FIS notice → drained → requeued → done on the replacement | | | |
+| 6.2 Login p90 on staging, before / after the fix | | | |
+| 6.3 DAST on staging (run id, blocking findings) | | | |

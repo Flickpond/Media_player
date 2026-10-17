@@ -1,7 +1,10 @@
 # Login latency: why login p90 was 5.8 s at 50 users
 
 **Status:** root cause reproduced locally on 8 October 2026, fix verified
-locally. Staging numbers pending (§5). Track D, sprint 4.
+locally. Track D, sprint 4. **Fixed in sprint 5** (Thursday 15, Track D, in
+A's `app/api/auth.py` with A's review): both bcrypt calls run in the thread
+pool, and `tests/test_auth.py` fails if either goes back on the event loop.
+Staging numbers still pending (§5).
 
 ## 1. Summary
 

@@ -31,6 +31,7 @@ ElastiCache 6379  ◀─┴── worker Auto Scaling Group  ◀── step scal
 | `network.tf` | Worker security group: no inbound; out 443, and Postgres and Valkey to their own security groups. The matching ingress on those groups, behind `open_datastores_to_workers` (off) |
 | `iam.tf` | One inline policy on the base's role: PutMetricData (namespace `Flickpond` only), pull from the worker repository, read `/flickpond/<env>/*` parameters, complete this group's lifecycle actions |
 | `user-data.sh.tftpl` | Boot: Docker, the datastore settings from Parameter Store, ECR login, `python -m app.worker`, and the `flickpond-drain` service (contract 2.3) |
+| `fis.tf` | The spot interruption test: an AWS FIS experiment sending one worker a real two-minute notice. Only with `interruption_test = true` |
 | `tests/` | `terraform test` with a mocked AWS provider: no account needed |
 
 ## Decisions, and why
@@ -70,7 +71,7 @@ ElastiCache 6379  ◀─┴── worker Auto Scaling Group  ◀── step scal
 ```bash
 cd infra/workers
 terraform init -backend=false
-terraform test          # 11 runs, Terraform 1.10+
+terraform test          # 13 runs, Terraform 1.10+
 ```
 
 Without Terraform installed, prefix each command with

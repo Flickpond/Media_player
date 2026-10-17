@@ -318,3 +318,48 @@ run "a_daytime_minimum_above_the_maximum_is_rejected" {
 
   expect_failures = [aws_autoscaling_schedule.daytime]
 }
+
+run "no_interruption_experiment_exists_unless_asked" {
+  command = plan
+
+  # Datastores closed by default: the check warns, as it should.
+  expect_failures = [check.workers_can_reach_the_datastores]
+
+  assert {
+    condition = (
+      length(aws_fis_experiment_template.interruption_test) == 0
+      && length(aws_iam_role.interruption_test) == 0
+    )
+    error_message = "A role that may interrupt workers should exist only while the test does."
+  }
+}
+
+run "the_interruption_experiment_warns_one_worker_of_this_group_two_minutes_out" {
+  command = plan
+
+  variables {
+    open_datastores_to_workers = true
+    interruption_test          = true
+  }
+
+  assert {
+    condition = (
+      one(aws_fis_experiment_template.interruption_test[0].action).action_id == "aws:ec2:send-spot-instance-interruptions"
+      && one(one(aws_fis_experiment_template.interruption_test[0].action).parameter).value == "PT2M"
+    )
+    error_message = "The experiment should send the same two-minute notice a real reclaim does."
+  }
+
+  assert {
+    condition = (
+      one(aws_fis_experiment_template.interruption_test[0].target).selection_mode == "COUNT(1)"
+      && one(one(aws_fis_experiment_template.interruption_test[0].target).resource_tag).value == "flickpond-staging-workers"
+    )
+    error_message = "One running worker of this environment's group, never any other instance."
+  }
+
+  assert {
+    condition     = strcontains(aws_iam_role_policy.interruption_test[0].policy, "\"ec2:ResourceTag/aws:autoscaling:groupName\":\"flickpond-staging-workers\"")
+    error_message = "The experiment's role may interrupt only this group's instances."
+  }
+}

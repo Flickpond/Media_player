@@ -1,7 +1,20 @@
 name: DAST
 
+# Two targets. By default, on every pull request and the weekly schedule, an
+# isolated stack this job starts from the commit itself. By hand, `staging`:
+# the deployed staging site, at the DAST_STAGING_URL repository variable --
+# the only way to name it, so a run can never be pointed at production or at
+# anyone else's host. A staging scan registers its own throwaway account
+# (dast-<run id>@example.com); an operator deletes it afterwards.
+
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: "ci-stack: a stack built from this commit. staging: DAST_STAGING_URL."
+        type: choice
+        options: [ci-stack, staging]
+        default: ci-stack
   schedule:
     - cron: "0 3 * * 1"
   # No `paths:` filter, so this scan can be a required check: a required
@@ -59,9 +72,35 @@ jobs:
       JWT_SECRET: dast-only-jwt-secret-not-for-production-2026
       REDIS_PASSWORD: dast-only-redis-password
       POSTGRES_PASSWORD: dast-only-postgres-password
-      DAST_BASE_URL: http://127.0.0.1:3000
+      DAST_TARGET: ${{ inputs.target || 'ci-stack' }}
+      DAST_STAGING_URL: ${{ vars.DAST_STAGING_URL }}
+      # Unique per run: staging keeps every account a previous scan made.
+      DAST_EMAIL: dast-${{ github.run_id }}@example.com
     steps:
       - uses: actions/checkout@v4
+
+      - name: Choose the target
+        run: |
+          if [ "${DAST_TARGET}" != "staging" ]; then
+            echo "DAST_BASE_URL=http://127.0.0.1:3000" >> "${GITHUB_ENV}"
+            exit 0
+          fi
+          url="${DAST_STAGING_URL%/}"
+          if ! printf '%s' "${url}" | grep -Eq '^https://[A-Za-z0-9.-]+$'; then
+            echo "::error::Set the DAST_STAGING_URL repository variable to the staging origin, e.g. https://staging.example.com (https, no path)."
+            exit 1
+          fi
+          # An active scan sends attack payloads and creates accounts. Never
+          # at the live site, whatever the variable says. Lower-cased first:
+          # host names are case-insensitive, string comparison is not.
+          host="$(printf '%s' "${url#https://}" | tr '[:upper:]' '[:lower:]')"
+          case "${host}" in
+            flickpond.com | www.flickpond.com)
+              echo "::error::DAST_STAGING_URL names production (${url}). Refusing to scan it."
+              exit 1
+              ;;
+          esac
+          echo "DAST_BASE_URL=${url}" >> "${GITHUB_ENV}"
 
       - name: Prepare report directory
         run: |
@@ -69,13 +108,14 @@ jobs:
           chmod 777 zap-reports
 
       - name: Start isolated application stack
+        if: env.DAST_TARGET != 'staging'
         run: docker compose up --build -d --wait --wait-timeout 180 frontend
 
       - name: Prepare authenticated OpenAPI scan
         run: |
           curl --fail-with-body --silent --show-error \
             "${DAST_BASE_URL}/api/openapi.json" \
-            | jq '.servers = [{"url": "http://127.0.0.1:3000/api"}]' \
+            | jq --arg api "${DAST_BASE_URL}/api" '.servers = [{"url": $api}]' \
             > zap-reports/openapi.json
 
           curl --fail-with-body --silent --show-error \
@@ -83,7 +123,7 @@ jobs:
             --output /tmp/dast-register-body \
             --request POST "${DAST_BASE_URL}/api/auth/register" \
             --header "Content-Type: application/json" \
-            --data '{"email":"dast@example.com","password":"Dast-only-password-123!"}'
+            --data "{\"email\":\"${DAST_EMAIL}\",\"password\":\"Dast-only-password-123!\"}"
 
           token="$(sed -nE 's/^set-cookie: access_token=([^;]+).*/\1/ip' \
             /tmp/dast-register-headers | tr -d '\r' | head -n 1)"
@@ -99,7 +139,7 @@ jobs:
           curl --fail-with-body --silent --show-error \
             --header "Cookie: access_token=${token}" \
             "${DAST_BASE_URL}/api/auth/me" \
-            | jq -e '.email == "dast@example.com"'
+            | jq -e --arg email "${DAST_EMAIL}" '.email == $email'
 
       - name: Run authenticated OWASP ZAP scan
         run: |
@@ -143,6 +183,8 @@ jobs:
           {
             echo "## OWASP ZAP DAST"
             echo
+            echo "Target: \`${DAST_TARGET}\` (${DAST_BASE_URL})"
+            echo
             echo "| Risk | Alerts |"
             echo "| --- | ---: |"
             echo "| High | ${high} |"
@@ -182,18 +224,18 @@ jobs:
           exit 1
 
       - name: Capture application logs
-        if: always()
+        if: always() && env.DAST_TARGET != 'staging'
         run: docker compose logs --no-color > zap-reports/compose.log 2>&1 || true
 
       - name: Upload ZAP reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zap-reports-${{ github.run_id }}
+          name: zap-reports-${{ env.DAST_TARGET }}-${{ github.run_id }}
           path: zap-reports/
           if-no-files-found: warn
           retention-days: 30
 
       - name: Tear down isolated stack
-        if: always()
+        if: always() && env.DAST_TARGET != 'staging'
         run: docker compose down -v --remove-orphans

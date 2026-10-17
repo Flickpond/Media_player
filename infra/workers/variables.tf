@@ -190,3 +190,9 @@ variable "open_datastores_to_workers" {
   type        = bool
   default     = false
 }
+
+variable "interruption_test" {
+  description = "Creates the FIS experiment that sends one worker a spot interruption notice (fis.tf). On only for the test."
+  type        = bool
+  default     = false
+}

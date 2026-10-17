@@ -202,3 +202,86 @@ async def test_logout_actually_sends_a_cookie_clearing_header():
     assert "HttpOnly" in header
     assert "Path=/" in header
     assert "Secure" in header
+
+
+# --- the event loop ------------------------------------------------------------
+
+SLOW_HASH_SECONDS = 0.5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["login", "register"])
+async def test_a_password_hash_does_not_hold_up_other_requests(monkeypatch, endpoint):
+    """Regression guard for login p90 of 5.8 s at 50 users.
+
+    bcrypt took ~220 ms of CPU directly on the event loop, so under a burst
+    of logins every request -- not only logins -- queued behind the hashing
+    (docs/login-latency-investigation.md). A stand-in that blocks for half a
+    second makes the effect certain: `/health` sent alongside it must answer
+    first, which it can only do if the hash runs off the loop.
+    """
+    import asyncio
+    import time
+
+    from httpx import ASGITransport, AsyncClient
+
+    from app.api import auth
+    from app.database import get_session
+    from tests.conftest import make_user
+
+    def slow_verify(_password: str, _hashed: str) -> bool:
+        time.sleep(SLOW_HASH_SECONDS)
+        return False
+
+    def slow_hash(_password: str) -> str:
+        time.sleep(SLOW_HASH_SECONDS)
+        return "not-a-real-hash"
+
+    async def no_user(_session, _email):
+        return None
+
+    async def created_user(_session, *, email, password_hash):
+        return make_user()
+
+    async def no_session():
+        yield None
+
+    monkeypatch.setattr(auth, "verify_password", slow_verify)
+    monkeypatch.setattr(auth, "hash_password", slow_hash)
+    monkeypatch.setattr(auth, "get_user_by_email", no_user)
+    monkeypatch.setattr(auth, "create_user", created_user)
+
+    from app.main import create_app
+
+    application = create_app()
+    application.dependency_overrides[get_session] = no_session
+    finished: list[str] = []
+
+    async with AsyncClient(
+        transport=ASGITransport(app=application), base_url="http://test"
+    ) as client:
+
+        async def send_credentials():
+            response = await client.post(
+                f"/auth/{endpoint}",
+                json={"email": "someone@example.com", "password": "long-enough-password"},
+            )
+            finished.append(endpoint)
+            return response
+
+        async def check_health():
+            # Let the credentials request reach the hash first.
+            await asyncio.sleep(0.05)
+            response = await client.get("/health")
+            finished.append("health")
+            return response
+
+        credentials_response, health_response = await asyncio.gather(
+            send_credentials(), check_health()
+        )
+
+    assert health_response.status_code == 200
+    assert credentials_response.status_code == (401 if endpoint == "login" else 201)
+    assert finished == ["health", endpoint], (
+        f"/health waited for the {endpoint} hash: bcrypt is running on the event loop"
+    )

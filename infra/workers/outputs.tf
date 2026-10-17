@@ -21,3 +21,8 @@ output "image_tag" {
   description = "The commit every new worker boots."
   value       = local.image_parts.tag
 }
+
+output "interruption_test_template_id" {
+  description = "aws fis start-experiment --experiment-template-id <this>. Null unless interruption_test is on."
+  value       = one(aws_fis_experiment_template.interruption_test[*].id)
+}
