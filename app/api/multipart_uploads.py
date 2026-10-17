@@ -16,7 +16,13 @@ from app.config import Settings, get_settings
 from app.errors import ApiForbiddenError, ApiNotFoundError, ApiUnauthorizedError
 from app.models.upload import UploadSession
 from app.queue import enqueue_job
-from app.repositories.uploads import add_upload, create_upload_job, get_upload
+from app.repositories.uploads import (
+    MAX_OPEN_UPLOADS,
+    UploadLimitReachedError,
+    add_upload,
+    create_upload_job,
+    get_upload,
+)
 from app.schemas.upload import (
     PART_SIZE,
     CompleteUpload,
@@ -111,7 +117,13 @@ async def start(
     )
     # Persist the key first, so a storage/DB interruption cannot leave a completed
     # object unprotected from the orphan sweep. Abandoned parts have a lifecycle rule.
-    await add_upload(session, upload)
+    try:
+        await add_upload(session, upload)
+    except UploadLimitReachedError as exc:
+        await session.rollback()
+        raise HTTPException(
+            429, f"at most {MAX_OPEN_UPLOADS} unfinished uploads are allowed"
+        ) from exc
     upload = await owned(session, upload.id, user.id)
     upload.storage_id = await store.initiate(upload.source_key)
     await session.commit()

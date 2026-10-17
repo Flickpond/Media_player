@@ -292,3 +292,13 @@ async def test_a_direct_upload_can_keep_60_fps(setup):
 async def test_a_direct_upload_refuses_any_other_frame_rate(setup):
     assert (await start_with(setup, max_fps=45)).status_code == 422
     assert setup.rows == {}
+
+
+async def test_session_limit_returns_429_before_contacting_storage(setup, monkeypatch):
+    add = AsyncMock(side_effect=api.UploadLimitReachedError)
+    monkeypatch.setattr(api, "add_upload", add)
+    response = await start_with(setup)
+    assert response.status_code == 429
+    assert "5" in response.json()["error"]
+    setup.store.initiate.assert_not_awaited()
+    setup.session.rollback.assert_awaited_once()
