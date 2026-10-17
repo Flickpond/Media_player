@@ -11,12 +11,18 @@ from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import CurrentUser, SessionDependency
-from app.api.uploads import ALLOWED_CONTENT_TYPES, safe_filename
+from app.api.uploads import safe_filename
 from app.config import Settings, get_settings
 from app.errors import ApiForbiddenError, ApiNotFoundError, ApiUnauthorizedError
 from app.models.upload import UploadSession
 from app.queue import enqueue_job
-from app.repositories.uploads import add_upload, create_upload_job, get_upload
+from app.repositories.uploads import (
+    MAX_OPEN_UPLOADS,
+    UploadLimitReachedError,
+    add_upload,
+    create_upload_job,
+    get_upload,
+)
 from app.schemas.upload import (
     PART_SIZE,
     CompleteUpload,
@@ -91,8 +97,6 @@ async def start(
         raise HTTPException(
             413, f"upload exceeds maximum size of {settings.max_upload_bytes} bytes"
         )
-    if request.content_type.split(";")[0].strip().lower() not in ALLOWED_CONTENT_TYPES:
-        raise HTTPException(415, "unsupported media type")
     now = datetime.now(UTC)
     job_id = uuid4()
     filename = safe_filename(request.filename)
@@ -111,7 +115,13 @@ async def start(
     )
     # Persist the key first, so a storage/DB interruption cannot leave a completed
     # object unprotected from the orphan sweep. Abandoned parts have a lifecycle rule.
-    await add_upload(session, upload)
+    try:
+        await add_upload(session, upload)
+    except UploadLimitReachedError as exc:
+        await session.rollback()
+        raise HTTPException(
+            429, f"at most {MAX_OPEN_UPLOADS} unfinished uploads are allowed"
+        ) from exc
     upload = await owned(session, upload.id, user.id)
     upload.storage_id = await store.initiate(upload.source_key)
     await session.commit()

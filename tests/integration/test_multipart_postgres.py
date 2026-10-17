@@ -110,3 +110,33 @@ async def test_owner_scope_and_rollback_preserve_session(upload_db):
     async with factory() as session:
         row = await get_upload(session, upload.id, upload.owner_id)
         assert row.state == "completing"
+
+
+async def test_concurrent_starts_cannot_exceed_the_owner_quota(upload_db):
+    from app.repositories.uploads import MAX_OPEN_UPLOADS, UploadLimitReachedError
+
+    factory, existing = upload_db
+    made = []
+
+    async def attempt():
+        now = datetime.now(UTC)
+        uid = uuid4()
+        row = UploadSession(
+            id=uid, owner_id=existing.owner_id, job_id=uuid4(), filename="quota.mp4",
+            source_key=f"uploads/{uid}/quota.mp4", size=20, part_size=PART_SIZE,
+            state="open", created_at=now, expires_at=now + timedelta(hours=24),
+        )
+        async with factory() as session:
+            try:
+                await add_upload(session, row)
+                made.append(uid)
+            except UploadLimitReachedError:
+                await session.rollback()
+
+    try:
+        await asyncio.wait_for(asyncio.gather(*(attempt() for _ in range(8))), 15)
+        assert len(made) == MAX_OPEN_UPLOADS - 1
+    finally:
+        async with factory() as session:
+            await session.execute(delete(UploadSession).where(UploadSession.id.in_(made)))
+            await session.commit()

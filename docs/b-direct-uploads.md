@@ -1,8 +1,8 @@
 # B: direct resumable uploads
 
 The browser uploads 16 MiB parts directly to S3-compatible storage. The API
-receives metadata only, except a 4096-byte range read after assembly. The old
-`POST /upload` still works with its original 100 MiB limit.
+receives metadata only, except a 4096-byte range read after assembly. The existing `POST /upload` is retained until E migrates the browser fallback.
+The direct API now also accepts unknown browser MIME types.
 
 ## API contract for E
 
@@ -10,10 +10,14 @@ All API requests need the existing login cookie. Through nginx prepend `/api`.
 Each upload belongs to its creator, including for operator accounts. Another
 owner's ID and an unknown ID both return 404; anonymous requests return 401.
 
-1. `POST /uploads` with `{filename, size, content_type}` returns 201 with
+1. `POST /uploads` with `{filename, size, content_type?, max_fps?}` returns 201 with
    `{upload_id, part_size, part_count}`. Save the ID alongside the local file
    identity. A session lasts 24 hours; sizes are positive integral bytes with
-   at most 10,000 parts (16 MiB each). This is a transport bound, not a duration rule.
+   at most 10,000 parts (16 MiB each). The configured `/limits` size cap also applies.
+   `content_type` is advisory and may be empty or omitted; completion sniffs bytes.
+   Each owner can reserve five unfinished sessions; excess starts return 429.
+   Open, completing and aborting sessions count, including expired ones until
+   cleanup succeeds. Completed, ready and aborted sessions do not count.
 2. `POST /uploads/{id}/parts` with `{part_numbers: [1,2,3]}` returns
    `{urls: {"1": "...", "2": "..."}}`. At most 100 distinct numbers per request.
    URLs expire within 15 minutes; request fresh ones as necessary. PUT each raw
@@ -39,7 +43,7 @@ with the same manifest, not by uploading more parts.
 
 Errors use `{error: "readable message"}`. Request schema errors retain FastAPI's
 422 `detail` response. 410 means an open session expired; start a new one.
-415 rejects unsupported types or an unrecognized container; 422 rejects sizes,
+415 rejects an unrecognized container at completion; 422 rejects sizes,
 part lists or ETags; 409 is a state conflict. On 503, refresh and retry; a response
 failure does not prove that storage or queue publication failed.
 
@@ -99,8 +103,10 @@ and object store, with migrations applied.
 Browser acceptance with E: upload a 1 GiB real video, inspect part progress,
 interrupt and refresh, reselect the same file, resume missing parts, complete
 and play the result. Also check expired signatures, cancellation, another user's
-ID, renamed non-video input and the legacy upload UI. Record real results here;
-unit mocks alone are not browser or production evidence.
+ID, renamed non-video input and the existing legacy upload UI. Retirement of
+`POST /upload` is a coordinated follow-up with E; this branch leaves E's frontend
+and the load fixture unchanged. Record real results here; unit mocks alone are
+not browser or production evidence.
 
 ## Implementation references
 

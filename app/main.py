@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.admin_users import router as admin_users_router
 from app.api.auth import router as auth_router
 from app.api.hls import router as hls_router
 from app.api.jobs import admin_router
@@ -66,6 +67,7 @@ def create_app() -> FastAPI:
     # not overlap -- /jobs/{id}/hls/... has a segment /jobs/{id} cannot match.
     application.include_router(hls_router)
     application.include_router(admin_router)
+    application.include_router(admin_users_router)
     application.include_router(uploads_router)
     application.include_router(limits_router)
     application.include_router(multipart_router)
