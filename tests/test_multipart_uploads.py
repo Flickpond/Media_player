@@ -302,3 +302,21 @@ async def test_session_limit_returns_429_before_contacting_storage(setup, monkey
     assert "5" in response.json()["error"]
     setup.store.initiate.assert_not_awaited()
     setup.session.rollback.assert_awaited_once()
+
+
+@pytest.mark.parametrize("declared", ["", "application/octet-stream", "text/html", "video/mp4"])
+async def test_declared_type_never_replaces_content_validation(setup, declared):
+    response = await start_with(setup, content_type=declared)
+    assert response.status_code == 201
+    uid = response.json()["upload_id"]
+    assert (await setup.client.post(f"/uploads/{uid}/complete", json=MANIFEST)).status_code == 202
+
+
+async def test_untyped_non_video_is_removed_at_completion(setup):
+    response = await start_with(setup, content_type="")
+    uid = response.json()["upload_id"]
+    setup.store.sniff.return_value = b"<html>not video</html>"
+    response = await setup.client.post(f"/uploads/{uid}/complete", json=MANIFEST)
+    assert response.status_code == 415
+    assert not setup.jobs
+    setup.store.abort.assert_awaited_once()

@@ -11,7 +11,7 @@ from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import CurrentUser, SessionDependency
-from app.api.uploads import ALLOWED_CONTENT_TYPES, safe_filename
+from app.api.uploads import safe_filename
 from app.config import Settings, get_settings
 from app.errors import ApiForbiddenError, ApiNotFoundError, ApiUnauthorizedError
 from app.models.upload import UploadSession
@@ -97,8 +97,6 @@ async def start(
         raise HTTPException(
             413, f"upload exceeds maximum size of {settings.max_upload_bytes} bytes"
         )
-    if request.content_type.split(";")[0].strip().lower() not in ALLOWED_CONTENT_TYPES:
-        raise HTTPException(415, "unsupported media type")
     now = datetime.now(UTC)
     job_id = uuid4()
     filename = safe_filename(request.filename)

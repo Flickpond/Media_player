@@ -62,10 +62,26 @@ def main():
             with args.evidence.open("x", encoding="utf-8") as record:
                 json.dump(evidence, record, indent=2)
             started = time.monotonic()
-            with args.video.open("rb") as video:
-                uploaded = client.post(
-                    "/api/upload", files={"file": ("load-fixture.mp4", video, "video/mp4")}
-                )
+            session_response = client.post("/api/uploads", json={
+                "filename": "load-fixture.mp4", "size": args.video.stat().st_size,
+                "content_type": "video/mp4",
+            })
+            session_response.raise_for_status()
+            upload_id = session_response.json()["upload_id"]
+            evidence["upload_id"] = upload_id
+            args.evidence.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+            signed = client.post(
+                f"/api/uploads/{upload_id}/parts", json={"part_numbers": [1]}
+            )
+            signed.raise_for_status()
+            # The fixture is <= 1 MB, so it always fits in one part. A separate
+            # request client keeps the application's auth cookie off storage.
+            with args.video.open("rb") as video, httpx.Client(timeout=30) as storage:
+                part = storage.put(signed.json()["urls"]["1"], content=video.read())
+            part.raise_for_status()
+            uploaded = client.post(f"/api/uploads/{upload_id}/complete", json={
+                "parts": [{"n": 1, "etag": part.headers["etag"]}],
+            })
             uploaded.raise_for_status()
             if uploaded.status_code != 202:
                 raise RuntimeError(f"expected 202 on upload, got {uploaded.status_code}")

@@ -6,7 +6,6 @@
 //   POST /auth/login     -> 200 { id, email, role }, sets the session cookie
 //   POST /auth/logout    -> 204, clears it
 //   GET  /auth/me        -> 200 { id, email, role } | 401
-//   POST /upload         -> 202 { job_id }, sets no cookie
 //   POST /uploads                    -> 201 { upload_id, part_size, part_count }
 //   POST /uploads/{id}/parts         -> 200 { urls: { "1": "...", ... } }
 //   GET  /uploads/{id}               -> 200 { parts_done, state, part_size, part_count, job_id? }
@@ -30,7 +29,7 @@
 // The `/uploads` trio is sprint 4's direct multipart upload (Track B, see
 // docs/b-direct-uploads.md): the browser asks for a presigned URL per 16 MiB
 // part and PUTs the bytes straight to storage, so the API never sees the
-// video. `POST /upload` still exists and is still used as the fallback.
+// video. Every file uses this path; completion identifies the container.
 //
 // The session cookie is HttpOnly and sent automatically, so nothing here reads
 // or attaches a token -- which is the point: a script cannot steal what it
@@ -41,21 +40,6 @@
 // 443, which is every real deployment, and the fallback would then point the
 // browser at the *visitor's* own machine.
 const API = "/api";
-
-// Mirrors app/api/uploads.py's ALLOWED_CONTENT_TYPES. This check is a courtesy
-// only -- it saves an obviously-wrong file a round trip -- never the source of
-// truth: the server re-checks by content, not by what the browser claims a
-// file is (T-01, T-02), and a mislabeled file still has to pass that.
-const ALLOWED_CONTENT_TYPES = new Set([
-  "video/mp4",
-  "video/mpeg",
-  "video/quicktime",
-  "video/webm",
-  "video/x-matroska",
-  "video/x-msvideo",
-]);
-// Mirrors app/api/uploads.py's MAX_FILE_SIZE. Same caveat: advisory only.
-const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024;
 
 const PAGE_SIZE = 12;
 
@@ -541,13 +525,7 @@ function describeSize(bytes) {
   return bytes % gib === 0 ? `${bytes / gib} GB` : formatBytes(bytes);
 }
 
-/** Say the duration limit next to the picker, when there is one.
- *
- * The size figure that used to live here is gone with the limit it described:
- * a file the browser can type now goes straight to storage in parts, so
- * quoting 100 MB would be wrong for almost every upload. A file it cannot type
- * still goes through the one-shot endpoint, which still stops at 100 MB, and
- * `sendWholeFile` is where that is said. */
+/** Show the server's duration and size limits next to the picker. */
 function applyLimitHint() {
   const bounds = [];
   if (limits?.max_duration_seconds > 0) bounds.push(describeLimit(limits.max_duration_seconds));
@@ -581,17 +559,6 @@ function readDurationSeconds(file) {
     probe.addEventListener("error", () => finish(null));
     probe.src = url;
   });
-}
-
-/** Whether this file can take the direct path at all.
- *
- * The direct path has to *declare* a content type and the API stores only the
- * ones on its list, so a file the browser could not type -- an .mkv on most
- * Linux desktops, an .avi on Windows -- has nothing to declare. Those still go
- * through the legacy one-shot POST, which identifies the container from the
- * bytes instead of trusting the declaration. */
-function canUploadDirectly(file) {
-  return Boolean(file.type) && ALLOWED_CONTENT_TYPES.has(file.type);
 }
 
 /** An error that carries its status, so the caller can tell "your session
@@ -675,12 +642,6 @@ function clearUploadProgress() {
 
 // --- the direct path -------------------------------------------------------
 
-/** Open a multipart session, or null when this API has no usable `/uploads`.
- *
- * Two things mean that, and they mean the same thing to the caller: a server
- * from before sprint 4 answers 404, and a body with no session in it is no
- * more usable than no route at all. Either way the upload falls back to the
- * one-shot POST rather than half-starting a transfer it cannot finish. */
 /** The frame-rate ceiling for this upload: 30 unless the reader kept 60.
  *
  * Read when the upload starts, so ticking the box mid-transfer changes the
@@ -697,14 +658,15 @@ async function openUploadSession(file) {
     body: JSON.stringify({
       filename: file.name,
       size: file.size,
-      content_type: file.type,
+      content_type: file.type || "application/octet-stream",
       max_fps: chosenMaxFps(),
     }),
   });
-  if (res.status === 404) return null;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw httpError(res.status, data);
-  if (!data.upload_id || !data.part_size || !data.part_count) return null;
+  if (!data.upload_id || !data.part_size || !data.part_count) {
+    throw new Error("The upload service returned an invalid session. Please try again.");
+  }
   return data; // { upload_id, part_size, part_count }
 }
 
@@ -806,23 +768,6 @@ async function runDirectUpload(session, file) {
   // The session has become a job; there is nothing left to come back to.
   clearPendingUpload();
   return jobId;
-}
-
-/** One opaque POST. Still the only path that can take a file whose type the
- *  browser could not name. */
-async function sendWholeFile(file) {
-  if (file.size > MAX_FILE_SIZE_BYTES) {
-    throw new Error(
-      `this server has no direct upload, and its one-shot upload stops at ${formatBytes(MAX_FILE_SIZE_BYTES)}`,
-    );
-  }
-  const body = new FormData();
-  body.append("file", file);
-  body.append("max_fps", String(chosenMaxFps()));
-  const res = await fetch(`${API}/upload`, { method: "POST", body });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw httpError(res.status, data);
-  return data.job_id;
 }
 
 // --- resuming an interrupted upload ----------------------------------------
@@ -978,16 +923,9 @@ async function resumeDirectUpload(record, file) {
 }
 
 async function sendVideo(file) {
-  if (canUploadDirectly(file)) {
-    // A file this browser was already part way through goes back to its own
-    // session rather than starting a second one.
-    const record = resumableRecordFor(file);
-    if (record) return resumeDirectUpload(record, file);
-
-    const session = await startDirectUpload(file);
-    if (session) return runDirectUpload(session, file);
-  }
-  return sendWholeFile(file);
+  const record = resumableRecordFor(file);
+  if (record) return resumeDirectUpload(record, file);
+  return runDirectUpload(await startDirectUpload(file), file);
 }
 
 async function handleFile(file) {
@@ -995,21 +933,10 @@ async function handleFile(file) {
 
   clearUploadProgress();
 
-  if (file.type && !ALLOWED_CONTENT_TYPES.has(file.type)) {
-    setStatus(`"${file.type}" is not a video format we handle.`);
-    return;
-  }
-  // The 100 MB limit belongs to the legacy one-shot endpoint. The direct path
-  // streams parts to storage instead and its own bound is the API's part count,
-  // so refusing a large file here would refuse one the API accepts.
-  if (!canUploadDirectly(file) && file.size > MAX_FILE_SIZE_BYTES) {
-    setStatus(`That file is larger than the ${formatBytes(MAX_FILE_SIZE_BYTES)} limit.`);
-    return;
-  }
   // The direct path's own cap, from /limits: refused here before a single part
   // goes, instead of by a 413 once the session is asked for.
   const maxUpload = limits?.max_upload_bytes ?? 0;
-  if (canUploadDirectly(file) && maxUpload > 0 && file.size > maxUpload) {
+  if (maxUpload > 0 && file.size > maxUpload) {
     setStatus(`That file is larger than the ${describeSize(maxUpload)} limit.`);
     return;
   }

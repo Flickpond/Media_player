@@ -262,28 +262,18 @@ async def test_the_operator_delete_of_an_unknown_job_is_404(client_for, operator
 
 
 @pytest.mark.asyncio
-async def test_an_upload_records_its_owner(test_user, monkeypatch):
-    from app.api import uploads as uploads_api
+async def test_an_upload_records_its_owner(test_user):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
 
-    recorded = {}
+    from app.repositories.uploads import create_upload_job
 
-    async def fake_create_job(_session, *, job_id, owner_id, filename, source_key, max_fps=30):
-        recorded["owner_id"] = owner_id
-
-    class FakeStorage:
-        async def upload_stream(self, *_args, **_kwargs):
-            return None
-
-    monkeypatch.setattr(uploads_api, "create_job", fake_create_job)
-    monkeypatch.setattr(uploads_api, "enqueue_job", lambda job_id: str(job_id))
-
-    from tests.test_uploads import FakeUpload
-
-    await uploads_api.upload_video(
-        file=FakeUpload(10),
-        user=test_user,
-        storage=FakeStorage(),
-        session=object(),
+    upload = SimpleNamespace(
+        job_id=uuid4(), owner_id=test_user.id, filename="clip.mp4",
+        source_key="uploads/clip.mp4", max_fps=60, state="completing",
     )
-
-    assert recorded["owner_id"] == test_user.id
+    session = SimpleNamespace(add=Mock(), commit=AsyncMock())
+    await create_upload_job(session, upload)
+    job = session.add.call_args.args[0]
+    assert job.owner_id == test_user.id
+    assert job.max_fps == 60

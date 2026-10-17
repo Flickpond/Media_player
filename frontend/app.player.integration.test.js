@@ -288,6 +288,9 @@ describe("playing a job", () => {
   it("puts the real Plyr on the upload card's finished job too", async () => {
     const el = await loadPage();
     fetchMock
+      .mockResolvedValueOnce(jsonResponse({ upload_id: "up-1", part_size: 16777216, part_count: 1 }))
+      .mockResolvedValueOnce(jsonResponse({ urls: { "1": "http://minio/part" } }))
+      .mockResolvedValueOnce({ ok: true, headers: { get: () => '"etag"' } })
       .mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }))
       .mockResolvedValue(jsonResponse({ status: "done", output_url: PLAIN.output_url }));
 

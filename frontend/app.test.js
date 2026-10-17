@@ -368,31 +368,21 @@ describe("upload", () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).max_fps).toBe(60);
   });
 
-  it("sends the frame-rate choice through the one-shot POST too", async () => {
+  it.each([404, 503])("reports an unavailable direct service (%s) without a legacy POST", async (status) => {
     const el = await loadApp();
-    document.getElementById("keep-60fps").checked = true;
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not found" }, false, 404));
-    fetchMock.mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }));
-    fetchMock.mockResolvedValue(jsonResponse({ id: "job-1", status: "queued" }));
-
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "upload service unavailable" }, false, status));
     await uploadFile(el);
-
-    expect(fetchMock.mock.calls[1][1].body.get("max_fps")).toBe("60");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(el.status.textContent).toContain("upload service unavailable");
+    expect(el.dropzone.classList.contains("busy")).toBe(false);
   });
 
-  it("falls back to the one-shot POST when the server has no direct upload", async () => {
+  it("reports a malformed session without posting video to the API", async () => {
     const el = await loadApp();
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not found" }, false, 404));
-    fetchMock.mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }));
-    fetchMock.mockResolvedValue(jsonResponse({ id: "job-1", status: "queued" }));
-
+    fetchMock.mockResolvedValueOnce(jsonResponse({ job_id: "old-response" }));
     await uploadFile(el);
-
-    const [url, init] = fetchMock.mock.calls[1];
-    expect(url).toBe("/api/upload");
-    expect(init.body.get("file")).toBeInstanceOf(File);
-    expect(init.body.get("max_fps")).toBe("30");
-    expect(el.jobBadge.textContent).toBe("Queued");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(el.status.textContent).toContain("invalid session");
   });
 
   it("takes a file past the legacy limit when the direct path is available", async () => {
@@ -406,18 +396,13 @@ describe("upload", () => {
     expect(el.status.textContent).not.toContain("larger than");
   });
 
-  it("refuses a large file that neither path can take", async () => {
+  it.each(["", "application/octet-stream"])("uploads a large file with unknown type %s directly", async (type) => {
     const el = await loadApp();
-
-    // No declared type: the direct path cannot name one, and the one-shot
-    // endpoint stops at 100 MB.
-    chooseFile(el.fileInput, fileOfSize(101 * 1024 * 1024, "raw.mkv", ""));
-    el.fileInput.dispatchEvent(new Event("change"));
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(el.status.textContent).toContain("larger than");
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(el.dropzone.classList.contains("busy")).toBe(false);
+    mockDirectUpload();
+    await uploadFile(el, fileOfSize(101 * 1024 * 1024, "raw.mkv", type));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).content_type).toBe("application/octet-stream");
+    expect(el.jobBadge.textContent).toBe("Queued");
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/upload")).toBe(false);
   });
 
   it("says the duration limit the API reports, next to the picker", async () => {
@@ -625,21 +610,19 @@ describe("upload", () => {
     expect(el.jobBadge.textContent).toBe("Queued");
   });
 
-  it("rejects an unsupported type before ever calling the API", async () => {
+  it("lets the server identify the bytes of a mislabeled file", async () => {
     const el = await loadApp();
-
-    chooseFile(el.fileInput, fileNamed("notes.pdf", "application/pdf"));
-    el.fileInput.dispatchEvent(new Event("change"));
-
-    expect(el.status.textContent).toContain("not a video format");
-    expect(fetchMock).not.toHaveBeenCalled();
+    mockDirectUpload();
+    await uploadFile(el, fileNamed("clip.mkv", "application/pdf"));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).content_type).toBe("application/pdf");
+    expect(el.jobBadge.textContent).toBe("Queued");
   });
 
   // --- deleting the active job straight off the upload page ---------------
 
   it("asks for confirmation before deleting the active job, and does nothing if declined", async () => {
     const el = await loadApp();
-    fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-1", status: "queued" }));
+    mockDirectUpload();
     await uploadFile(el);
     vi.spyOn(window, "confirm").mockReturnValue(false);
     fetchMock.mockClear();
@@ -653,7 +636,7 @@ describe("upload", () => {
 
   it("deletes the active job and resets the card once confirmed", async () => {
     const el = await loadApp();
-    fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-1", status: "queued" }));
+    mockDirectUpload();
     await uploadFile(el);
     vi.spyOn(window, "confirm").mockReturnValue(true);
     fetchMock.mockClear();
@@ -691,7 +674,7 @@ describe("upload", () => {
 
   it("returns to the sign-in form if the session expired mid-delete", async () => {
     const el = await loadApp();
-    fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-1", status: "queued" }));
+    mockDirectUpload();
     await uploadFile(el);
     vi.spyOn(window, "confirm").mockReturnValue(true);
     fetchMock.mockClear();
@@ -720,7 +703,7 @@ describe("upload", () => {
 
   it("takes a dropped file, and ignores a drop carrying none", async () => {
     const el = await loadApp();
-    fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-1", status: "queued" }));
+    mockDirectUpload();
 
     el.dropzone.dispatchEvent(new Event("dragover"));
     expect(el.dropzone.classList.contains("over")).toBe(true);
@@ -761,7 +744,7 @@ describe("upload", () => {
 
   it("keeps the card and says why when the delete is refused", async () => {
     const el = await loadApp();
-    fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-1", status: "queued" }));
+    mockDirectUpload();
     await uploadFile(el);
     vi.spyOn(window, "confirm").mockReturnValue(true);
     fetchMock.mockClear();
@@ -777,7 +760,7 @@ describe("upload", () => {
 
   it("reports a network failure while deleting rather than hanging", async () => {
     const el = await loadApp();
-    fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-1", status: "queued" }));
+    mockDirectUpload();
     await uploadFile(el);
     vi.spyOn(window, "confirm").mockReturnValue(true);
     fetchMock.mockClear();
@@ -796,16 +779,16 @@ describe("upload", () => {
     el.jobRetry.dispatchEvent(new Event("click"));
     expect(fetchMock).not.toHaveBeenCalled();
 
-    fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-1", status: "queued" }));
+    mockDirectUpload();
     await uploadFile(el);
     fetchMock.mockClear();
-    fetchMock.mockResolvedValue(jsonResponse({ job_id: "job-2", status: "queued" }));
+    mockDirectUpload({ jobId: "job-2" });
 
     el.jobRetry.dispatchEvent(new Event("click"));
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(fetchMock.mock.calls.some(([url]) => url === "/api/upload")).toBe(true);
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/uploads")).toBe(true);
   });
 });
 
@@ -1193,9 +1176,8 @@ describe("signing in", () => {
 
   it("returns to the sign-in form when a session expires mid-poll", async () => {
     const el = await loadApp();
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }))
-      .mockResolvedValue(jsonResponse({ error: "not authenticated" }, false, 401));
+    mockDirectUpload();
+    fetchMock.mockResolvedValue(jsonResponse({ error: "not authenticated" }, false, 401));
 
     await uploadFile(el);
 
@@ -2112,9 +2094,8 @@ describe("player", () => {
 
   it("plays the upload card's finished job through Plyr too", async () => {
     const el = await loadAppWithLibraries();
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ job_id: "job-1" }))
-      .mockResolvedValue(jsonResponse({ status: "done", output_url: DONE.output_url }));
+    mockDirectUpload();
+    fetchMock.mockResolvedValue(jsonResponse({ status: "done", output_url: DONE.output_url }));
 
     await uploadFile(el);
 
