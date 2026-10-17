@@ -1,0 +1,99 @@
+/* The clip scrubber (clip-scrubber.js). Only the page's colour tokens come
+   from style.css; everything else the component draws is styled here. */
+
+.clip-scrubber {
+  padding-top: 2px;
+}
+
+/* The handles are centred on their time, so the track is inset by half a
+   handle: at 0 and at the end they still sit inside the panel. */
+.clip-track {
+  position: relative;
+  height: 34px;
+  margin: 8px 9px 4px;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+}
+.clip-track::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 6px;
+  transform: translateY(-50%);
+  border-radius: 3px;
+  background: var(--bg-overlay);
+}
+
+.clip-range {
+  position: absolute;
+  top: 50%;
+  height: 6px;
+  transform: translateY(-50%);
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.clip-playhead {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--warning);
+  pointer-events: none;
+}
+
+.clip-handle {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 26px;
+  margin-left: -7px;
+  transform: translateY(-50%);
+  border: 2px solid var(--accent);
+  border-radius: 5px;
+  background: var(--text);
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 1;
+}
+/* Two grip lines, so the handle reads as something to drag. */
+.clip-handle::after {
+  content: "";
+  position: absolute;
+  inset: 6px 3px;
+  border-left: 1.5px solid var(--bg-overlay);
+  border-right: 1.5px solid var(--bg-overlay);
+}
+.clip-handle:focus {
+  outline: none;
+}
+.clip-handle:focus-visible {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  z-index: 2;
+}
+
+.clip-scrubber.is-disabled .clip-track {
+  cursor: default;
+}
+.clip-scrubber.is-disabled .clip-handle {
+  display: none;
+}
+
+.clip-readout {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.clip-readout-length {
+  color: var(--text);
+  font-weight: 500;
+}
