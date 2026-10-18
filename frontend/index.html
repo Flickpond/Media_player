@@ -14,6 +14,7 @@
          custom properties from style.css, so our sheet has to win. -->
     <link rel="stylesheet" href="vendor/plyr.css" />
     <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="clip-scrubber.css" />
   </head>
   <body>
     <!-- Shown until /auth/me says who we are. The session cookie is HttpOnly,
@@ -513,6 +514,7 @@
          its own, so hls.js loads first and Plyr is wired to it in app.js. -->
     <script src="vendor/hls.min.js" defer></script>
     <script src="vendor/plyr.min.js" defer></script>
+    <script src="clip-scrubber.js" defer></script>
     <script src="app.js" defer></script>
   </body>
 </html>
