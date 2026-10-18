@@ -16,6 +16,19 @@ class EditOptions(BaseModel):
     upscale: list[int]
 
 
+class EditSource(BaseModel):
+    """The video an edit of this job really starts from: its original upload.
+
+    The editor plays this one and measures against it -- a crop rectangle in
+    its pixels, clip times on its timeline -- whichever edit was clicked.
+    """
+
+    job_id: UUID
+    width: int | None = None
+    height: int | None = None
+    duration_seconds: float | None = None
+
+
 class JobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -41,8 +54,9 @@ class JobResponse(BaseModel):
     # The frame-rate ceiling chosen at upload: 30, or 60 when the uploader
     # kept it. Always present.
     max_fps: int = 30
-    # Only on a done job whose dimensions are known. Describes the copy an edit
-    # starts from (the MP4), which can be shorter than `height` (the original).
+    # Only on a done job. Edits start from the original upload (sprint 5), so
+    # both describe that original, not this job's own MP4.
+    edit_source: EditSource | None = None
     edit_options: EditOptions | None = None
     error: str | None = None
 

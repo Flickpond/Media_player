@@ -233,6 +233,26 @@ def build_ladder_command(
     return command
 
 
+def label_frame_rates(master: str, frame_rate: float) -> str:
+    """Add FRAME-RATE to every video rung of a master playlist.
+
+    FFmpeg leaves it out, and it is how a player knows a rung is 60 fps: the
+    quality menu says "1080p60" from it. Every rung shares one rate -- the
+    ladder caps the source's rate once, before the split -- so one number
+    serves all. The audio-only variant has no RESOLUTION and gets none.
+    """
+    lines = []
+    for line in master.splitlines():
+        if (
+            line.startswith("#EXT-X-STREAM-INF:")
+            and "RESOLUTION=" in line
+            and "FRAME-RATE=" not in line
+        ):
+            line = f"{line},FRAME-RATE={frame_rate:.3f}"
+        lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
 class HlsLadderBuilder:
     """Produces a ladder from a source object and uploads it.
 
@@ -278,25 +298,28 @@ class HlsLadderBuilder:
         try:
             source_path = temp_dir / "source"
             self._store.download_file(key=source_key, destination=str(source_path))
-            if self._is_hdr(job_id, source_path):
-                probe = replace(probe, hdr=True)
+            probe = self._with_file_facts(job_id, source_path, probe)
             return self.build(
                 job_id=job_id, source_path=source_path, probe=probe, max_fps=max_fps
             )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def _is_hdr(self, job_id: UUID, source_path: Path) -> bool:
-        """Whether the downloaded source is HDR. The row stores only size and
-        duration, so the ladder asks the file. A failed probe reads as SDR:
-        the output is still 8-bit and playable, just not tone-mapped."""
+    def _with_file_facts(self, job_id: UUID, source_path: Path, probe: SourceProbe) -> SourceProbe:
+        """Add what the row does not store -- HDR, frame rate -- from the file.
+
+        The row stores only size and duration, so the ladder asks the file. A
+        failed probe reads as SDR of unknown rate: the output is still 8-bit
+        and playable, just not tone-mapped, and its rungs carry no FRAME-RATE.
+        """
         if self._prober is None:
-            return False
+            return probe
         try:
-            return self._prober(source_path).hdr
+            found = self._prober(source_path)
         except Exception:
             logger.warning("job %s: could not read the colour transfer; treating as SDR", job_id)
-            return False
+            return probe
+        return replace(probe, hdr=probe.hdr or found.hdr, frame_rate=found.frame_rate)
 
     def discard(self, job_id: UUID) -> None:
         """Remove a ladder nobody will record -- see `build_ladder_async`."""
@@ -363,6 +386,12 @@ class HlsLadderBuilder:
                 raise ObjectStoreError(
                     "FFmpeg produced no master playlist",
                     user_message=UNPROCESSABLE_VIDEO,
+                )
+            if probe.frame_rate:
+                rate = min(float(max_fps), probe.frame_rate)
+                master.write_text(
+                    label_frame_rates(master.read_text(encoding="utf-8"), rate),
+                    encoding="utf-8",
                 )
 
             prefix = self.prefix_for(job_id)

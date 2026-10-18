@@ -123,6 +123,19 @@ def test_the_ladder_asks_the_downloaded_file_whether_it_is_hdr(monkeypatch):
     assert seen["probe"].hdr is True
 
 
+def test_the_ladder_takes_the_frame_rate_from_the_same_probe(monkeypatch):
+    """The row stores no frame rate either; the master's FRAME-RATE needs it."""
+    found = SourceProbe(width=1920, height=1080, duration_seconds=4, frame_rate=60.0)
+    builder = HlsLadderBuilder(_Store(), output_prefix="outputs", prober=lambda _p: found)
+    seen = {}
+    monkeypatch.setattr(builder, "build", lambda **kwargs: seen.update(kwargs) or "master")
+
+    builder.run(job_id=uuid4(), source_key="uploads/a/clip.mp4", probe=SDR)
+
+    assert seen["probe"].frame_rate == 60.0
+    assert (seen["probe"].width, seen["probe"].height) == (SDR.width, SDR.height)
+
+
 def test_a_ladder_whose_colour_probe_fails_is_built_as_standard_range(monkeypatch):
     def broken(_path):
         raise RuntimeError("ffprobe failed")

@@ -25,9 +25,10 @@ from app.repositories.jobs import (
     get_job,
     list_jobs,
     prepare_retry,
+    resolve_edit_roots,
 )
 from app.schemas.edit import EditRequest
-from app.schemas.job import EditOptions, ErrorResponse, JobResponse
+from app.schemas.job import EditOptions, EditSource, ErrorResponse, JobResponse
 from app.services.job_cleanup import delete_job_storage
 from app.services.media_rules import (
     MediaRuleError,
@@ -50,23 +51,48 @@ SignerDependency = Annotated[OutputUrlSigner, Depends(get_output_url_signer)]
 StorageDependency = Annotated[StorageService, Depends(get_storage_service)]
 
 
-def _editable_height(job: Job) -> int | None:
-    """How tall the copy an edit of `job` starts from is, if that is known."""
+def _edit_base(job: Job, root: Job) -> Job:
+    """The job whose file an edit of `job` starts from.
+
+    The original upload when it is still there -- so an edit of an edit no
+    longer loses quality at each step -- and otherwise `job` itself, whose
+    own output is all that is left to start from.
+    """
+    return root if root.operations is None else job
+
+
+def _editable_height(base: Job) -> int | None:
+    """How tall the file an edit starts from is, if that is known."""
+    if base.operations is None:
+        # The original itself, not its MP4 capped at 1080p.
+        return base.height if base.height and base.height > 0 else None
     return editable_height(
-        height=job.height,
-        is_edit=job.operations is not None,
+        height=base.height,
+        is_edit=True,
         mp4_max_height=get_settings().worker_ffmpeg_max_height,
     )
 
 
-def _edit_options(job: Job) -> EditOptions | None:
+def _edit_options(job: Job, base: Job) -> EditOptions | None:
     if job.status != JobStatus.DONE.value:
         return None
-    options = scale_options(_editable_height(job))
+    options = scale_options(_editable_height(base))
     return EditOptions(**options) if options is not None else None
 
 
-async def _to_response(job: Job, signer: OutputUrlSigner) -> JobResponse:
+def _edit_source(job: Job, base: Job) -> EditSource | None:
+    if job.status != JobStatus.DONE.value:
+        return None
+    return EditSource(
+        job_id=base.id,
+        width=base.width,
+        height=base.height,
+        duration_seconds=base.duration_seconds,
+    )
+
+
+async def _to_response(job: Job, signer: OutputUrlSigner, root: Job | None = None) -> JobResponse:
+    base = _edit_base(job, root if root is not None else job)
     output_url = None
     if job.status == JobStatus.DONE.value and job.output_key:
         output_url = await signer.create_url(job.output_key)
@@ -100,7 +126,8 @@ async def _to_response(job: Job, signer: OutputUrlSigner) -> JobResponse:
         duration_seconds=job.duration_seconds,
         thumbnail_url=thumbnail_url,
         max_fps=job.max_fps,
-        edit_options=_edit_options(job),
+        edit_source=_edit_source(job, base),
+        edit_options=_edit_options(job, base),
         error=error,
     )
 
@@ -121,7 +148,10 @@ async def get_jobs(
     # Signed as a batch. Each signature is a local HMAC that still costs a hop
     # to the thread pool, so awaiting them one at a time made the endpoint's
     # latency the sum of every row's hop rather than the slowest one.
-    return list(await asyncio.gather(*(_to_response(job, signer) for job in jobs)))
+    roots = await resolve_edit_roots(session, jobs)
+    return list(
+        await asyncio.gather(*(_to_response(job, signer, roots[job.id]) for job in jobs))
+    )
 
 
 @router.get(
@@ -140,7 +170,8 @@ async def get_job_by_id(
     job = await get_job(session, job_id, owner_id=user.id)
     if job is None:
         raise ApiNotFoundError("not found")
-    return await _to_response(job, signer)
+    roots = await resolve_edit_roots(session, [job])
+    return await _to_response(job, signer, roots[job.id])
 
 
 @router.post(
@@ -215,8 +246,13 @@ async def edit_job_by_id(
     requested = [
         (item.operation, item.params.model_dump(mode="python")) for item in request.operations
     ]
+    # Edits start from the original upload (sprint 5): crop and clip are
+    # measured in its pixels and on its timeline, and an edit of an edit no
+    # longer re-encodes an already re-encoded copy.
+    roots = await resolve_edit_roots(session, [source])
+    base = _edit_base(source, roots[source.id])
     try:
-        check_edit_operations(requested, input_height=_editable_height(source))
+        check_edit_operations(requested, input_height=_editable_height(base))
     except MediaRuleError as exc:
         return JSONResponse(status_code=422, content={"error": str(exc)})
 
@@ -229,9 +265,9 @@ async def edit_job_by_id(
         job_id=new_job_id,
         owner_id=user.id,
         filename=f"{stem}-edited.{extension}",
-        source_key=source.output_key,
+        source_key=base.source_key if base.operations is None else base.output_key,
         operations=request.stored_operations(),
-        max_fps=source.max_fps,
+        max_fps=base.max_fps,
     )
 
     try:
@@ -317,7 +353,10 @@ async def get_all_jobs(
     role in front of it.
     """
     jobs = await list_jobs(session, owner_id=None, limit=limit, offset=offset)
-    return list(await asyncio.gather(*(_to_response(job, signer) for job in jobs)))
+    roots = await resolve_edit_roots(session, jobs)
+    return list(
+        await asyncio.gather(*(_to_response(job, signer, roots[job.id]) for job in jobs))
+    )
 
 
 @admin_router.delete(

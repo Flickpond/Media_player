@@ -29,6 +29,7 @@ def edit_app(test_user, monkeypatch):
         owner_id=test_user.id,
         filename="holiday.mov",
         status=JobStatus.DONE.value,
+        source_key="uploads/source/holiday.mov",
         output_key="outputs/source/holiday.mp4",
         operations=None,
         # As every job from before sprint 4 is: never probed. Tests that need
@@ -55,7 +56,7 @@ async def post_edit(application, source_id, operations):
         return await client.post(f"/jobs/{source_id}/edit", json={"operations": operations})
 
 
-async def test_edit_is_owner_scoped_created_from_the_output_and_enqueued(edit_app, test_user):
+async def test_edit_is_owner_scoped_created_from_the_original_and_enqueued(edit_app, test_user):
     application, session, source, created, get_job, create_edit, enqueue, _ = edit_app
     operations = [
         {"operation": "downscale", "params": {"height": 480}},
@@ -72,7 +73,8 @@ async def test_edit_is_owner_scoped_created_from_the_output_and_enqueued(edit_ap
         job_id=create_edit.await_args.kwargs["job_id"],
         owner_id=test_user.id,
         filename="holiday-edited.mkv",
-        source_key=source.output_key,
+        # The original upload, not its re-encoded MP4 (sprint 5).
+        source_key=source.source_key,
         operations=operations,
         # The edit inherits the source video's frame-rate ceiling.
         max_fps=30,

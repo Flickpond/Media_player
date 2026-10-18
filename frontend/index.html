@@ -15,6 +15,7 @@
     <link rel="stylesheet" href="vendor/plyr.css" />
     <link rel="stylesheet" href="style.css" />
     <link rel="stylesheet" href="clip-scrubber.css" />
+    <link rel="stylesheet" href="crop-box.css" />
   </head>
   <body>
     <!-- Shown until /auth/me says who we are. The session cookie is HttpOnly,
@@ -382,6 +383,24 @@
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
             </button>
           </div>
+
+          <div class="view-header admin-accounts-header">
+            <h2>Accounts</h2>
+            <p class="muted">Deleting an account deletes every video it uploaded or made.</p>
+          </div>
+          <p id="admin-users-status" class="status" hidden></p>
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Videos</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="admin-users-tbody"></tbody>
+          </table>
+          <p id="admin-users-more" class="hint" hidden></p>
         </section>
 
         <!-- One shared editing view, opened from a finished job on the upload
@@ -515,6 +534,7 @@
     <script src="vendor/hls.min.js" defer></script>
     <script src="vendor/plyr.min.js" defer></script>
     <script src="clip-scrubber.js" defer></script>
+    <script src="crop-box.js" defer></script>
     <script src="app.js" defer></script>
   </body>
 </html>

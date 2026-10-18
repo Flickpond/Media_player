@@ -176,8 +176,15 @@ describe("the page's player wiring", () => {
 
     // Plyr has no HLS support of its own, so it has to be able to see hls.js,
     // and app.js has to see both -- and the clip scrubber, which the editor
-    // looks up as a global when it opens (EDITOR-COMPONENTS.md).
-    expect(scripts).toEqual(["vendor/hls.min.js", "vendor/plyr.min.js", "clip-scrubber.js", "app.js"]);
+    // looks up as a global when it opens (EDITOR-COMPONENTS.md), and the
+    // crop box, the same way.
+    expect(scripts).toEqual([
+      "vendor/hls.min.js",
+      "vendor/plyr.min.js",
+      "clip-scrubber.js",
+      "crop-box.js",
+      "app.js",
+    ]);
     for (const src of scripts) {
       expect(existsSync(join(here, src)), `${src} is missing`).toBe(true);
     }
@@ -185,6 +192,8 @@ describe("the page's player wiring", () => {
     expect(markup).toContain('<link rel="stylesheet" href="vendor/plyr.css" />');
     expect(markup).toContain('<link rel="stylesheet" href="clip-scrubber.css" />');
     expect(existsSync(join(here, "clip-scrubber.css")), "clip-scrubber.css is missing").toBe(true);
+    expect(markup).toContain('<link rel="stylesheet" href="crop-box.css" />');
+    expect(existsSync(join(here, "crop-box.css")), "crop-box.css is missing").toBe(true);
     // The two files Plyr fetches for itself, plus the licences that have to
     // travel with the code. A vendored file that never got committed fails
     // here rather than as a missing icon in production.

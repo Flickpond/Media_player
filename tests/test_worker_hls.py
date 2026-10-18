@@ -10,6 +10,7 @@ from app.worker.hls import (
     HlsLadderBuilder,
     build_ladder_command,
     content_type_for,
+    label_frame_rates,
     variants_for,
 )
 from app.worker.probe import SourceProbe
@@ -317,3 +318,88 @@ def test_each_rung_encodes_to_a_quality_capped_at_its_bitrate():
     assert option("-maxrate:v:1") == BITRATES[1080] == "5000k"
     assert option("-bufsize:v:1") == "10000k", "two seconds of the ceiling"
     assert option("-maxrate:v:0") == BITRATES[360]
+
+
+# --- telling the player which rungs are 60 fps ---------------------------
+
+FFMPEG_MASTER = (
+    "#EXTM3U\n"
+    "#EXT-X-VERSION:3\n"
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="group_audio",NAME="audio_2",DEFAULT=YES,URI="v2/index.m3u8"\n'
+    "#EXT-X-STREAM-INF:BANDWIDTH=314148,RESOLUTION=640x360,"
+    'CODECS="avc1.64001e,mp4a.40.2",AUDIO="group_audio"\n'
+    "v0/index.m3u8\n"
+    "\n"
+    "#EXT-X-STREAM-INF:BANDWIDTH=4103100,RESOLUTION=1920x1080,"
+    'CODECS="avc1.640028,mp4a.40.2",AUDIO="group_audio"\n'
+    "v1/index.m3u8\n"
+    "\n"
+    '#EXT-X-STREAM-INF:BANDWIDTH=111287,CODECS="mp4a.40.2",AUDIO="group_audio"\n'
+    "v2/index.m3u8\n"
+)
+
+
+def test_every_video_rung_gets_the_frame_rate_and_the_audio_variant_none():
+    labelled = label_frame_rates(FFMPEG_MASTER, 59.94005994).splitlines()
+
+    stream_infs = [line for line in labelled if line.startswith("#EXT-X-STREAM-INF:")]
+    assert stream_infs[0].endswith(",FRAME-RATE=59.940")
+    assert stream_infs[1].endswith(",FRAME-RATE=59.940")
+    assert "FRAME-RATE" not in stream_infs[2]
+    # Nothing else moves: the URIs still follow their tags.
+    assert labelled[labelled.index(stream_infs[1]) + 1] == "v1/index.m3u8"
+
+
+def test_a_rung_ffmpeg_already_labelled_is_left_alone():
+    master = "#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=1280x720,FRAME-RATE=30.000\nv0/index.m3u8\n"
+
+    assert label_frame_rates(master, 60) == master
+
+
+class MasterReadingStore(FakeStore):
+    """Keeps the master playlist's text as it was uploaded."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.master = None
+
+    def upload_file(self, *, key: str, source: str, content_type: str = "video/mp4") -> None:
+        if key.endswith(MASTER_PLAYLIST_NAME):
+            self.master = Path(source).read_text()
+        super().upload_file(key=key, source=source, content_type=content_type)
+
+
+def ladder_with_master(text: str):
+    inner = ladder_writing_runner(variant_count=2)
+
+    def runner(command, **kwargs):
+        result = inner(command, **kwargs)
+        (Path(command[-1]).parent.parent / MASTER_PLAYLIST_NAME).write_text(text)
+        return result
+
+    return runner
+
+
+@pytest.mark.parametrize(("max_fps", "expected"), [(60, "60.000"), (30, "30.000")])
+def test_the_uploaded_master_says_60_fps_only_when_the_upload_kept_it(max_fps, expected):
+    store = MasterReadingStore()
+    builder = HlsLadderBuilder(
+        store, output_prefix="outputs", runner=ladder_with_master(FFMPEG_MASTER)
+    )
+    source = SourceProbe(width=1920, height=1080, duration_seconds=4, frame_rate=60.0)
+
+    builder.build(job_id=uuid4(), source_path=SOURCE, probe=source, max_fps=max_fps)
+
+    assert "RESOLUTION=1920x1080," in store.master
+    assert store.master.count(f"FRAME-RATE={expected}") == 2
+
+
+def test_a_source_of_unknown_frame_rate_leaves_the_master_as_ffmpeg_wrote_it():
+    store = MasterReadingStore()
+    builder = HlsLadderBuilder(
+        store, output_prefix="outputs", runner=ladder_with_master(FFMPEG_MASTER)
+    )
+
+    builder.build(job_id=uuid4(), source_path=SOURCE, probe=probe())
+
+    assert store.master == FFMPEG_MASTER

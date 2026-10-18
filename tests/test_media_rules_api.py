@@ -3,6 +3,7 @@
 """
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
@@ -78,6 +79,11 @@ def mp4_cap(monkeypatch):
 async def api(test_user, mp4_cap, monkeypatch):
     application = create_app()
     session = AsyncMock()
+    # No other rows: an upload is its own original, and an edit whose upload
+    # is gone falls back to itself.
+    session.execute.return_value = SimpleNamespace(
+        scalars=lambda: SimpleNamespace(all=lambda: [])
+    )
 
     async def database():
         yield session
@@ -142,31 +148,39 @@ async def test_a_job_without_a_poster_frame_omits_the_field(api):
 # --- GET /jobs/{id}: edit_options ------------------------------------------
 
 
-async def test_a_4k_upload_is_offered_options_for_the_mp4_it_is_edited_from(api):
-    """The original is 2160p, but edits start from the 720p MP4: downscale
-    below 720p, upscale above it -- and 1080p counts as an upscale.
+async def test_a_4k_upload_is_offered_options_from_the_original_it_is_edited_from(api):
+    """Edits start from the original (sprint 5), not the MP4: a 2160p upload
+    can be scaled down to any rung below it, and has nothing to scale up to.
     """
     api.state["job"] = make_job(width=3840, height=2160)
 
     body = (await api.get(f"/jobs/{api.state['job'].id}")).json()
 
     assert body["height"] == 2160
-    assert body["edit_options"] == {"downscale": [480, 360, 240], "upscale": [1080, 1440, 2160]}
+    assert body["edit_options"] == {
+        "downscale": [1440, 1080, 720, 480, 360, 240],
+        "upscale": [],
+    }
+    assert body["edit_source"] == {
+        "job_id": str(api.state["job"].id),
+        "width": 3840,
+        "height": 2160,
+        "duration_seconds": 41.2,
+    }
 
 
-async def test_raising_the_mp4_cap_moves_the_options_with_it(api, mp4_cap):
-    mp4_cap(1080)
+async def test_the_mp4_cap_no_longer_limits_what_an_edit_can_do(api, mp4_cap):
+    """The MP4's size is a delivery choice, not what an edit starts from."""
+    mp4_cap(720)
     api.state["job"] = make_job(width=3840, height=2160)
 
     body = (await api.get(f"/jobs/{api.state['job'].id}")).json()
 
-    assert body["edit_options"] == {
-        "downscale": [720, 480, 360, 240],
-        "upscale": [1440, 2160],
-    }
+    assert body["edit_options"]["downscale"][0] == 1440
+    assert body["edit_options"]["upscale"] == []
 
 
-async def test_an_edit_job_is_offered_options_from_its_own_height(api):
+async def test_an_edit_whose_upload_is_gone_is_offered_options_from_its_own_height(api):
     api.state["job"] = make_job(
         height=1440, operations=[{"operation": "upscale", "params": {"height": 1440}}]
     )
@@ -194,13 +208,13 @@ async def test_options_appear_only_when_a_done_job_has_known_dimensions(api, job
 # --- POST /jobs/{id}/edit: impossible scales are a 422 at once --------------
 
 
-async def test_downscale_to_the_mp4s_own_height_is_refused_at_once(api):
+async def test_downscale_to_the_originals_own_height_is_refused_at_once(api):
     api.state["job"] = make_job(width=3840, height=2160)
 
-    response = await post_edit(api, [{"operation": "downscale", "params": {"height": 720}}])
+    response = await post_edit(api, [{"operation": "downscale", "params": {"height": 2160}}])
 
     assert response.status_code == 422
-    assert "below the video's 720p" in response.json()["error"]
+    assert "below the video's 2160p" in response.json()["error"]
     api.create_edit.assert_not_awaited()
     api.enqueue.assert_not_called()
 
@@ -254,7 +268,8 @@ async def test_a_scale_after_a_crop_is_judged_against_the_crop(api):
 async def test_a_valid_scale_is_accepted_and_queued_as_before(api):
     api.state["job"] = make_job(width=3840, height=2160)
 
-    response = await post_edit(api, [{"operation": "upscale", "params": {"height": 1080}}])
+    # Below the 2160p original, which edits now start from.
+    response = await post_edit(api, [{"operation": "downscale", "params": {"height": 1080}}])
 
     assert response.status_code == 202
     api.enqueue.assert_called_once()

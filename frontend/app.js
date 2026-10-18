@@ -129,6 +129,9 @@ const el = {
   adminPrev: document.getElementById("admin-prev"),
   adminNext: document.getElementById("admin-next"),
   adminPageLabel: document.getElementById("admin-page-label"),
+  adminUsersStatus: document.getElementById("admin-users-status"),
+  adminUsersTbody: document.getElementById("admin-users-tbody"),
+  adminUsersMore: document.getElementById("admin-users-more"),
 
   viewEdit: document.getElementById("view-edit"),
   editBack: document.getElementById("edit-back"),
@@ -304,7 +307,10 @@ function switchView(name) {
     button.classList.toggle("active", key === name || (name === "edit" && key === "library"));
   }
   if (name === "library") loadLibrary();
-  if (name === "admin") loadAdmin();
+  if (name === "admin") {
+    loadAdmin();
+    loadAdminUsers();
+  }
 }
 
 el.navUpload.addEventListener("click", () => switchView("upload"));
@@ -333,6 +339,17 @@ const PROGRESS_LABEL = { queued: "Queued...", processing: "Processing..." };
 // "slow", and saying it failed would be a claim we cannot support. Say it is
 // taking long, hand the form back, and let the user decide.
 const SLOW_AFTER_POLLS = 30;
+// Overnight the worker pool scales to zero (docs/sprint5-plan.md), so the
+// first job waits for a spot instance to boot. Past ten seconds in the queue,
+// say so -- "Queued..." for three minutes reads as broken.
+const COLD_START_AFTER_POLLS = 5;
+const COLD_START_LABEL = "Queued — starting a worker, this can take a few minutes...";
+
+/** What to say about a job still in flight, `attempt` polls in. */
+function progressLabel(job, attempt) {
+  if (job.status === "queued" && attempt >= COLD_START_AFTER_POLLS) return COLD_START_LABEL;
+  return PROGRESS_LABEL[job.status] ?? job.status;
+}
 
 function setStatus(message) {
   el.status.textContent = message;
@@ -1296,7 +1313,7 @@ function pollUploadJob(jobId) {
         // Give the form back; a stuck job otherwise never releases it.
         el.jobActions.hidden = false;
       } else {
-        setStatus(PROGRESS_LABEL[job.status] ?? job.status);
+        setStatus(progressLabel(job, attempt));
       }
     },
     onDone(job) {
@@ -1424,9 +1441,9 @@ function mountPlayer(host, job, { autoplay = false } = {}) {
   const state = { host, video, plyr: null, hls: null };
   players.set(host, state);
 
-  // Only hand the ladder to something that can actually play it: Safari does
-  // HLS itself, every other browser needs hls.js, and if neither is available
-  // the MP4 is what the user gets.
+  // Only hand the ladder to something that can actually play it: hls.js
+  // where MediaSource exists, the browser itself on an iPhone, and if neither
+  // is available the MP4 is what the user gets.
   if (source.hls && attachHls(state, source)) return state;
 
   // Only a fallback that exists gets set: an empty src would have the element
@@ -1440,17 +1457,19 @@ function mountPlayer(host, job, { autoplay = false } = {}) {
 /** Returns true if the ladder took over the element. */
 function attachHls(state, source) {
   const { video } = state;
+  const Hls = window.Hls;
 
-  if (video.canPlayType(HLS_MIME)) {
+  // hls.js first wherever it runs, the browser's own player only where it
+  // cannot (an iPhone has no MediaSource). Chrome now answers "maybe" for
+  // HLS too, and its built-in player fails on this ladder -- error 4 on a
+  // stream hls.js plays -- so "the browser says it can" is not enough.
+  if (!Hls || !Hls.isSupported()) {
+    if (!video.canPlayType(HLS_MIME)) return false;
     video.src = source.hls;
-    // No level list to pass: Safari's own controls carry the quality menu,
-    // and it switches levels in hardware where hls.js would do it in JS.
+    // No level list to pass: Safari's own controls carry the quality menu.
     startPlyr(state, null);
     return true;
   }
-
-  const Hls = window.Hls;
-  if (!Hls || !Hls.isSupported()) return false;
 
   const hls = new Hls();
   state.hls = hls;
@@ -1459,6 +1478,7 @@ function attachHls(state, source) {
     // Plyr builds its quality menu once, from the list it is given, so the
     // real level heights have to be known before the player is created --
     // which is exactly what waiting for this event buys.
+    state.levelLabels = levelLabels(hls);
     startPlyr(state, levelHeights(hls));
   });
 
@@ -1486,6 +1506,17 @@ function levelHeights(hls) {
   return [AUTO_QUALITY, ...[...new Set(heights)].sort((a, b) => b - a)];
 }
 
+/** "1080p60" for a rung the manifest says runs above 30 fps -- what a Keep
+ *  60 fps upload gets (sprint 5). Plyr labels every other height "1080p" by
+ *  itself, and badges 2160 as 4K. */
+function levelLabels(hls) {
+  const labels = {};
+  for (const level of hls.levels) {
+    if (level.height && Number(level.frameRate) > 30) labels[level.height] = `${level.height}p60`;
+  }
+  return labels;
+}
+
 /** Plyr takes an option click and hands the value back to us; this is where a
  *  chosen height becomes an hls.js level. */
 function selectLevel(state, height) {
@@ -1510,7 +1541,7 @@ function plyrConfig(levels, state) {
     blankVideo: `${VENDOR_DIR}blank.mp4`,
     // Plyr has no HLS support of its own -- it cannot read a manifest -- so the
     // level list and the Auto label have to come from here.
-    i18n: { qualityLabel: { [AUTO_QUALITY]: "Auto" } },
+    i18n: { qualityLabel: { ...state?.levelLabels, [AUTO_QUALITY]: "Auto" } },
   };
 
   if (levels) {
@@ -1725,7 +1756,7 @@ function unmountEditComponents() {
  * The element is the one the panel just mounted, so a component can read the
  * video's real dimensions off it; the callback is the only thing that comes
  * back. See EDITOR-COMPONENTS.md. */
-function mountEditComponents() {
+function mountEditComponents(frame = null) {
   unmountEditComponents();
   cropSelection = null;
   clipSelection = null;
@@ -1736,6 +1767,8 @@ function mountEditComponents() {
       checkbox: el.editCrop,
       host: el.editCropMount,
       mount: window.mountCropBox,
+      // The original's real size: the rendition playing can be smaller.
+      options: frame?.width && frame?.height ? { width: frame.width, height: frame.height } : undefined,
       missing: "Coming in the next update.",
       apply: (selection) => {
         cropSelection = selection;
@@ -1762,18 +1795,48 @@ function mountEditComponents() {
 
     component.checkbox.disabled = false;
     component.host.replaceChildren();
-    const cleanup = component.mount(video, (selection) => {
+    const report = (selection) => {
       component.apply(selection);
       updateProcessButton();
-    });
+    };
+    const cleanup = component.options
+      ? component.mount(video, report, component.options)
+      : component.mount(video, report);
     if (typeof cleanup === "function") mountedComponents.push(cleanup);
   }
+}
+
+/** Bumped by every open, so an original that arrives after the reader has
+ *  moved on to another video is dropped rather than mounted. */
+let editorOpens = 0;
+
+/** The job whose video an edit of `job` starts from. Since sprint 5 that is
+ *  the original upload (`edit_source`), so crop is drawn in its pixels and
+ *  clip on its timeline whichever edit was clicked. Resolves to `job` itself
+ *  when it is the original, or the API did not say. */
+async function editSourceJob(job) {
+  const sourceId = job.edit_source?.job_id;
+  if (!sourceId || sourceId === job.id) return job;
+  const res = await fetch(`${API}/jobs/${sourceId}`);
+  if (res.status === 401) {
+    showSignedOut();
+    setAuthStatus("Your session expired. Sign in again.");
+    return null;
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+function showEditSource(job, source) {
+  el.editSource.textContent =
+    source.id === job.id ? job.filename : `${source.filename} — the original of ${job.filename}`;
 }
 
 function openEditor(job) {
   if (!job || job.status !== "done") return;
 
   editingJob = job;
+  const open = ++editorOpens;
   el.editSource.textContent = job.filename;
   el.editResult.hidden = true;
   el.editProgress.hidden = true;
@@ -1786,8 +1849,34 @@ function openEditor(job) {
   setScaleMode(null);
 
   switchView("edit");
-  mountPlayer(el.editPlayer, job);
+  const sourceId = job.edit_source?.job_id;
+  if (!sourceId || sourceId === job.id) {
+    mountEditor(job, job);
+    return;
+  }
+
+  // An edit: play its original instead. Until it arrives, crop and clip have
+  // nothing honest to measure against, so they wait rather than mount on the
+  // edit's own, smaller or shorter, video.
+  unmountPlayer(el.editPlayer);
   mountEditComponents();
+  setEditStatus("Loading the original upload…");
+  editSourceJob(job)
+    .then((source) => {
+      if (open !== editorOpens || editingJob !== job || !source) return;
+      setEditStatus("");
+      mountEditor(job, source);
+    })
+    .catch((err) => {
+      if (open !== editorOpens || editingJob !== job) return;
+      setEditStatus(`Could not load the original upload: ${err.message}`);
+    });
+}
+
+function mountEditor(job, source) {
+  showEditSource(job, source);
+  mountPlayer(el.editPlayer, source);
+  mountEditComponents(job.edit_source);
   updateProcessButton();
 }
 
@@ -1880,9 +1969,9 @@ el.editForm.addEventListener("submit", async (event) => {
 
     setEditStatus(PROGRESS_LABEL.queued);
     followJob("edit", data.job_id, {
-      onJob(job) {
+      onJob(job, attempt) {
         el.editProgress.hidden = job.status !== "processing";
-        if (PROGRESS_LABEL[job.status]) setEditStatus(PROGRESS_LABEL[job.status]);
+        if (PROGRESS_LABEL[job.status]) setEditStatus(progressLabel(job, attempt));
       },
       onDone(job) {
         showEditResult(job);
@@ -2304,6 +2393,98 @@ el.adminNext.addEventListener("click", () => {
   adminOffset += PAGE_SIZE;
   loadAdmin();
 });
+
+// ---------------------------------------------------------------------------
+// Admin: accounts. GET /admin/users lists them with how many jobs each owns;
+// DELETE /admin/users/{id} removes one with every file it stored (contract
+// §2.4). An operator's own row has no Delete -- the API refuses it with 409.
+// ---------------------------------------------------------------------------
+
+/** One page is every account a course project will have; past it, say so
+ *  rather than paging a list nobody needs paged yet. */
+const ADMIN_USERS_LIMIT = 200;
+let adminUsers = [];
+
+function setAdminUsersStatus(message) {
+  el.adminUsersStatus.textContent = message;
+  el.adminUsersStatus.hidden = !message;
+}
+
+function renderAdminUsers() {
+  el.adminUsersTbody.replaceChildren();
+  for (const user of adminUsers) {
+    const row = document.createElement("tr");
+    const email = document.createElement("td");
+    email.textContent = user.email;
+    const role = document.createElement("td");
+    role.textContent = user.role;
+    const count = document.createElement("td");
+    count.textContent = String(user.job_count);
+    const actions = document.createElement("td");
+    if (user.id !== currentUser?.id) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "card-delete";
+      button.title = "Delete this account";
+      button.setAttribute("aria-label", `Delete account ${user.email}`);
+      button.appendChild(trashIcon());
+      button.addEventListener("click", () => deleteAccount(user));
+      actions.appendChild(button);
+    }
+    row.append(email, role, count, actions);
+    el.adminUsersTbody.appendChild(row);
+  }
+  el.adminUsersMore.hidden = adminUsers.length < ADMIN_USERS_LIMIT;
+  el.adminUsersMore.textContent = `Showing the first ${ADMIN_USERS_LIMIT} accounts.`;
+}
+
+async function loadAdminUsers() {
+  try {
+    const res = await fetch(`${API}/admin/users?limit=${ADMIN_USERS_LIMIT}`);
+    // 401 and 403 are the jobs table's to act on; it asks at the same moment.
+    adminUsers = res.ok ? await res.json() : [];
+  } catch {
+    adminUsers = [];
+  }
+  renderAdminUsers();
+}
+
+function describeVideos(count) {
+  return count === 1 ? "1 video" : `${count} videos`;
+}
+
+async function deleteAccount(user) {
+  const question =
+    `Delete the account ${user.email} and its ${describeVideos(user.job_count)}? ` +
+    "This cannot be undone.";
+  if (!window.confirm(question)) return;
+
+  try {
+    const res = await fetch(`${API}/admin/users/${user.id}`, { method: "DELETE" });
+    if (res.status === 401) {
+      showSignedOut();
+      setAuthStatus("Your session expired. Sign in again.");
+      return;
+    }
+    if (res.status === 403) {
+      switchView("upload");
+      return;
+    }
+    if (!res.ok && res.status !== 404) {
+      const data = await res.json().catch(() => ({}));
+      setAdminUsersStatus(`Could not delete ${user.email}: ${data.error ?? res.status}`);
+      return;
+    }
+    // 404: someone else deleted it first. Either way it is gone.
+    setAdminUsersStatus(`Deleted ${user.email}.`);
+    adminUsers = adminUsers.filter((u) => u.id !== user.id);
+    renderAdminUsers();
+    // Its jobs went with it.
+    loadAdmin();
+  } catch (err) {
+    setAdminUsersStatus(`Request failed: ${err.message}`);
+  }
+}
 
 // ---------------------------------------------------------------------------
 

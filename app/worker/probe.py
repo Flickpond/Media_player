@@ -32,7 +32,7 @@ NO_VIDEO_STREAM = "this file has no video track; please upload a video file"
 # be recorded: display-matrix side data (current FFmpeg) and the legacy
 # `rotate` tag (files written by older muxers).
 PROBE_ENTRIES = (
-    "stream=width,height,color_transfer"
+    "stream=width,height,color_transfer,avg_frame_rate"
     ":stream_side_data=rotation:stream_tags=rotate:format=duration"
 )
 
@@ -50,6 +50,9 @@ class SourceProbe:
     # standard range (app.worker.storage.sdr_filters): browsers cannot play
     # 10-bit H.264, and HDR shown as SDR untreated looks flat and grey.
     hdr: bool = False
+    # Frames per second, when the stream says. Only labels the ladder's
+    # rungs (`hls.label_frame_rates`); the encoders cap the rate themselves.
+    frame_rate: float | None = None
 
 
 def probe_source(
@@ -148,7 +151,18 @@ def probe_source(
         height=height,
         duration_seconds=duration,
         hdr=streams[0].get("color_transfer") in HDR_TRANSFERS,
+        frame_rate=_frame_rate(streams[0].get("avg_frame_rate")),
     )
+
+
+def _frame_rate(value: object) -> float | None:
+    """ffprobe's "60000/1001" as 59.94; None for "0/0" or anything unreadable."""
+    try:
+        numerator, _, denominator = str(value).partition("/")
+        rate = float(numerator) / float(denominator or 1)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    return rate if rate > 0 else None
 
 
 def _rotation_degrees(stream: dict) -> int:
