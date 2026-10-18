@@ -306,10 +306,10 @@ function switchView(name) {
     // stays lit while it is open rather than leaving the nav with nothing on.
     button.classList.toggle("active", key === name || (name === "edit" && key === "library"));
   }
-  if (name === "library") loadLibrary();
+  if (name === "library") void loadLibrary();
   if (name === "admin") {
-    loadAdmin();
-    loadAdminUsers();
+    void loadAdmin();
+    void loadAdminUsers();
   }
 }
 
@@ -431,7 +431,7 @@ function followJob(scope, jobId, handlers) {
     pollTimers[scope] = setTimeout(() => tick(attempt + 1), POLL_INTERVAL_MS);
   };
 
-  tick(0);
+  void tick(0);
 }
 
 function setBusy(busy) {
@@ -468,15 +468,15 @@ el.dropzone.addEventListener("drop", (event) => {
   event.preventDefault();
   el.dropzone.classList.remove("over");
   const file = event.dataTransfer?.files?.[0];
-  if (file) handleFile(file);
+  if (file) void handleFile(file);
 });
 el.fileInput.addEventListener("change", () => {
   const file = el.fileInput.files[0];
-  if (file) handleFile(file);
+  if (file) void handleFile(file);
 });
 
 el.jobRetry.addEventListener("click", () => {
-  if (lastFile) handleFile(lastFile);
+  if (lastFile) void handleFile(lastFile);
 });
 el.jobChooseDifferent.addEventListener("click", () => el.fileInput.click());
 el.jobDelete.addEventListener("click", deleteActiveJob);
@@ -1967,7 +1967,7 @@ function showEditResult(job) {
   updateProcessButton();
   // Same as switching to Library: the new job is an ordinary entry now, so
   // make sure it is there when the user goes back.
-  loadLibrary();
+  void loadLibrary();
 }
 
 el.editBack.addEventListener("click", () => switchView("library"));
@@ -2209,7 +2209,7 @@ function makeDeleteButton(job) {
   // event or every delete would also toggle playback underneath it.
   button.addEventListener("click", (event) => {
     event.stopPropagation();
-    deleteJob(job);
+    void deleteJob(job);
   });
   return button;
 }
@@ -2308,11 +2308,11 @@ for (const button of el.libraryFilters.querySelectorAll("[data-status]")) {
 }
 el.libraryPrev.addEventListener("click", () => {
   libraryOffset = Math.max(0, libraryOffset - PAGE_SIZE);
-  loadLibrary();
+  void loadLibrary();
 });
 el.libraryNext.addEventListener("click", () => {
   libraryOffset += PAGE_SIZE;
-  loadLibrary();
+  void loadLibrary();
 });
 
 // ---------------------------------------------------------------------------
@@ -2453,11 +2453,11 @@ for (const button of el.adminFilters.querySelectorAll("[data-status]")) {
 }
 el.adminPrev.addEventListener("click", () => {
   adminOffset = Math.max(0, adminOffset - PAGE_SIZE);
-  loadAdmin();
+  void loadAdmin();
 });
 el.adminNext.addEventListener("click", () => {
   adminOffset += PAGE_SIZE;
-  loadAdmin();
+  void loadAdmin();
 });
 
 // ---------------------------------------------------------------------------
@@ -2546,7 +2546,7 @@ async function deleteAccount(user) {
     adminUsers = adminUsers.filter((u) => u.id !== user.id);
     renderAdminUsers();
     // Its jobs went with it.
-    loadAdmin();
+    void loadAdmin();
   } catch (err) {
     setAdminUsersStatus(`Request failed: ${err.message}`);
   }
@@ -2559,7 +2559,7 @@ applyAuthMode();
 // into the markup twice; this is the initial pass.
 updateProcessButton();
 // Decide which half of the page to show before anything else runs.
-refreshIdentity();
+void refreshIdentity();
 // Public, so it is read whether or not there is a session -- the limit belongs
 // next to the picker, and the picker is behind the sign-in form.
 loadLimits().then(applyLimitHint);
