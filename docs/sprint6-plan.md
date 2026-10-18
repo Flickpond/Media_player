@@ -39,6 +39,11 @@ Tuesday, done a day early). Verify everything on the live site.
 
 **Saturday 24:** verification on flickpond.com, the demo, and the final report.
 
+**Saturday 24 – Wednesday 28: unofficial debugging time** after the sprint ends.
+Fixes only, no new features: something switched off on Saturday may be fixed
+and switched on in this window, then verified on flickpond.com like anything
+else.
+
 ---
 
 ## 0. Who has what
