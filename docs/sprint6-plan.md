@@ -16,6 +16,36 @@ One member, one feature, end to end. Weekends count as working days. **Read
 
 ---
 
+## Final week — decided Monday 19 October
+
+**There is no sprint 7. Saturday 24 October is the end of the project.** Every
+item that was planned for later is attempted this week instead, on one rule:
+
+> **Everything new ships behind a switch.** Whatever is not proven on
+> flickpond.com by **Friday 23, 20:00 (freeze)** is switched off or rolled
+> back, and goes into the final report as future work. The site must work on
+> Saturday whatever happens.
+
+flickpond.com moved to AWS on **Monday 19 October** (the cutover planned for
+Tuesday, done a day early). Verify everything on the live site.
+
+| Track | Added this week, on top of the sections below | Switch |
+|---|---|---|
+| **A** | Chunked MP4 timed on spot workers and switched on; the HD ladder in pieces with **720p first**; **Keep HDR** (taken over from C); **encode by popularity + AV1**; smaller worker image; paged accounts; Playwright smoke test in CI; deploy from CI (manual trigger only) | `WORKER_CHUNKED_MP4`, and a flag per feature |
+| **B** | Rotate/flip/speed, then **admin roles**: a moderator role and an audit log of deletions | revert |
+| **C** | Colour adjustments (Keep HDR moves to A) | section hidden |
+| **D** | CloudFront on `cdn.flickpond.com`, alerts, the spot-interruption test **by Thursday** | apply / revert |
+| **E** | Filter presets, and a browser test of the editor | section hidden |
+
+**Saturday 24:** verification on flickpond.com, the demo, and the final report.
+
+**Saturday 24 – Wednesday 28: unofficial debugging time** after the sprint ends.
+Fixes only, no new features: something switched off on Saturday may be fixed
+and switched on in this window, then verified on flickpond.com like anything
+else.
+
+---
+
 ## 0. Who has what
 
 | Track | Owner | This sprint | Main deliverable |
