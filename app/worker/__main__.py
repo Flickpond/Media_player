@@ -14,7 +14,7 @@ import signal
 from rq import Queue, SimpleWorker, Worker
 
 from app.config import get_settings
-from app.queue import get_ladder_queue, get_redis_connection
+from app.queue import get_chunk_queue, get_ladder_queue, get_redis_connection
 
 
 def configure_logging(level: str) -> None:
@@ -51,6 +51,9 @@ def build_worker(*, burst_safe: bool = False):
     # Order is priority: RQ takes from the first non-empty queue, so ladders
     # are built only when no upload is waiting for its MP4.
     ladder_queue = get_ladder_queue(connection)
+    # Pieces of a long video another worker is coordinating come between the
+    # two: they speed up a video someone is already waiting for.
+    chunk_queue = get_chunk_queue(connection)
 
     # RQ's default worker forks per job, which is what isolates the worker from
     # a job that dies badly. Two cases give that up deliberately:
@@ -64,7 +67,7 @@ def build_worker(*, burst_safe: bool = False):
     #                   crash isolation buys nothing for a process that is about
     #                   to exit anyway.
     worker_class = GiveBackWorker if hasattr(os, "fork") and not burst_safe else SimpleWorker
-    return worker_class([queue, ladder_queue], connection=connection)
+    return worker_class([queue, chunk_queue, ladder_queue], connection=connection)
 
 
 def main() -> None:

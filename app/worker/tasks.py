@@ -335,6 +335,37 @@ def build_ladder(job_id: str) -> str:
     return settled.value if settled is not None else "skipped"
 
 
+def help_encode(job_id: str) -> str:
+    """RQ entrypoint for the pieces queue: help encode another job's MP4.
+
+    A stop gives the piece in hand back and ends quietly; the coordinator,
+    or another helper, encodes it. Nothing here touches the job's row.
+    """
+    from app.config import get_settings
+    from app.queue import get_redis_connection
+    from app.services.minio_client import bucket, internal_client
+    from app.worker import chunked
+    from app.worker.interruption import Interrupted
+    from app.worker.storage import MinioObjectStore
+
+    settings = get_settings()
+    with stop_on_sigterm():
+        try:
+            encoded = chunked.help_encode(
+                UUID(job_id),
+                store=MinioObjectStore(internal_client(), bucket=bucket()),
+                connection=get_redis_connection(),
+                output_prefix=settings.worker_output_prefix,
+                ffmpeg_binary=settings.worker_ffmpeg_binary,
+                timeout_seconds=settings.worker_ffmpeg_timeout_seconds,
+            )
+        except (Interrupted, ObjectStoreError):
+            if stop_requested():
+                return "stopped; piece given back"
+            raise
+    return f"encoded {encoded} pieces"
+
+
 def _previous_interruptions() -> int:
     """How many times RQ has already re-run this queue entry.
 
