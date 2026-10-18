@@ -7,8 +7,11 @@ locals {
   drain_hook_name = "drain-worker"
 }
 
+# Amazon Linux 2023 as AWS builds it for ECS: Docker is already installed,
+# so a cold start skips the package install (user data checks either way).
+# Nothing here uses ECS; user data stops its agent.
 data "aws_ssm_parameter" "al2023_arm64" {
-  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+  name = "/aws/service/ecs/optimized-ami/amazon-linux-2023/arm64/recommended/image_id"
 }
 
 resource "aws_launch_template" "worker" {
@@ -18,7 +21,7 @@ resource "aws_launch_template" "worker" {
   update_default_version = true
 
   iam_instance_profile {
-    name = var.instance_profile_name
+    name = aws_iam_instance_profile.worker.name
   }
 
   # Public address, no inbound rule: the default VPC has no NAT gateway, and

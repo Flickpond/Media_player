@@ -125,6 +125,11 @@ class Settings(BaseSettings):
     metrics_region: str = ""
     metrics_interval_seconds: int = 60
 
+    # The spot worker group the API wakes when a job is queued and it has no
+    # worker (app/services/worker_wake.py). Empty: no group, nothing to wake.
+    worker_group_name: str = ""
+    worker_group_region: str = ""
+
     @property
     def redis_url(self) -> str:
         scheme = "rediss" if self.redis_ssl else "redis"

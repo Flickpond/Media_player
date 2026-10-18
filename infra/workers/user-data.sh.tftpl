@@ -12,7 +12,12 @@ set -euo pipefail
 region='${region}'
 parameter_path='${parameter_path}'
 
-dnf install -y docker
+# The ECS-optimized image (compute.tf) has Docker; plain AL2023 has not.
+# Either boots; the first skips half a minute of package installs.
+command -v docker >/dev/null || dnf install -y docker
+command -v aws >/dev/null || dnf install -y awscli-2
+# Its ECS agent is enabled by default and would retry a cluster forever.
+systemctl disable --now ecs 2>/dev/null || true
 systemctl enable --now docker
 
 param() {
