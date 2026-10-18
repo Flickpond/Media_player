@@ -101,9 +101,14 @@ resource "aws_cloudfront_distribution" "videos" {
 
   # The *.cloudfront.net certificate: segment URLs are fetched by the player,
   # never shown, so they need no custom domain or DNS change.
+  # With the default *.cloudfront.net certificate AWS ignores the minimum and
+  # records TLSv1 whatever is asked, so asking for TLSv1.2_2021 here only made
+  # every plan show a change no apply could make. Enforcing TLS 1.2 needs our
+  # own certificate on a custom domain (an ACM certificate in us-east-1 and an
+  # alias such as cdn.flickpond.com) -- see docs/roadmap.md.
   viewer_certificate {
     cloudfront_default_certificate = true
-    minimum_protocol_version       = "TLSv1.2_2021"
+    minimum_protocol_version       = "TLSv1"
   }
 }
 
