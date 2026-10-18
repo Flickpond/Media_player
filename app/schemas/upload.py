@@ -16,7 +16,8 @@ class UploadModel(BaseModel):
 class StartUpload(UploadModel):
     filename: str = Field(min_length=1, max_length=255)
     size: Annotated[StrictInt, Field(gt=0, le=PART_SIZE * MAX_PARTS)]
-    content_type: str = Field(min_length=1, max_length=128)
+    # Advisory only: the completed object is validated by its bytes.
+    content_type: str = Field(default="application/octet-stream", max_length=128)
     # 30 caps every rendition at 30 fps, the default and the cheap path. 60
     # keeps a 60 fps phone video at 60 -- twice the encode work, so it is
     # the uploader's explicit choice, never a default.
