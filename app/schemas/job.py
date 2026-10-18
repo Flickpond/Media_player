@@ -58,6 +58,9 @@ class JobResponse(BaseModel):
     # both describe that original, not this job's own MP4.
     edit_source: EditSource | None = None
     edit_options: EditOptions | None = None
+    # Only while processing, once the worker has said: 0-99, how far the MP4
+    # has got. The ladder after it is `hls_status`'s to describe.
+    progress: int | None = None
     error: str | None = None
 
 
