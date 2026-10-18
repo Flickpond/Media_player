@@ -1603,6 +1603,29 @@ let clipSelection = null;
 /** Cleanup functions for the components mounted in this editing session. */
 let mountedComponents = [];
 
+/** Operations added since sprint 6 plug in with markup alone (sprint 6 plan,
+ *  2.1): a section in the edit form like
+ *
+ *    <details class="edit-op" data-operation="rotate" data-mount="mountRotatePanel">
+ *      <summary><input type="checkbox" /> <span class="edit-op-name">Rotate</span></summary>
+ *      <div class="edit-op-body"><div class="edit-mount"></div></div>
+ *    </details>
+ *
+ *  plus a script defining `window.mountRotatePanel(video, onChange, frame)`.
+ *  Whatever the component reports is sent as that operation's params, as-is:
+ *  the schema in app/schemas/edit.py is the contract for its shape. This file
+ *  is not edited to add one. */
+const pluginOperations = [
+  ...el.editForm.querySelectorAll("details[data-operation][data-mount]"),
+].map((section) => ({
+  name: section.dataset.operation,
+  mountName: section.dataset.mount,
+  checkbox: section.querySelector("summary input[type=checkbox]"),
+  host: section.querySelector(".edit-mount"),
+}));
+/** What each plugged-in component last reported, by operation name. */
+const pluginSelections = new Map();
+
 function setEditStatus(message) {
   el.editStatus.textContent = message;
   el.editStatus.hidden = !message;
@@ -1655,6 +1678,10 @@ function editOperations() {
       operation: "upscale",
       params: { height: Number(el.editUpscaleHeight.value) },
     });
+  }
+  for (const plugin of pluginOperations) {
+    const params = pluginSelections.get(plugin.name);
+    if (plugin.checkbox?.checked && params) operations.push({ operation: plugin.name, params });
   }
   if (el.editConvert.checked) {
     operations.push({
@@ -1765,6 +1792,7 @@ function mountEditComponents(frame = null) {
   unmountEditComponents();
   cropSelection = null;
   clipSelection = null;
+  pluginSelections.clear();
 
   const video = el.editPlayer.querySelector("video");
   const components = [
@@ -1788,6 +1816,22 @@ function mountEditComponents(frame = null) {
         clipSelection = selection;
       },
     },
+    ...pluginOperations.map((plugin) => ({
+      checkbox: plugin.checkbox,
+      host: plugin.host,
+      mount: window[plugin.mountName],
+      // The original's size and length, so a panel can draw a preview to
+      // scale without waiting for the element's own metadata.
+      options: {
+        width: frame?.width ?? null,
+        height: frame?.height ?? null,
+        duration: frame?.duration_seconds ?? null,
+      },
+      missing: "Coming in the next update.",
+      apply: (selection) => {
+        pluginSelections.set(plugin.name, selection);
+      },
+    })),
   ];
 
   for (const component of components) {
@@ -1847,7 +1891,7 @@ function openEditor(job) {
   el.editProgress.hidden = true;
   setEditStatus("");
 
-  for (const box of [el.editCrop, el.editClip, el.editDownscale, el.editUpscale, el.editConvert]) {
+  for (const box of editCheckboxes()) {
     box.checked = false;
   }
   applyScaleOptions(job);
@@ -1926,7 +1970,19 @@ el.jobEdit.addEventListener("click", () => {
   if (activeJobDoc) openEditor(activeJobDoc);
 });
 
-for (const box of [el.editCrop, el.editClip, el.editDownscale, el.editUpscale, el.editConvert]) {
+/** Every operation's checkbox: the panel's own five and any plugged in. */
+function editCheckboxes() {
+  return [
+    el.editCrop,
+    el.editClip,
+    el.editDownscale,
+    el.editUpscale,
+    el.editConvert,
+    ...pluginOperations.map((plugin) => plugin.checkbox).filter(Boolean),
+  ];
+}
+
+for (const box of editCheckboxes()) {
   // The checkbox lives inside <summary>, which is what makes the section
   // keyboard-reachable. Stopping the click here keeps ticking a box from also
   // opening or closing its section in browsers that treat the whole summary

@@ -49,7 +49,7 @@ code that split is `ObjectStoreError`: `str(exc)` is the operator's half,
 | `source_key` | Text | MinIO input object key |
 | `output_key` | Text, nullable | MinIO output object key; null until `done` |
 | `hls_key` | Text, nullable | MinIO key of the HLS master playlist. Null when no ladder was built — including on a `done` job, since the ladder is best-effort and `output_key` is the fallback |
-| `operations` | JSONB, nullable | Null on an upload. On an edit job, the operations requested. **The array's order is not execution order** — the worker runs clip → crop → scale → convert regardless |
+| `operations` | JSONB, nullable | Null on an upload. On an edit job, the operations requested. **The array's order is not execution order** — the worker runs them in `OPERATION_ORDER` (clip → crop → rotate → flip → scale → adjust → preset → speed → convert) regardless |
 | `hls_status` | Text, NOT NULL, default `pending` | `pending`, `ready` or `unavailable`. **`ready` exactly when `hls_key` exists** — enforced by `ck_jobs_hls_ready_has_key`, so the two are always written together. Always returned by `GET /jobs/{id}` |
 | `width`, `height` | Integer, nullable | The real dimensions of what this job plays: the upload for an upload, the edited output for an edit (a crop or scale changes them). Set once the worker has probed it. Positive when set. **As displayed**: a phone video recorded upright is stored as landscape frames plus a rotation flag, and the probe reports it portrait, the way FFmpeg encodes it |
 | `duration_seconds` | Float, nullable | The real duration, on the same rule as `width` and `height`. Positive when set |
@@ -293,6 +293,60 @@ Crop and clip ranges are still checked by the worker only.
 validate_source(probe, *, max_duration_seconds) -> None          # A's MP4 processor
 validate_edit_rules(operations: list[tuple[str, dict]], probe) -> None   # B's edit processor
 ```
+
+## Sprint 6: the edit-operation seam (A builds it; B, C, D, E use it)
+
+New edit operations plug in without editing each other's code. Step by step:
+[`adding-an-edit-operation.md`](adding-an-edit-operation.md).
+
+**Order.** `app.services.media_rules.OPERATION_ORDER`, read by the API and the
+worker alike: `clip → crop → rotate → flip → downscale/upscale → adjust →
+preset → speed → convert`. Crop runs before rotation, so its box stays in the
+original's pixels. Everything from `adjust` on runs **after** the HDR tone-map
+(`TONE_MAPPED_FROM`), on the standard 8-bit picture the browser's preview
+shows; the geometry before it runs on the source as decoded.
+
+**Registration — one line each, beside the operation's own code:**
+
+```python
+# app/services/media_rules.py — the rule, run by the API (422) and the worker
+register_rule("rotate", OperationRule(label="rotate", check=_rotate_rule))
+#   check(params, frame: Frame) -> Frame   raises MediaRuleError; returns the frame after it
+#   changes_picture=False for an operation an MP3 can take (speed)
+
+# app/worker/edit_ops/rotate.py — the filters; import it in edit_ops/__init__.py
+register_filter("rotate", build)
+#   build(params, frame) -> FilterStep(video=(...), audio=(...))   -> -vf / -af
+
+# app/schemas/edit.py — a strict params model, added to the EditOperation union
+```
+
+**Parameters, agreed for sprint 6:**
+
+```jsonc
+{ "operation": "rotate", "params": { "degrees": 90 } }          // 90 | 180 | 270
+{ "operation": "flip",   "params": { "axis": "horizontal" } }   // horizontal | vertical
+{ "operation": "speed",  "params": { "factor": 1.5 } }          // 0.5 – 2.0, steps of 0.25
+{ "operation": "adjust", "params": { "brightness": 0.1, "contrast": 1.2,
+                                     "saturation": 1.1, "gamma": 1.0 } }
+//   brightness −0.3…0.3, contrast 0.5…2, saturation 0…3, gamma 0.5…2; each optional
+{ "operation": "preset", "params": { "name": "warm" } }         // bw | warm | cool | vintage | vivid
+```
+
+**MP3.** An operation whose rule has `changes_picture=True` cannot be combined
+with `convert: mp3` (422: "rotate cannot be combined with MP3 conversion").
+One with `changes_picture=False` can; the worker keeps its audio filters and
+drops its video ones.
+
+**The panel.** A section in `frontend/index.html` with
+`data-operation="<name>" data-mount="<global>"`, and a script defining
+`window.<global>(video, onChange, { width, height, duration })`. Whatever
+`onChange` reports is sent as that operation's `params`. `app.js` is not
+edited; see `frontend/EDITOR-COMPONENTS.md`.
+
+**After the ladder (2.2).** `app.worker.after_ladder.register(hook)`;
+`hook(job_id, output_key)` runs in the ladder job after `hls_status` is
+`ready`. What it raises is logged and never changes the job.
 
 ## Shared configuration
 

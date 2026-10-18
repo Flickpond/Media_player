@@ -1,4 +1,8 @@
-"""Per-job editing registry and the fixed clip -> crop -> scale -> convert pipeline."""
+"""One edit job: download, validate, one FFmpeg command, upload.
+
+Which filters an operation adds lives in `app.worker.edit_ops`; the order they
+run in is `app.services.media_rules.OPERATION_ORDER`.
+"""
 
 import logging
 import shutil
@@ -10,6 +14,8 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from app.schemas.edit import EditRequest
+from app.services.media_rules import OPERATION_RULES, Frame
+from app.worker.edit_ops import filter_chain
 from app.worker.interruption import run as run_process
 from app.worker.storage import (
     BT709_TAGS,
@@ -42,6 +48,7 @@ def build_edit_command(
     crf: int,
     max_fps: int = DEFAULT_MAX_FPS,
     hdr: bool = False,
+    frame: Frame | None = None,
 ) -> list[str]:
     command = [ffmpeg_binary, "-hide_banner", "-loglevel", "error"]
 
@@ -51,38 +58,50 @@ def build_edit_command(
         command.extend(["-ss", str(params["start"]), "-to", str(params["end"])])
     command.extend(["-i", str(source_path)])
 
-    filters: list[str] = []
-    crop = request.operation("crop")
-    if crop is not None:
-        params = _params(crop)
-        filters.append(f"crop={params['w']}:{params['h']}:{params['x']}:{params['y']}")
-    downscale = request.operation("downscale")
-    upscale = request.operation("upscale")
-    if downscale is not None:
-        filters.append(f"scale=-2:{downscale.params.height}")
-    elif upscale is not None:
-        filters.append(f"scale=-2:{upscale.params.height}:flags=lanczos")
+    operations = [(item.operation, _params(item)) for item in request.operations]
+    chain = filter_chain(operations, frame or Frame(width=None, height=None))
+    filters, audio_filters = chain.video, chain.audio
 
     convert = request.operation("convert")
     output_format = convert.params.format if convert is not None else "mp4"
     if output_format == "mp3":
-        # Video-only operations cannot change an audio-only result. The API
-        # accepts the common clip+MP3 case; crop/scale combinations are caught
-        # here as invalid persisted requests rather than silently ignored.
-        if filters:
+        # Picture operations cannot change an audio-only result. The API
+        # refuses them with MP3 first; a stored request that has them anyway
+        # is caught here rather than silently ignored. An operation that is
+        # not a picture change but still has video filters -- speed retimes
+        # the frames as well as the sound -- keeps only its audio ones.
+        if any(OPERATION_RULES[name].changes_picture for name, _ in operations):
             raise ObjectStoreError(
                 "video filters cannot produce an audio-only output",
-                user_message="crop and scale cannot be combined with MP3 conversion",
+                user_message="edits that change the picture cannot be combined with MP3 conversion",
             )
-        command.extend(["-vn", "-c:a", "libmp3lame"])
-    elif output_format == "mkv" and not filters:
+        command.append("-vn")
+        if audio_filters:
+            command.extend(["-af", ",".join(audio_filters)])
+        command.extend(["-c:a", "libmp3lame"])
+    elif output_format == "mkv" and not filters and not audio_filters:
         command.extend(["-c", "copy"])
     else:
         # Re-encoding anyway, so the frame-rate cap rides along for free. A
         # stream copy (the remux above) keeps the source's frames untouched.
+        # The tone-map sits between the geometry and the colour: crop and
+        # scale run on the source as decoded, colour on the standard 8-bit
+        # picture the viewer and the editor's preview both see.
         command.extend(
-            ["-vf", ",".join([fps_cap_filter(max_fps), *filters, *sdr_filters(hdr)])]
+            [
+                "-vf",
+                ",".join(
+                    [
+                        fps_cap_filter(max_fps),
+                        *chain.before_tone_map,
+                        *sdr_filters(hdr),
+                        *chain.after_tone_map,
+                    ]
+                ),
+            ]
         )
+        if audio_filters:
+            command.extend(["-af", ",".join(audio_filters)])
         if hdr:
             command.extend(BT709_TAGS)
         command.extend(
@@ -175,9 +194,10 @@ class EditProcessor:
 
             crop = request.operation("crop")
             clip = request.operation("clip")
-            scales = request.operation("downscale") or request.operation("upscale")
             probe = None
-            if crop is not None or clip is not None or scales is not None:
+            # Anything beyond a format change is checked against the real
+            # file before FFmpeg starts.
+            if any(item.operation != "convert" for item in request.operations):
                 probe = self._prober(source_path)
                 try:
                     if clip is not None:
@@ -201,6 +221,7 @@ class EditProcessor:
                 crf=self._crf,
                 max_fps=max_fps,
                 hdr=self._is_hdr(job_id, source_path, probe),
+                frame=Frame(width=probe.width, height=probe.height) if probe else None,
             )
             try:
                 result = self._runner(

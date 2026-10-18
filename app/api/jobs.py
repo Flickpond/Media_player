@@ -252,7 +252,9 @@ async def edit_job_by_id(
     roots = await resolve_edit_roots(session, [source])
     base = _edit_base(source, roots[source.id])
     try:
-        check_edit_operations(requested, input_height=_editable_height(base))
+        check_edit_operations(
+            requested, input_height=_editable_height(base), input_width=base.width
+        )
     except MediaRuleError as exc:
         return JSONResponse(status_code=422, content={"error": str(exc)})
 

@@ -17,7 +17,7 @@ from rq import Queue
 
 from app.models.job import HlsStatus, JobStatus
 from app.queue import BUILD_LADDER_TASK, enqueue_ladder, ladder_rq_job_id
-from app.worker import reaper, tasks
+from app.worker import after_ladder, reaper, tasks
 from app.worker.hls import HlsLadderBuilder
 from app.worker.storage import ObjectStoreError, ProcessingResult
 from app.worker.tasks import JobOutcome, build_ladder_async, process_job_async
@@ -132,6 +132,68 @@ async def test_an_edits_ladder_is_cut_from_the_edit(rows, session_factory):
     await build_ladder_async(job.id, session_factory=session_factory, ladder_step=step)
 
     assert step.runs[0][1] == "outputs/b/edit.mp4"
+
+
+# --- after the ladder (sprint 6 plan, 2.2) -------------------------------------
+
+
+@pytest.fixture
+def hooks(monkeypatch):
+    registered: list = []
+    monkeypatch.setattr(after_ladder, "HOOKS", registered)
+    return registered
+
+
+async def test_a_hook_runs_once_the_ladder_is_recorded_with_the_jobs_mp4(
+    rows, session_factory, hooks
+):
+    job = rows.add()
+    seen = []
+    # Records what the row said when the hook ran: the ladder must be there.
+    hooks.append(lambda job_id, key: seen.append((job_id, key, rows.jobs[job_id].hls_status)))
+
+    settled = await build_ladder_async(
+        job.id, session_factory=session_factory, ladder_step=FakeLadderStep()
+    )
+
+    assert settled is HlsStatus.READY
+    assert seen == [(job.id, "outputs/a/demo.mp4", "ready")]
+
+
+async def test_a_failing_hook_costs_the_video_nothing_and_the_next_still_runs(
+    rows, session_factory, hooks, caplog
+):
+    job = rows.add()
+    ran = []
+
+    def broken(_job_id, _key):
+        raise RuntimeError("sprite failed")
+
+    hooks.extend([broken, lambda job_id, _key: ran.append(job_id)])
+
+    settled = await build_ladder_async(
+        job.id, session_factory=session_factory, ladder_step=FakeLadderStep()
+    )
+
+    assert settled is HlsStatus.READY and job.hls_status == "ready"
+    assert ran == [job.id]
+    assert "broken failed after the ladder" in caplog.text
+
+
+async def test_no_hook_runs_when_the_ladder_failed(rows, session_factory, hooks):
+    job = rows.add()
+    hooks.append(lambda *_: pytest.fail("a hook ran without a ladder"))
+    step = FakeLadderStep(raises=ObjectStoreError("ffmpeg died", user_message="unusable"))
+
+    await build_ladder_async(job.id, session_factory=session_factory, ladder_step=step)
+
+
+def test_register_adds_a_hook_and_returns_it(hooks):
+    def make_sprite(_job_id, _key):
+        return None
+
+    assert after_ladder.register(make_sprite) is make_sprite
+    assert hooks == [make_sprite]
 
 
 async def test_a_failed_ladder_leaves_the_video_done_and_says_so(rows, session_factory):
