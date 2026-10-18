@@ -5,9 +5,15 @@ variable "region" {
 }
 
 variable "github_repository" {
-  description = "The only repository whose workflows may assume the push role."
+  description = <<-EOT
+    The only repository whose workflows may assume the push role, as its OIDC
+    token names it. This repository uses GitHub's immutable subject claims,
+    owner@id/name@id, so a renamed or recreated repository cannot inherit the
+    role. `gh api repos/OWNER/REPO/actions/oidc/customization/sub` shows the
+    prefix; drop its "repo:".
+  EOT
   type        = string
-  default     = "Flickpond/Media_player"
+  default     = "Flickpond@323859155/Media_player@1354269159"
 }
 
 variable "push_branch" {
