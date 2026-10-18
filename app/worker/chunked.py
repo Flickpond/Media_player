@@ -296,6 +296,7 @@ class ChunkedMp4:
         runner=run_process,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        progress: Callable[[UUID, float], None] | None = None,
     ) -> None:
         self._store = store
         self._redis = connection
@@ -311,6 +312,7 @@ class ChunkedMp4:
         self._timeout = timeout_seconds
         self._runner = runner
         self._clock, self._sleep = clock, sleep
+        self._progress = progress
 
     def wants(self, probe) -> bool:
         """Long enough that pieces pay for their overhead."""
@@ -377,6 +379,11 @@ class ChunkedMp4:
             except Exception:
                 logger.warning("job %s: pieces left in storage under %s", job_id, prefix)
 
+    def _report(self, plan: PiecePlan, done: int) -> None:
+        # Pieces are most of the work; the join and the upload are the rest.
+        if self._progress is not None:
+            self._progress(UUID(plan.job_id), 90 * done / plan.count)
+
     def _encode_until_all_done(
         self, plan, board, source_path, work_dir, started
     ) -> dict[int, Path]:
@@ -392,10 +399,11 @@ class ChunkedMp4:
                 orphans = board.unclaimed(plan.count, stale_after=self._stale_after)
                 if orphans:
                     index = orphans[0]
-                elif len(board.done()) >= plan.count:
+                elif (done := len(board.done())) >= plan.count:
                     return mine
                 else:
                     # Helpers are still on their pieces.
+                    self._report(plan, done)
                     self._sleep(1)
                     continue
             path = work_dir / f"piece-{index:04d}.mp4"
@@ -410,6 +418,7 @@ class ChunkedMp4:
             )
             mine[index] = path
             board.finish(index)
+            self._report(plan, len(board.done()))
 
     def _encode_audio(self, source_path: Path, work_dir: Path) -> Path | None:
         """The whole file's audio, once; None for a video without sound."""

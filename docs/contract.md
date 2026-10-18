@@ -97,9 +97,11 @@ POST /upload                    // multipart: file, optional max_fps=30|60 (defa
 GET /jobs/{id}
   200 { "id", "filename", "status", "hls_status",
         "output_url"?, "hls_url"?, "width"?, "height"?, "duration_seconds"?,
-        "thumbnail_url"?, "max_fps", "edit_source"?, "edit_options"?, "error"? }
+        "thumbnail_url"?, "max_fps", "edit_source"?, "edit_options"?, "progress"?, "error"? }
   404 { "error": "not found" }
 
+  progress:     0-99, only while processing and once the worker has reported
+                // how far the MP4 has got (sprint 6); best-effort, may be absent
   edit_source:  { "job_id", "width"?, "height"?, "duration_seconds"? }
                 // done jobs only: the original upload every edit starts from
   edit_options: { "downscale": [1440, 1080, 720, 480, 360, 240], "upscale": [] }

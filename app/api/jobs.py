@@ -14,7 +14,7 @@ from app.config import get_settings
 from app.database import get_session
 from app.errors import ApiNotFoundError
 from app.models.job import HlsStatus, Job, JobStatus
-from app.queue import enqueue_job
+from app.queue import enqueue_job, get_redis_connection
 from app.repositories.jobs import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -37,6 +37,7 @@ from app.services.media_rules import (
     scale_options,
 )
 from app.services.output_urls import OutputUrlSigner, get_output_url_signer
+from app.services.progress import get_progress
 from app.services.storage import StorageService, get_storage_service
 
 logger = logging.getLogger("app.api.jobs")
@@ -91,7 +92,17 @@ def _edit_source(job: Job, base: Job) -> EditSource | None:
     )
 
 
-async def _to_response(job: Job, signer: OutputUrlSigner, root: Job | None = None) -> JobResponse:
+async def _progress_of(jobs: list[Job]) -> dict[UUID, int]:
+    """Progress for the jobs still encoding; one Redis round trip, or none."""
+    running = [job.id for job in jobs if job.status == JobStatus.PROCESSING.value]
+    if not running:
+        return {}
+    return await run_in_threadpool(get_progress, get_redis_connection(), running)
+
+
+async def _to_response(
+    job: Job, signer: OutputUrlSigner, root: Job | None = None, progress: int | None = None
+) -> JobResponse:
     base = _edit_base(job, root if root is not None else job)
     output_url = None
     if job.status == JobStatus.DONE.value and job.output_key:
@@ -128,6 +139,7 @@ async def _to_response(job: Job, signer: OutputUrlSigner, root: Job | None = Non
         max_fps=job.max_fps,
         edit_source=_edit_source(job, base),
         edit_options=_edit_options(job, base),
+        progress=progress if job.status == JobStatus.PROCESSING.value else None,
         error=error,
     )
 
@@ -149,8 +161,11 @@ async def get_jobs(
     # to the thread pool, so awaiting them one at a time made the endpoint's
     # latency the sum of every row's hop rather than the slowest one.
     roots = await resolve_edit_roots(session, jobs)
+    progress = await _progress_of(jobs)
     return list(
-        await asyncio.gather(*(_to_response(job, signer, roots[job.id]) for job in jobs))
+        await asyncio.gather(
+            *(_to_response(job, signer, roots[job.id], progress.get(job.id)) for job in jobs)
+        )
     )
 
 
@@ -171,7 +186,8 @@ async def get_job_by_id(
     if job is None:
         raise ApiNotFoundError("not found")
     roots = await resolve_edit_roots(session, [job])
-    return await _to_response(job, signer, roots[job.id])
+    progress = await _progress_of([job])
+    return await _to_response(job, signer, roots[job.id], progress.get(job.id))
 
 
 @router.post(
@@ -356,8 +372,11 @@ async def get_all_jobs(
     """
     jobs = await list_jobs(session, owner_id=None, limit=limit, offset=offset)
     roots = await resolve_edit_roots(session, jobs)
+    progress = await _progress_of(jobs)
     return list(
-        await asyncio.gather(*(_to_response(job, signer, roots[job.id]) for job in jobs))
+        await asyncio.gather(
+            *(_to_response(job, signer, roots[job.id], progress.get(job.id)) for job in jobs)
+        )
     )
 
 

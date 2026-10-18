@@ -241,6 +241,7 @@ class FfmpegProcessor:
         source_check=None,
         thumbnailer=None,
         chunked=None,
+        progress=None,
     ) -> None:
         self._store = store
         self._output_prefix = output_prefix.strip("/")
@@ -268,6 +269,9 @@ class FfmpegProcessor:
         # app.worker.chunked.ChunkedMp4, when WORKER_CHUNKED_MP4 is on: a long
         # source is encoded in pieces across workers instead of in one run.
         self._chunked = chunked
+        # `progress(job_id, percent)` (app.services.progress.set_progress):
+        # how far the MP4 has got, for the page. Best-effort.
+        self._progress = progress
 
     def output_key_for(self, *, job_id: UUID, source_key: str) -> str:
         stem = PurePosixPath(source_key).stem or str(job_id)
@@ -372,7 +376,14 @@ class FfmpegProcessor:
                 )
             )
             if not chunked:
-                self._encode_once(source_path, output_path, max_fps=max_fps, hdr=hdr)
+                self._encode_once(
+                    source_path,
+                    output_path,
+                    max_fps=max_fps,
+                    hdr=hdr,
+                    job_id=job_id,
+                    duration=probe.duration_seconds if probe else None,
+                )
             if not output_path.is_file():
                 raise ObjectStoreError(
                     "FFmpeg completed without producing an output file",
@@ -392,8 +403,21 @@ class FfmpegProcessor:
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def _encode_once(self, source_path: Path, output_path: Path, *, max_fps: int, hdr: bool):
-        """The whole MP4 in one FFmpeg run."""
+    def _encode_once(
+        self,
+        source_path: Path,
+        output_path: Path,
+        *,
+        max_fps: int,
+        hdr: bool,
+        job_id: UUID | None = None,
+        duration: float | None = None,
+    ):
+        """The whole MP4 in one FFmpeg run, reporting how far it has got."""
+        from app.worker.progress_watch import ProgressWatcher
+
+        watching = self._progress is not None and job_id is not None and bool(duration)
+        progress_file = output_path.with_name("progress.txt")
         command = [
             self._ffmpeg_binary,
             "-hide_banner",
@@ -414,17 +438,18 @@ class FfmpegProcessor:
             "aac",
             "-movflags",
             "+faststart",
+            *(["-progress", str(progress_file), "-nostats"] if watching else []),
             "-y",
             str(output_path),
         ]
         try:
-            result = self._runner(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=self._timeout_seconds,
-                check=False,
-            )
+            if watching:
+                with ProgressWatcher(
+                    progress_file, duration, lambda percent: self._progress(job_id, percent)
+                ):
+                    result = self._run_encode(command)
+            else:
+                result = self._run_encode(command)
         except subprocess.TimeoutExpired as exc:
             raise ObjectStoreError(
                 f"transcoding timed out after {self._timeout_seconds} seconds",
@@ -440,6 +465,15 @@ class FfmpegProcessor:
             # `detail` is up to 1000 characters of FFmpeg stderr, naming the
             # temp path it was working on. Diagnostic only.
             raise ObjectStoreError(f"FFmpeg failed: {detail}", user_message=UNPROCESSABLE_VIDEO)
+
+    def _run_encode(self, command: list[str]):
+        return self._runner(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=self._timeout_seconds,
+            check=False,
+        )
 
 
 class CopyProcessor:
@@ -506,7 +540,17 @@ def get_processing_step() -> ProcessingStep:
             timeout_seconds=settings.worker_ffprobe_timeout_seconds,
         ),
         chunked=_chunked_mp4(store, settings) if settings.worker_chunked_mp4 else None,
+        progress=_progress_reporter(),
     )
+
+
+def _progress_reporter():
+    from functools import partial
+
+    from app.queue import get_redis_connection
+    from app.services.progress import set_progress
+
+    return partial(set_progress, get_redis_connection())
 
 
 def _chunked_mp4(store: "ObjectStore", settings):
@@ -528,6 +572,7 @@ def _chunked_mp4(store: "ObjectStore", settings):
         helpers=settings.worker_chunk_helpers,
         stale_after_seconds=settings.worker_chunk_stale_seconds,
         timeout_seconds=settings.worker_ffmpeg_timeout_seconds,
+        progress=_progress_reporter(),
     )
 
 
