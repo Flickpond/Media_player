@@ -250,7 +250,8 @@ async def test_mp3_with_a_scale_is_refused_before_a_worker_ever_sees_it(api):
     )
 
     assert response.status_code == 422
-    assert response.json() == {"error": "crop and scale cannot be combined with MP3 conversion"}
+    # Names what was asked for: a scale, not "crop and scale".
+    assert response.json() == {"error": "scale cannot be combined with MP3 conversion"}
 
 
 async def test_a_scale_after_a_crop_is_judged_against_the_crop(api):

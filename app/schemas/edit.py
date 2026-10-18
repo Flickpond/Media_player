@@ -2,6 +2,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
+from app.services.media_rules import OPERATION_ORDER
+
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -76,7 +78,10 @@ EditOperation = Annotated[
 
 
 class EditRequest(_StrictModel):
-    operations: Annotated[list[EditOperation], Field(min_length=1, max_length=5)]
+    # At most one of each, so never more than there are operations.
+    operations: Annotated[
+        list[EditOperation], Field(min_length=1, max_length=len(OPERATION_ORDER))
+    ]
 
     @model_validator(mode="after")
     def operations_are_unambiguous(self):

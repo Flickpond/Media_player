@@ -17,7 +17,8 @@ who uploaded the video: it is shown to them verbatim.
 """
 
 import math
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 
 # The heights an edit may scale to. Fixed rungs rather than any number: an odd
 # height is one libx264 refuses mid-encode, and a free-form number is not
@@ -27,12 +28,77 @@ from collections.abc import Iterable
 SCALE_HEIGHTS: tuple[int, ...] = (240, 360, 480, 720, 1080, 1440, 2160)
 MAX_SCALE_HEIGHT = SCALE_HEIGHTS[-1]
 
-# The operations that change the picture. MP3 has no picture to change.
-VIDEO_FILTER_OPERATIONS = frozenset({"crop", "downscale", "upscale"})
+# The order the worker applies operations in, whatever order a request lists
+# them (sprint 6 plan, 2.1). Crop runs before rotation, so its rectangle stays
+# in the original's pixels; colour and presets run after the HDR tone-map, so
+# they always see standard 8-bit video. A new operation takes its place here.
+OPERATION_ORDER: tuple[str, ...] = (
+    "clip",
+    "crop",
+    "rotate",
+    "flip",
+    "downscale",
+    "upscale",
+    "adjust",
+    "preset",
+    "speed",
+    "convert",
+)
 
 
 class MediaRuleError(ValueError):
     """A request or a source that breaks a media rule. `str()` is user-facing."""
+
+
+@dataclass(frozen=True, slots=True)
+class Frame:
+    """The picture's size at one point in the pipeline. Either side may be
+    unknown (None): the API knows only what was stored, and an operation it
+    cannot size -- a malformed crop -- leaves the rest unchecked."""
+
+    width: int | None
+    height: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class OperationRule:
+    """One operation's rule, shared by the API and the worker.
+
+    `check(params, frame)` raises `MediaRuleError` for a request this frame
+    cannot take, and returns the frame the operation leaves behind -- so a
+    scale after a 90-degree rotation is judged against the rotated picture.
+    `label` names it in messages; `changes_picture` is what an MP3 cannot take.
+    """
+
+    label: str
+    check: Callable[[dict, Frame], Frame]
+    changes_picture: bool = True
+
+
+OPERATION_RULES: dict[str, OperationRule] = {}
+
+
+def register_rule(name: str, rule: OperationRule) -> OperationRule:
+    """Add an operation's rule. One line per operation, at the bottom of this
+    module; the name must already be in `OPERATION_ORDER`."""
+    if name not in OPERATION_ORDER:
+        raise ValueError(f"{name!r} has no place in OPERATION_ORDER")
+    if name in OPERATION_RULES:
+        raise ValueError(f"{name!r} is registered twice")
+    OPERATION_RULES[name] = rule
+    return rule
+
+
+def ordered(names: Iterable[str]) -> list[str]:
+    """`names` in the order the worker applies them."""
+    wanted = set(names)
+    return [name for name in OPERATION_ORDER if name in wanted]
+
+
+def _join_labels(labels: list[str]) -> str:
+    if len(labels) == 1:
+        return labels[0]
+    return ", ".join(labels[:-1]) + " and " + labels[-1]
 
 
 def format_duration(seconds: float) -> str:
@@ -136,38 +202,81 @@ def check_scale(operation: str, target_height: int, input_height: int | None) ->
 
 
 def check_edit_operations(
-    operations: Iterable[tuple[str, dict]], *, input_height: int | None
+    operations: Iterable[tuple[str, dict]],
+    *,
+    input_height: int | None,
+    input_width: int | None = None,
 ) -> None:
     """The source-aware rules for one edit request.
 
     `operations` is `(name, params)` pairs, so the API can pass its parsed
     request and the worker its stored operations without either depending on
-    the other's types. `input_height` is the height of the video the edit
-    starts from, or `None` if it is not known yet -- in which case only the
-    rules that need no dimensions are applied.
+    the other's types. `input_height` (and `input_width`, when known) is the
+    size of the video the edit starts from, or `None` if it is not known yet --
+    in which case only the rules that need no dimensions are applied.
 
-    Scale is checked against the frame it is actually applied to: the worker
-    always crops before it scales, so with a crop that is the crop's height,
-    not the video's.
+    Each operation is checked against the frame the ones before it leave, in
+    `OPERATION_ORDER`: a scale after a crop is judged against the crop, not
+    the whole video.
     """
     named = {name: params for name, params in operations}
 
     convert = named.get("convert")
     if convert is not None and convert.get("format") == "mp3":
-        if VIDEO_FILTER_OPERATIONS & named.keys():
-            raise MediaRuleError("crop and scale cannot be combined with MP3 conversion")
+        labels: list[str] = []
+        for name in ordered(named):
+            rule = OPERATION_RULES.get(name)
+            if rule is not None and rule.changes_picture and rule.label not in labels:
+                labels.append(rule.label)
+        if labels:
+            raise MediaRuleError(f"{_join_labels(labels)} cannot be combined with MP3 conversion")
 
-    crop = named.get("crop")
-    frame_height = crop.get("h") if crop is not None else input_height
-    if type(frame_height) is not int or frame_height <= 0:
-        # A malformed crop is the crop validator's to report, with its own
-        # message; scale is then checked against the rungs alone.
-        frame_height = None
-    for operation in ("downscale", "upscale"):
-        params = named.get(operation)
-        if params is None:
-            continue
+    frame = Frame(width=input_width, height=input_height)
+    for name in ordered(named):
+        rule = OPERATION_RULES.get(name)
+        if rule is not None:
+            frame = rule.check(named[name], frame)
+
+
+# --- the rules ------------------------------------------------------------
+#
+# A new operation adds a function here and one `register_rule` line below.
+# Its parameters' shape is the schema's to enforce (app/schemas/edit.py);
+# these are the rules that need the video's size.
+
+
+def _known(value) -> int | None:
+    return value if type(value) is int and value > 0 else None
+
+
+def _crop_rule(params: dict, frame: Frame) -> Frame:
+    # Whether the box fits is the worker's to say, against the real file
+    # (app.worker.validation.validate_crop). A malformed crop is reported
+    # there too, so the frame after it is simply unknown.
+    return Frame(width=_known(params.get("w")), height=_known(params.get("h")))
+
+
+def _scale_rule(operation: str) -> Callable[[dict, Frame], Frame]:
+    def check(params: dict, frame: Frame) -> Frame:
         target = params.get("height")
         if type(target) is not int:
             raise MediaRuleError(f"{operation} height must be a whole number of pixels")
-        check_scale(operation, target, frame_height)
+        check_scale(operation, target, frame.height)
+        width = None
+        if frame.width and frame.height:
+            # scale=-2:H keeps the shape and rounds the width to even.
+            width = max(2, round(frame.width * target / frame.height / 2) * 2)
+        return Frame(width=width, height=target)
+
+    return check
+
+
+def _unchanged(_params: dict, frame: Frame) -> Frame:
+    return frame
+
+
+register_rule("clip", OperationRule(label="clip", check=_unchanged, changes_picture=False))
+register_rule("crop", OperationRule(label="crop", check=_crop_rule))
+register_rule("downscale", OperationRule(label="scale", check=_scale_rule("downscale")))
+register_rule("upscale", OperationRule(label="scale", check=_scale_rule("upscale")))
+register_rule("convert", OperationRule(label="convert", check=_unchanged, changes_picture=False))

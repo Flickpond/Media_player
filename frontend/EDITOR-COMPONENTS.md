@@ -1,4 +1,4 @@
-# The two components the editor mounts
+# The components the editor mounts
 
 `app.js` owns the editing panel: the five operation sections, the request body,
 and the polling. Two of those sections are not its own work — the crop box
@@ -54,3 +54,32 @@ phone video is wrong everywhere else.
 
 The crop box reports even, whole numbers: libx264 refuses an odd-sized 4:2:0
 picture, and the worker's `validate_crop` refuses anything but integers.
+
+## Operations added since sprint 6
+
+A new operation needs no change to `app.js`. Its section in `index.html`
+names the operation and the global to mount:
+
+```html
+<details class="edit-op" data-operation="rotate" data-mount="mountRotatePanel">
+  <summary><input type="checkbox" id="edit-rotate" /> <span class="edit-op-name">Rotate</span></summary>
+  <div class="edit-op-body"><div class="edit-mount"></div></div>
+</details>
+```
+
+```js
+window.mountRotatePanel(video, onChange, { width, height, duration });
+```
+
+`app.js` finds every `details[data-operation][data-mount]` when it loads, and
+for each one:
+- mounts the global on the editor's video, or shows "Coming in the next
+  update" if the global is not there;
+- resets the checkbox when the editor opens;
+- calls the cleanup when it closes;
+- sends `{ operation: <data-operation>, params: <what onChange last reported> }`
+  when the box is ticked.
+
+The third argument is the original's size and length (`edit_source`), so a
+preview can be drawn to scale before the element has metadata. Step by step,
+with the server side: [`docs/adding-an-edit-operation.md`](../docs/adding-an-edit-operation.md).

@@ -24,8 +24,11 @@ let fetchMock;
  * index from its own first request rather than from the identity check.
  * `loadSignedOut` is for the tests that care about the signed-out half.
  */
-async function loadApp({ signedIn = true, role = "user", limits = null } = {}) {
+async function loadApp({ signedIn = true, role = "user", limits = null, prepare = null } = {}) {
   document.body.innerHTML = BODY;
+  // Markup a test adds before app.js reads the page, as a teammate's
+  // index.html section would be there before it.
+  prepare?.();
   vi.resetModules();
   fetchMock.mockResolvedValueOnce(
     signedIn
@@ -2841,7 +2844,8 @@ describe("editor", () => {
     });
 
     it("says so and offers no crop or clip when the original cannot be loaded", async () => {
-      window.mountCropBox = fakeComponent().mount;
+      const crop = fakeComponent();
+      window.mountCropBox = crop.mount.bind(crop);
       const el = await loadApp();
       await openLibraryWith(el, [AN_EDIT]);
       answerOriginal(() => jsonResponse({ error: "boom" }, false, 500));
@@ -2937,6 +2941,99 @@ describe("editor", () => {
     expect(el.editDownscale.disabled).toBe(false);
     expect(el.editUpscale.disabled).toBe(false);
     expect(el.editConvert.disabled).toBe(false);
+  });
+
+  describe("a plugged-in operation (sprint 6 plan, 2.1)", () => {
+    /** The section a teammate adds to index.html for their operation. */
+    function addRotateSection() {
+      const section = document.createElement("details");
+      section.className = "edit-op";
+      section.dataset.operation = "rotate";
+      section.dataset.mount = "mountRotatePanel";
+      section.innerHTML =
+        '<summary><input type="checkbox" id="edit-rotate" /> <span class="edit-op-name">Rotate</span></summary>' +
+        '<div class="edit-op-body"><div class="edit-mount"></div></div>';
+      document.getElementById("edit-convert").closest("details").before(section);
+    }
+
+    const rotateBox = () => document.getElementById("edit-rotate");
+
+    afterEach(() => {
+      delete window.mountRotatePanel;
+    });
+
+    it("mounts it on the video with the original's size, and sends what it reports", async () => {
+      const rotate = fakeComponent();
+      rotate.mount = function (video, onChange, frame) {
+        this.calls.push({ video, onChange, frame });
+        return this.cleanup;
+      };
+      window.mountRotatePanel = rotate.mount.bind(rotate);
+      const el = await loadApp({ prepare: addRotateSection });
+      await openEditor(el, [
+        { ...SOURCE, edit_source: { job_id: "1", width: 1920, height: 1080, duration_seconds: 8 } },
+      ]);
+
+      expect(rotate.calls[0].video).toBe(el.editPlayer.querySelector("video"));
+      expect(rotate.calls[0].frame).toEqual({ width: 1920, height: 1080, duration: 8 });
+
+      rotateBox().checked = true;
+      rotateBox().dispatchEvent(new Event("change"));
+      // Ticked, but nothing chosen yet: nothing to send.
+      expect(el.editProcess.disabled).toBe(true);
+
+      rotate.report({ degrees: 90 });
+      expect(el.editProcess.disabled).toBe(false);
+      expect(el.editHint.textContent).toBe("1 operation in one pass.");
+
+      mockEditFlow([{ ...EDITED }]);
+      submit(el);
+      expect(sentOperations()).toEqual([{ operation: "rotate", params: { degrees: 90 } }]);
+    });
+
+    it("disables its section until its script is on the page", async () => {
+      const el = await loadApp({ prepare: addRotateSection });
+      await openEditor(el);
+
+      expect(rotateBox().disabled).toBe(true);
+      expect(rotateBox().closest("details").textContent).toContain("next update");
+      // The panel's own operations are unaffected by a missing one.
+      expect(el.editDownscale.disabled).toBe(false);
+    });
+
+    it("starts unticked and unset each time the editor opens, and is cleaned up", async () => {
+      const rotate = fakeComponent();
+      window.mountRotatePanel = rotate.mount.bind(rotate);
+      const el = await loadApp({ prepare: addRotateSection });
+      await openEditor(el);
+      rotateBox().checked = true;
+      rotateBox().dispatchEvent(new Event("change"));
+      rotate.report({ degrees: 180 });
+
+      el.editBack.dispatchEvent(new Event("click"));
+      expect(rotate.cleanup).toHaveBeenCalled();
+      await openEditor(el);
+
+      expect(rotateBox().checked).toBe(false);
+      rotateBox().checked = true;
+      rotateBox().dispatchEvent(new Event("change"));
+      // The last session's 180 is not carried over.
+      expect(el.editProcess.disabled).toBe(true);
+    });
+
+    it("ticking it does not open or close its section", async () => {
+      const rotate = fakeComponent();
+      window.mountRotatePanel = rotate.mount.bind(rotate);
+      const el = await loadApp({ prepare: addRotateSection });
+      await openEditor(el);
+      const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+      const toggled = vi.fn();
+      rotateBox().closest("details").addEventListener("click", toggled);
+
+      rotateBox().dispatchEvent(click);
+
+      expect(toggled).not.toHaveBeenCalled();
+    });
   });
 
   it("mounts crop and clip against the video, and sends what they report", async () => {

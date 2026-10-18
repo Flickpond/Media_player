@@ -40,7 +40,7 @@ def validate_edit_rules(operations: list[tuple[str, dict]], probe: SourceProbe) 
     can be absent (jobs from before sprint 4) or describe a different file
     than the one downloaded (an MP4 encoded under an older height cap).
     """
-    check_edit_operations(operations, input_height=probe.height)
+    check_edit_operations(operations, input_height=probe.height, input_width=probe.width)
 
 
 def validate_crop(params: dict, probe: SourceProbe) -> None:

@@ -34,6 +34,7 @@ from app.repositories.jobs import (
     mark_ladder_unavailable,
     mark_processing,
 )
+from app.worker import after_ladder
 from app.worker.db import get_worker_session_factory
 from app.worker.interruption import stop_on_sigterm, stop_requested
 from app.worker.probe import SourceProbe
@@ -291,6 +292,9 @@ async def build_ladder_async(
             logger.exception("job %s: could not discard the unrecorded ladder", job_id)
         return None
     logger.info("job %s: ladder ready (hls_key=%s)", job_id, hls_key)
+    if job.output_key:
+        # After the ladder is recorded, so nothing here can hold it back.
+        await asyncio.to_thread(after_ladder.run, job_id, job.output_key)
     return HlsStatus.READY
 
 
