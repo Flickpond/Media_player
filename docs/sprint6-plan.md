@@ -54,8 +54,11 @@ block anyone else's — or be blocked by anyone else's after Monday.
   split into keyframe-aligned pieces of about 10 s, encoded on the existing
   worker pool, joined without re-encoding; behind `WORKER_CHUNKED_MP4`, off
   by default. Phase 2 (sprint 7): the ladder.
-- **A warm pool of one stopped worker** (≈ $4 a month for its disk) brings
-  the overnight first-job wait from 3 min 30 s toward a minute.
+- ~~A warm pool of one stopped worker~~ — **changed 19 Oct (#94):** AWS warm
+  pools do not support Spot in a mixed-instances group. The 3 min 30 s wait
+  is cut directly instead: the API wakes the group from zero as a job is
+  queued (the alarm's ~85 s), and workers boot the ECS-optimized image with
+  Docker preinstalled.
 - **Workers get their own IAM role.** Today they share the core's and can read
   secrets they never use, such as the CloudFront signing key.
 
@@ -139,7 +142,7 @@ than 60 s is split into chunks, each queued as its own job on
 |---|---|
 | The seam (2.1), the preview hook (2.2) | C |
 | Chunked MP4 (2.3) | B |
-| Warm pool, worker role | D |
+| Wake on enqueue (was: warm pool), worker role | D |
 
 ---
 
