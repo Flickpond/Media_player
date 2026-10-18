@@ -131,7 +131,9 @@ const el = {
   adminPageLabel: document.getElementById("admin-page-label"),
   adminUsersStatus: document.getElementById("admin-users-status"),
   adminUsersTbody: document.getElementById("admin-users-tbody"),
-  adminUsersMore: document.getElementById("admin-users-more"),
+  adminUsersPrev: document.getElementById("admin-users-prev"),
+  adminUsersNext: document.getElementById("admin-users-next"),
+  adminUsersPageLabel: document.getElementById("admin-users-page-label"),
 
   viewEdit: document.getElementById("view-edit"),
   editBack: document.getElementById("edit-back"),
@@ -2466,9 +2468,10 @@ el.adminNext.addEventListener("click", () => {
 // §2.4). An operator's own row has no Delete -- the API refuses it with 409.
 // ---------------------------------------------------------------------------
 
-/** One page is every account a course project will have; past it, say so
- *  rather than paging a list nobody needs paged yet. */
-const ADMIN_USERS_LIMIT = 200;
+/** Accounts per page. Like the jobs table, there is no total count: "Next"
+ *  is offered when a full page came back, never a fabricated "of N". */
+const ADMIN_USERS_PAGE = 25;
+let adminUsersOffset = 0;
 let adminUsers = [];
 
 function setAdminUsersStatus(message) {
@@ -2500,13 +2503,16 @@ function renderAdminUsers() {
     row.append(email, role, count, actions);
     el.adminUsersTbody.appendChild(row);
   }
-  el.adminUsersMore.hidden = adminUsers.length < ADMIN_USERS_LIMIT;
-  el.adminUsersMore.textContent = `Showing the first ${ADMIN_USERS_LIMIT} accounts.`;
+  el.adminUsersPrev.disabled = adminUsersOffset === 0;
+  el.adminUsersNext.disabled = adminUsers.length < ADMIN_USERS_PAGE;
+  el.adminUsersPageLabel.textContent = `Page ${Math.floor(adminUsersOffset / ADMIN_USERS_PAGE) + 1}`;
 }
 
 async function loadAdminUsers() {
   try {
-    const res = await fetch(`${API}/admin/users?limit=${ADMIN_USERS_LIMIT}`);
+    const res = await fetch(
+      `${API}/admin/users?limit=${ADMIN_USERS_PAGE}&offset=${adminUsersOffset}`,
+    );
     // 401 and 403 are the jobs table's to act on; it asks at the same moment.
     adminUsers = res.ok ? await res.json() : [];
   } catch {
@@ -2514,6 +2520,15 @@ async function loadAdminUsers() {
   }
   renderAdminUsers();
 }
+
+el.adminUsersPrev.addEventListener("click", () => {
+  adminUsersOffset = Math.max(0, adminUsersOffset - ADMIN_USERS_PAGE);
+  void loadAdminUsers();
+});
+el.adminUsersNext.addEventListener("click", () => {
+  adminUsersOffset += ADMIN_USERS_PAGE;
+  void loadAdminUsers();
+});
 
 function describeVideos(count) {
   return count === 1 ? "1 video" : `${count} videos`;

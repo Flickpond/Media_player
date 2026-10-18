@@ -1947,14 +1947,16 @@ describe("admin", () => {
     const el = await loadApp({ role: "operator" });
     await openAccounts(el);
 
-    expect(fetchMock).toHaveBeenCalledWith("/api/admin/users?limit=200");
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/users?limit=25&offset=0");
     const cells = accountRows().map((row) => [...row.cells].slice(0, 3).map((c) => c.textContent));
     expect(cells).toEqual([
       ["maya@example.test", "operator", "3"],
       ["sam@example.test", "user", "1"],
       ["lee@example.test", "user", "4"],
     ]);
-    expect(document.getElementById("admin-users-more").hidden).toBe(true);
+    // Three accounts is less than a page: there is no next page to offer.
+    expect(document.getElementById("admin-users-next").disabled).toBe(true);
+    expect(document.getElementById("admin-users-prev").disabled).toBe(true);
   });
 
   it("offers no Delete on the operator's own account, which the API refuses", async () => {
@@ -1965,17 +1967,38 @@ describe("admin", () => {
     expect(accountRow("sam@example.test").querySelector("button")).not.toBeNull();
   });
 
-  it("says when there are more accounts than one page shows", async () => {
+  it("pages through accounts a page at a time", async () => {
     const el = await loadApp({ role: "operator" });
-    const many = Array.from({ length: 200 }, (_, i) => ({
-      id: `x-${i}`,
-      email: `${i}@example.test`,
-      role: "user",
-      job_count: 0,
-    }));
-    await openAccounts(el, many);
+    const page = (from) =>
+      Array.from({ length: 25 }, (_, i) => ({
+        id: `x-${from + i}`,
+        email: `${from + i}@example.test`,
+        role: "user",
+        job_count: 0,
+      }));
+    await openAccounts(el, page(0));
+    const next = document.getElementById("admin-users-next");
+    const prev = document.getElementById("admin-users-prev");
+    const label = document.getElementById("admin-users-page-label");
+    expect(next.disabled).toBe(false);
 
-    expect(document.getElementById("admin-users-more").hidden).toBe(false);
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(jsonResponse(page(25)));
+    next.dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/users?limit=25&offset=25");
+    expect(accountRow("25@example.test")).toBeDefined();
+    expect(label.textContent).toBe("Page 2");
+    expect(prev.disabled).toBe(false);
+
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(jsonResponse(page(0)));
+    prev.dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/users?limit=25&offset=0");
+    expect(label.textContent).toBe("Page 1");
   });
 
   it("shows no accounts when the list cannot be loaded", async () => {
