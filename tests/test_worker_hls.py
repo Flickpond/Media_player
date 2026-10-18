@@ -156,7 +156,7 @@ def test_the_frame_rate_is_capped_before_anything_is_scaled():
     command = build_ladder_command(SOURCE, Path("/tmp/out"), heights=(360, 720))
     filter_complex = command[command.index("-filter_complex") + 1]
 
-    assert filter_complex.startswith("[0:v]fps=fps=min(30\\,source_fps),split=")
+    assert filter_complex.startswith("[0:v]fps=fps=min(30\\,source_fps),format=yuv420p,split=")
 
 
 def test_rungs_below_1080_are_scaled_from_the_1080_rendition():

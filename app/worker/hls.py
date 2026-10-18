@@ -18,17 +18,20 @@ import logging
 import shutil
 import subprocess
 import tempfile
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from uuid import UUID
 
 from app.worker.interruption import run as run_process
 from app.worker.probe import SourceProbe
 from app.worker.storage import (
+    BT709_TAGS,
     DEFAULT_MAX_FPS,
     UNPROCESSABLE_VIDEO,
     ObjectStore,
     ObjectStoreError,
     fps_cap_filter,
+    sdr_filters,
 )
 
 logger = logging.getLogger("app.worker.hls")
@@ -104,7 +107,7 @@ def content_type_for(name: str) -> str:
 AUDIO_GROUP = "audio"
 
 
-def _ladder_filter(heights: tuple[int, ...], max_fps: int) -> str:
+def _ladder_filter(heights: tuple[int, ...], max_fps: int, hdr: bool = False) -> str:
     """The filter graph: cap the frame rate (see `fps_cap_filter`), then
     scale every rung.
 
@@ -113,7 +116,8 @@ def _ladder_filter(heights: tuple[int, ...], max_fps: int) -> str:
     Output labels follow `heights`' order -- `[v0out]` is the shortest rung --
     because that is the order the maps and `-var_stream_map` use.
     """
-    fps = fps_cap_filter(max_fps)
+    # Tone-mapped once, before the split, so every rung shares the work.
+    fps = ",".join([fps_cap_filter(max_fps), *sdr_filters(hdr)])
     index = {height: i for i, height in enumerate(heights)}
     anchor = CASCADE_FROM if CASCADE_FROM in index else None
     from_source = [h for h in heights if anchor is None or h >= anchor]
@@ -148,6 +152,7 @@ def build_ladder_command(
     ffmpeg_binary: str = "ffmpeg",
     preset: str = "veryfast",
     max_fps: int = DEFAULT_MAX_FPS,
+    hdr: bool = False,
 ) -> list[str]:
     """One invocation producing every rendition and the master playlist.
 
@@ -158,7 +163,7 @@ def build_ladder_command(
     function is what the tests cover.
     """
     count = len(heights)
-    filter_complex = _ladder_filter(heights, max_fps)
+    filter_complex = _ladder_filter(heights, max_fps, hdr)
 
     command = [
         ffmpeg_binary,
@@ -203,6 +208,8 @@ def build_ladder_command(
     # does not exist -- deliberately left as a ladder failure rather than
     # special-cased, because the MP4 fallback already covers it and guessing
     # at a silent audio track would be worse.
+    if hdr:
+        command += BT709_TAGS
     command += ["-map", "a:0?", "-c:a", "aac", "-b:a", "128k"]
 
     video = " ".join(f"v:{index},agroup:{AUDIO_GROUP}" for index in range(count))
@@ -244,6 +251,7 @@ class HlsLadderBuilder:
         timeout_seconds: int = 870,
         max_height: int = 2160,
         runner=run_process,
+        prober=None,
     ) -> None:
         self._store = store
         self._output_prefix = output_prefix.strip("/")
@@ -252,6 +260,7 @@ class HlsLadderBuilder:
         self._timeout_seconds = timeout_seconds
         self._max_height = max_height
         self._runner = runner
+        self._prober = prober
 
     def prefix_for(self, job_id: UUID) -> str:
         return f"{self._output_prefix}/{job_id}/hls"
@@ -269,11 +278,25 @@ class HlsLadderBuilder:
         try:
             source_path = temp_dir / "source"
             self._store.download_file(key=source_key, destination=str(source_path))
+            if self._is_hdr(job_id, source_path):
+                probe = replace(probe, hdr=True)
             return self.build(
                 job_id=job_id, source_path=source_path, probe=probe, max_fps=max_fps
             )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _is_hdr(self, job_id: UUID, source_path: Path) -> bool:
+        """Whether the downloaded source is HDR. The row stores only size and
+        duration, so the ladder asks the file. A failed probe reads as SDR:
+        the output is still 8-bit and playable, just not tone-mapped."""
+        if self._prober is None:
+            return False
+        try:
+            return self._prober(source_path).hdr
+        except Exception:
+            logger.warning("job %s: could not read the colour transfer; treating as SDR", job_id)
+            return False
 
     def discard(self, job_id: UUID) -> None:
         """Remove a ladder nobody will record -- see `build_ladder_async`."""
@@ -312,6 +335,7 @@ class HlsLadderBuilder:
                 ffmpeg_binary=self._ffmpeg_binary,
                 preset=self._preset,
                 max_fps=max_fps,
+                hdr=probe.hdr,
             )
             try:
                 result = self._runner(

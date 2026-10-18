@@ -31,7 +31,14 @@ NO_VIDEO_STREAM = "this file has no video track; please upload a video file"
 # Stream size and the container's duration, plus the two places a rotation can
 # be recorded: display-matrix side data (current FFmpeg) and the legacy
 # `rotate` tag (files written by older muxers).
-PROBE_ENTRIES = "stream=width,height:stream_side_data=rotation:stream_tags=rotate:format=duration"
+PROBE_ENTRIES = (
+    "stream=width,height,color_transfer"
+    ":stream_side_data=rotation:stream_tags=rotate:format=duration"
+)
+
+# The two transfer functions HDR video is recorded with: PQ (HDR10, Dolby
+# Vision's base layer) and HLG (broadcast, and many Android phones).
+HDR_TRANSFERS = frozenset({"smpte2084", "arib-std-b67"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +46,10 @@ class SourceProbe:
     width: int
     height: int
     duration_seconds: float
+    # True when the picture is HDR. Every encoder then tone-maps it to
+    # standard range (app.worker.storage.sdr_filters): browsers cannot play
+    # 10-bit H.264, and HDR shown as SDR untreated looks flat and grey.
+    hdr: bool = False
 
 
 def probe_source(
@@ -132,7 +143,12 @@ def probe_source(
             user_message=UNPROCESSABLE_VIDEO,
         )
 
-    return SourceProbe(width=width, height=height, duration_seconds=duration)
+    return SourceProbe(
+        width=width,
+        height=height,
+        duration_seconds=duration,
+        hdr=streams[0].get("color_transfer") in HDR_TRANSFERS,
+    )
 
 
 def _rotation_degrees(stream: dict) -> int:

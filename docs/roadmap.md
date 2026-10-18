@@ -260,6 +260,24 @@ directly, and it gives the autoscaling group a visible reason to scale out.
 - **AV1 for popular videos.** Slower to encode but smaller to stream — worth
   it when a video is watched many times.
 
+### Keep HDR (sprint 6)
+
+Since sprint 5 every HDR upload is tone-mapped to standard-range 8-bit H.264,
+so it plays everywhere with natural colours — but an HDR screen then shows it
+as SDR. **Keep HDR** is an uploader's option, like Keep 60 fps and off by
+default, that adds a **second ladder in AV1 10-bit HDR (PQ/HLG preserved)**
+beside the standard one. Each rung's `CODECS` attribute in the master playlist
+lets a capable player (Chrome, Firefox, Edge; Safari on the newest devices)
+pick HDR, and every other player keeps the SDR rungs.
+
+- **Cost:** AV1 encodes several times slower than H.264, so a kept-HDR video
+  roughly doubles to triples its worker time — spot workers make that
+  affordable, and it is opt-in.
+- **Not 10-bit H.264:** no browser plays it; it is an editing and archive
+  format, not a streaming one.
+- **Needs:** `max_fps`-style column (`keep_hdr`), the second ladder in the
+  ladder job, hls.js codec selection, and testing on a real HDR display.
+
 ---
 
 ## Considered, and not planned

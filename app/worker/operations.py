@@ -12,12 +12,14 @@ from pydantic import ValidationError
 from app.schemas.edit import EditRequest
 from app.worker.interruption import run as run_process
 from app.worker.storage import (
+    BT709_TAGS,
     DEFAULT_MAX_FPS,
     UNPROCESSABLE_VIDEO,
     ObjectStore,
     ObjectStoreError,
     ProcessingResult,
     fps_cap_filter,
+    sdr_filters,
 )
 from app.worker.validation import validate_clip, validate_crop, validate_edit_rules
 
@@ -39,6 +41,7 @@ def build_edit_command(
     preset: str,
     crf: int,
     max_fps: int = DEFAULT_MAX_FPS,
+    hdr: bool = False,
 ) -> list[str]:
     command = [ffmpeg_binary, "-hide_banner", "-loglevel", "error"]
 
@@ -77,7 +80,11 @@ def build_edit_command(
     else:
         # Re-encoding anyway, so the frame-rate cap rides along for free. A
         # stream copy (the remux above) keeps the source's frames untouched.
-        command.extend(["-vf", ",".join([fps_cap_filter(max_fps), *filters])])
+        command.extend(
+            ["-vf", ",".join([fps_cap_filter(max_fps), *filters, *sdr_filters(hdr)])]
+        )
+        if hdr:
+            command.extend(BT709_TAGS)
         command.extend(
             ["-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-c:a", "aac"]
         )
@@ -120,6 +127,17 @@ class EditProcessor:
                 "invalid persisted edit operations", user_message=INVALID_EDIT
             ) from exc
 
+    def _is_hdr(self, job_id: UUID, source_path: Path, probe) -> bool:
+        """Whether the source is HDR, from the validation probe when there was
+        one. A failed probe reads as SDR: still 8-bit and playable."""
+        if probe is not None:
+            return probe.hdr
+        try:
+            return self._prober(source_path).hdr
+        except Exception:
+            logger.warning("job %s: could not read the colour transfer; treating as SDR", job_id)
+            return False
+
     def _probe_output(self, *, job_id: UUID, output_path: Path):
         """The finished edit's size, or None. The edit is already uploaded,
         so a probe failure costs the ladder, not the job."""
@@ -158,6 +176,7 @@ class EditProcessor:
             crop = request.operation("crop")
             clip = request.operation("clip")
             scales = request.operation("downscale") or request.operation("upscale")
+            probe = None
             if crop is not None or clip is not None or scales is not None:
                 probe = self._prober(source_path)
                 try:
@@ -181,6 +200,7 @@ class EditProcessor:
                 preset=self._preset,
                 crf=self._crf,
                 max_fps=max_fps,
+                hdr=self._is_hdr(job_id, source_path, probe),
             )
             try:
                 result = self._runner(
