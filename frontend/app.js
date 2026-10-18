@@ -27,10 +27,13 @@
 // from before sprint 4, so the Library draws its gradient placeholder either
 // way and swaps in the frame when the API hands one back.
 //
-// The `/uploads` trio is sprint 4's direct multipart upload (Track B, see
+// The `/uploads` routes are sprint 4's direct multipart upload (Track B, see
 // docs/b-direct-uploads.md): the browser asks for a presigned URL per 16 MiB
 // part and PUTs the bytes straight to storage, so the API never sees the
 // video. `POST /upload` still exists and is still used as the fallback.
+// Sprint 5 puts three parts in the air at once and gives the transfer a Cancel
+// button (#67, #68): the part in flight is aborted, and the session is deleted
+// rather than left behind for its 24 hour expiry.
 //
 // The session cookie is HttpOnly and sent automatically, so nothing here reads
 // or attaches a token -- which is the point: a script cannot steal what it
@@ -103,6 +106,7 @@ const el = {
   uploadProgressPercent: document.getElementById("upload-progress-percent"),
   uploadProgressRate: document.getElementById("upload-progress-rate"),
   uploadProgressEta: document.getElementById("upload-progress-eta"),
+  uploadCancel: document.getElementById("upload-cancel"),
   player: document.getElementById("player"),
   jobActions: document.getElementById("job-actions"),
   jobRetry: document.getElementById("job-retry"),
@@ -457,10 +461,11 @@ el.jobDelete.addEventListener("click", deleteActiveJob);
 
 el.resumeChoose.addEventListener("click", () => el.fileInput.click());
 el.resumeDiscard.addEventListener("click", async () => {
-  const record = readPendingUpload();
+  const record = offeredUpload;
   // Forget it first: the local note is what the reader is asking to be rid of,
   // and it should go even if the request below never lands.
-  clearPendingUpload();
+  offeredUpload = null;
+  if (record) forgetPendingUpload(record.uploadId);
   renderResumePrompt();
   if (!record) return;
   try {
@@ -469,6 +474,8 @@ el.resumeDiscard.addEventListener("click", async () => {
     // The parts are collected when the session expires either way.
   }
 });
+
+el.uploadCancel.addEventListener("click", cancelUpload);
 
 async function deleteActiveJob() {
   if (!activeJobId) return;
@@ -666,6 +673,7 @@ function showUploadProgress(sent, total, meter) {
 
 function clearUploadProgress() {
   el.uploadProgress.hidden = true;
+  el.uploadCancel.hidden = false;
   el.uploadProgressFill.style.width = "0%";
   el.uploadProgressTrack.setAttribute("aria-valuenow", "0");
   el.uploadProgressPercent.textContent = "0%";
@@ -674,6 +682,57 @@ function clearUploadProgress() {
 }
 
 // --- the direct path -------------------------------------------------------
+
+/** How many parts are in the air at once.
+ *
+ * One at a time keeps the readout and the retry story trivial, but on a
+ * high-latency link most of a part's time is round trips rather than bytes, and
+ * a single stream never fills the connection (#68). Three uses it without
+ * leaving much work behind if the page goes away mid-transfer. */
+const PARTS_IN_FLIGHT = 3;
+
+/** Thrown when the reader cancels.
+ *
+ * An outcome, not a failure: it is what keeps a cancelled upload from being
+ * reported the way a dropped connection is. */
+class UploadCancelled extends Error {
+  constructor() {
+    super("upload cancelled");
+    this.name = "UploadCancelled";
+    this.cancelled = true;
+  }
+}
+
+/** The transfer Cancel would stop, or null when none is running. One slot is
+ *  enough: `handleFile` refuses a second file while the first is still going. */
+let activeUpload = null;
+
+function beginUploadControl(uploadId) {
+  activeUpload = { uploadId, cancelled: false, controller: new AbortController() };
+  return activeUpload;
+}
+
+/** Stop the upload in progress: the part in flight, the parts behind it, and
+ *  the session on the server.
+ *
+ * The DELETE is what makes it real -- the parts already in storage are
+ * otherwise collected only when the session expires, a day later -- so it goes
+ * even though the page has stopped waiting for this transfer. A refused or
+ * unreachable DELETE leaves the reader no worse off than a tab that crashed
+ * mid-upload, which is the state this page exists to recover from anyway. */
+async function cancelUpload() {
+  const control = activeUpload;
+  if (!control || control.cancelled) return; // one cancel per transfer
+  control.cancelled = true;
+  control.controller.abort();
+  forgetPendingUpload(control.uploadId);
+  renderResumePrompt();
+  try {
+    await fetch(`${API}/uploads/${control.uploadId}`, { method: "DELETE" });
+  } catch {
+    // The parts are collected when the session expires either way.
+  }
+}
 
 /** Open a multipart session, or null when this API has no usable `/uploads`.
  *
@@ -723,12 +782,13 @@ async function signPart(uploadId, number) {
   return url;
 }
 
-// Parts go one at a time, so without a retry one dropped connection on part
-// 40 of 64 ends the whole upload -- resumable, but only after the reader picks
-// the file again. Three tries, a second then two apart, cover the blip. Only
-// failures that can come out differently next time are retried: the network
-// (fetch rejects), a 5xx, 408 and 429. A 403 is an expired or refused URL, and
-// the same request would be refused the same way.
+// A part that fails for good ends the whole upload -- resumable, but only
+// after the reader picks the file again, so one dropped connection on part 40
+// of 64 costs more than the retry it did not get. Each part tries three times,
+// a second then two apart. Only failures that can come out differently next
+// time are retried: the network (fetch rejects), a 5xx, 408 and 429. A 403 is
+// an expired or refused URL, and the same request would be refused the same
+// way.
 const PART_ATTEMPTS = 3;
 const PART_RETRY_DELAY_MS = 1000;
 
@@ -738,13 +798,23 @@ function isWorthRetrying(status) {
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function putPartWithRetries(url, blob) {
+async function putPartWithRetries(url, blob, control) {
   for (let attempt = 1; ; attempt += 1) {
     const last = attempt === PART_ATTEMPTS;
     try {
-      const res = await fetch(url, { method: "PUT", body: blob, credentials: "omit" });
+      const res = await fetch(url, {
+        method: "PUT",
+        body: blob,
+        credentials: "omit",
+        // Cancel aborts the part in flight rather than waiting out a transfer
+        // that can take minutes to notice the reader has given up on it.
+        signal: control.controller.signal,
+      });
       if (res.ok || last || !isWorthRetrying(res.status)) return res;
     } catch (err) {
+      // A connection the reader aborted is their own doing: nothing to retry,
+      // and nothing to report as a failure.
+      if (control.cancelled) throw new UploadCancelled();
       if (last) throw new Error(`the connection dropped while sending a part (${err.message})`);
     }
     await pause(PART_RETRY_DELAY_MS * attempt);
@@ -758,8 +828,8 @@ async function putPartWithRetries(url, blob) {
  * if the bucket's CORS rules list it under exposed headers, and without that
  * every part succeeds and completion fails for a reason that looks nothing
  * like the cause -- so it is worth naming. */
-async function putPart(url, blob) {
-  const res = await putPartWithRetries(url, blob);
+async function putPart(url, blob, control) {
+  const res = await putPartWithRetries(url, blob, control);
   if (!res.ok) throw new Error(`storage rejected a part (HTTP ${res.status})`);
   const etag = res.headers.get("ETag");
   if (!etag) {
@@ -779,33 +849,94 @@ async function finishUploadSession(uploadId, parts) {
   return data.job_id;
 }
 
-/** Send every part, then ask the API to assemble them into a job.
+/** Send the parts the server does not already hold, `PARTS_IN_FLIGHT` at a
+ *  time, and hand back the manifest in part order.
  *
- * One part at a time, in order. Parts may legally go up in any order and in
- * parallel, which would finish a large upload sooner; it would also make the
- * rate readout and the retry story harder to reason about, and the transfer is
- * not the part of this pipeline that is short of time. */
-async function runDirectUpload(session, file) {
-  const { upload_id: uploadId, part_size: partSize, part_count: partCount } = session;
-  const meter = makeRateMeter();
-  const parts = [];
-  let sent = 0;
-
-  showUploadProgress(0, file.size, meter);
-
+ * Parts are independent -- any of them may go up in any order and at any
+ * time, and only completion cares that they are all there -- so the pool is
+ * over part numbers rather than over the file. `held` is what a resumed upload
+ * was told is already in storage; those bytes are not sent twice. The manifest
+ * comes back in order because that is what the API checks against storage. */
+async function sendParts({ uploadId, partSize, partCount, file, control, held, onSent }) {
+  const etags = new Array(partCount);
+  const todo = [];
   for (let n = 1; n <= partCount; n += 1) {
-    const start = (n - 1) * partSize;
-    const blob = file.slice(start, Math.min(start + partSize, file.size));
-    parts.push({ n, etag: await putPart(await signPart(uploadId, n), blob) });
-    sent += blob.size;
-    meter.mark(sent);
-    showUploadProgress(sent, file.size, meter);
+    const already = held.get(n);
+    if (already === undefined) todo.push(n);
+    else etags[n - 1] = already;
   }
 
-  const jobId = await finishUploadSession(uploadId, parts);
-  // The session has become a job; there is nothing left to come back to.
-  clearPendingUpload();
-  return jobId;
+  let next = 0;
+  const sendOne = async () => {
+    while (next < todo.length) {
+      // Checked between parts, not only on the fetch: a part whose bytes were
+      // already on their way when Cancel was pressed still lands, and nothing
+      // should follow it.
+      if (control.cancelled) throw new UploadCancelled();
+      const n = todo[next];
+      next += 1;
+      const start = (n - 1) * partSize;
+      const blob = file.slice(start, Math.min(start + partSize, file.size));
+      etags[n - 1] = await putPart(await signPart(uploadId, n), blob, control);
+      onSent(blob.size);
+    }
+  };
+
+  const sends = Math.min(PARTS_IN_FLIGHT, todo.length);
+  await Promise.all(Array.from({ length: sends }, sendOne));
+  return etags.map((etag, index) => ({ n: index + 1, etag }));
+}
+
+/** Send what is missing, then ask the API to assemble the parts into a job.
+ *
+ * `held` is what the server already has -- nothing for a fresh upload, the
+ * parts a reloaded page was told about for a resumed one -- and it is where
+ * the readout starts, so a resumed upload does not count the same bytes
+ * twice. */
+async function transferParts({ uploadId, partSize, partCount, file, held = new Map() }) {
+  const control = beginUploadControl(uploadId);
+  const meter = makeRateMeter();
+  let sent = 0;
+  for (const n of held.keys()) sent += partBytes(n, partSize, file.size);
+  showUploadProgress(sent, file.size, meter);
+
+  try {
+    const parts = await sendParts({
+      uploadId,
+      partSize,
+      partCount,
+      file,
+      control,
+      held,
+      onSent(bytes) {
+        sent += bytes;
+        meter.mark(sent);
+        showUploadProgress(sent, file.size, meter);
+      },
+    });
+    // Every part is in storage, so Cancel has nothing left to stop: the button
+    // goes, and the bar stays where it is -- at all the bytes -- while the API
+    // assembles the parts into a job.
+    activeUpload = null;
+    el.uploadCancel.hidden = true;
+    const jobId = await finishUploadSession(uploadId, parts);
+    // The session has become a job; there is nothing left to come back to.
+    forgetPendingUpload(uploadId);
+    return jobId;
+  } finally {
+    // A failed or cancelled transfer leaves nothing for the button to stop.
+    activeUpload = null;
+  }
+}
+
+/** Upload a file the browser could name straight to storage. */
+async function runDirectUpload(session, file) {
+  return transferParts({
+    uploadId: session.upload_id,
+    partSize: session.part_size,
+    partCount: session.part_count,
+    file,
+  });
 }
 
 /** One opaque POST. Still the only path that can take a file whose type the
@@ -827,36 +958,98 @@ async function sendWholeFile(file) {
 
 // --- resuming an interrupted upload ----------------------------------------
 
-// The pointer to an unfinished session, kept between page loads. The session
-// and the parts already in storage live on the server for 24 hours; this is
-// only how the next page load finds them again.
-const PENDING_UPLOAD_KEY = "flickpond.pending-upload";
+// A pointer to an unfinished session, kept between page loads. The session and
+// the parts already in storage live on the server for 24 hours; this is only
+// how the next page load finds them again.
+//
+// One key per upload, not one for the browser: with a single key, a second tab
+// starting an upload silently replaced the first tab's note, and the session
+// it pointed at then sat unused until the server expired it (#69).
+const PENDING_UPLOAD_PREFIX = "flickpond.pending-upload.";
+// Sprint 4 kept its one note under this key. It is read once and moved, so an
+// upload interrupted by the deploy that split the notes is still offered.
+const LEGACY_PENDING_UPLOAD_KEY = "flickpond.pending-upload";
+// The server's own session life, and so the point past which a note points at
+// nothing a resume could use.
+const PENDING_UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** localStorage throws when it is full, and in a browser that has been told to
- *  keep nothing. None of that should fail an upload, so every read and write
- *  here shrugs and carries on. */
-function readPendingUpload() {
+/** The note stored under `key`, or null when there is none, when it cannot be
+ *  read, or when what is there is not a note.
+ *
+ * localStorage throws when it is full, and in a browser that has been told to
+ * keep nothing. None of that should fail an upload, so every read and write
+ * here shrugs and carries on. */
+function readNote(key) {
   try {
-    return JSON.parse(localStorage.getItem(PENDING_UPLOAD_KEY));
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
   }
 }
 
+function forgetKey(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Same.
+  }
+}
+
+/** Every note this page has left in this browser. Guarded like the reads
+ *  below: enumerating storage is one more thing a locked-down browser can
+ *  refuse, and refusing it is not a reason to lose the page. */
+function pendingUploadKeys() {
+  try {
+    return Object.keys(localStorage).filter((key) => key.startsWith(PENDING_UPLOAD_PREFIX));
+  } catch {
+    return [];
+  }
+}
+
+/** Move sprint 4's single note under a key of its own, so the rest of this
+ *  section only ever has to look in one place. */
+function adoptLegacyPendingUpload() {
+  const legacy = readNote(LEGACY_PENDING_UPLOAD_KEY);
+  if (!legacy) return;
+  forgetKey(LEGACY_PENDING_UPLOAD_KEY);
+  savePendingUpload(legacy);
+}
+
+/** Every unfinished upload this browser still knows about, newest first.
+ *
+ * A note whose session the server has already expired is dropped rather than
+ * offered: the resume would 404 and the file would go up from the start
+ * anyway, only after the reader answered a pointless prompt. */
+function pendingUploads() {
+  adoptLegacyPendingUpload();
+  const notes = [];
+  for (const key of pendingUploadKeys()) {
+    const note = readNote(key);
+    const fresh =
+      note && Number.isFinite(note.startedAt) && Date.now() - note.startedAt < PENDING_UPLOAD_TTL_MS;
+    if (fresh) {
+      notes.push(note);
+    } else {
+      // Unreadable, not a note, or pointing at a session that has expired.
+      forgetKey(key);
+    }
+  }
+  return notes.sort((a, b) => b.startedAt - a.startedAt);
+}
+
 function savePendingUpload(record) {
   try {
-    localStorage.setItem(PENDING_UPLOAD_KEY, JSON.stringify(record));
+    localStorage.setItem(PENDING_UPLOAD_PREFIX + record.uploadId, JSON.stringify(record));
   } catch {
     // The upload still works; it just cannot be picked up again later.
   }
 }
 
-function clearPendingUpload() {
-  try {
-    localStorage.removeItem(PENDING_UPLOAD_KEY);
-  } catch {
-    // Same.
-  }
+/** Forget one upload's note, and only that one: another tab's unfinished
+ *  upload is none of this page's business. */
+function forgetPendingUpload(uploadId) {
+  forgetKey(PENDING_UPLOAD_PREFIX + uploadId);
 }
 
 /** Whether the file just picked is the one this record was made from.
@@ -878,28 +1071,39 @@ function partBytes(n, partSize, total) {
   return Math.min(partSize, total - (n - 1) * partSize);
 }
 
+/** Whether a note belongs to the account signed in here now. The server would
+ *  refuse anyone else's session anyway; this is what keeps the page from
+ *  offering it. */
+function isOwnUpload(note) {
+  return Boolean(currentUser && note.userId === currentUser.id);
+}
+
 /** The unfinished session this file can complete, if there is one.
  *
  * Three things have to line up, or this is an ordinary upload: the same
  * account, the same file, and -- checked by asking, a moment later -- a
- * session the server still has. */
+ * session the server still has. Two notes for the same file are the same file
+ * twice: the newest one wins. */
 function resumableRecordFor(file) {
-  const record = readPendingUpload();
-  if (!record || !currentUser || record.userId !== currentUser.id) return null;
-  return isSameFile(record, file) ? record : null;
+  return pendingUploads().find((note) => isOwnUpload(note) && isSameFile(note, file)) ?? null;
 }
+
+/** The note the prompt is currently offering, so the Discard button throws
+ *  away the one the reader is looking at rather than whichever is newest. */
+let offeredUpload = null;
 
 /** Offer to finish an upload this browser did not get to the end of.
  *
- * Never offered to a different account: the record names whoever started it,
- * and the server would refuse it to anyone else anyway. */
+ * Never offered to a different account: the note names whoever started it, and
+ * the server would refuse it to anyone else anyway. The newest unfinished
+ * upload is the one named; an older one is still picked up when its file is
+ * chosen, which is the only way it could be resumed at all. */
 function renderResumePrompt() {
-  const record = readPendingUpload();
-  const usable = Boolean(record && currentUser && record.userId === currentUser.id);
-  el.resumePrompt.hidden = !usable;
-  if (usable) {
+  offeredUpload = pendingUploads().find(isOwnUpload) ?? null;
+  el.resumePrompt.hidden = !offeredUpload;
+  if (offeredUpload) {
     el.resumeText.textContent =
-      `Unfinished upload: ${record.filename}. Choose the same file to pick up where it stopped.`;
+      `Unfinished upload: ${offeredUpload.filename}. Choose the same file to pick up where it stopped.`;
   }
 }
 
@@ -939,42 +1143,24 @@ async function resumeDirectUpload(record, file) {
   const progress = await getUploadProgress(record.uploadId);
 
   if (progress === null || progress.state === "aborting" || progress.state === "aborted") {
-    clearPendingUpload();
+    forgetPendingUpload(record.uploadId);
     const session = await startDirectUpload(file);
     return session ? runDirectUpload(session, file) : sendWholeFile(file);
   }
 
   // The server got all the way to a job. There is nothing left to send.
   if (progress.state === "completed") {
-    clearPendingUpload();
+    forgetPendingUpload(record.uploadId);
     return progress.job_id;
   }
 
-  const done = new Map(progress.parts_done.map((part) => [part.n, part.etag]));
-  const meter = makeRateMeter();
-  const parts = [];
-  let sent = 0;
-  for (const n of done.keys()) sent += partBytes(n, progress.part_size, file.size);
-
-  showUploadProgress(sent, file.size, meter);
-
-  for (let n = 1; n <= progress.part_count; n += 1) {
-    const held = done.get(n);
-    if (held !== undefined) {
-      parts.push({ n, etag: held });
-      continue;
-    }
-    const start = (n - 1) * progress.part_size;
-    const blob = file.slice(start, Math.min(start + progress.part_size, file.size));
-    parts.push({ n, etag: await putPart(await signPart(record.uploadId, n), blob) });
-    sent += blob.size;
-    meter.mark(sent);
-    showUploadProgress(sent, file.size, meter);
-  }
-
-  const jobId = await finishUploadSession(record.uploadId, parts);
-  clearPendingUpload();
-  return jobId;
+  return transferParts({
+    uploadId: record.uploadId,
+    partSize: progress.part_size,
+    partCount: progress.part_count,
+    file,
+    held: new Map(progress.parts_done.map((part) => [part.n, part.etag])),
+  });
 }
 
 async function sendVideo(file) {
@@ -1053,6 +1239,13 @@ async function handleFile(file) {
   } catch (err) {
     clearUploadProgress();
     renderResumePrompt();
+    if (err.cancelled) {
+      // Not a failure: the reader stopped it, and the card goes back to where
+      // it was before a file was picked.
+      setStatus("Upload cancelled.");
+      setBusy(false);
+      return;
+    }
     if (err.status === 401) {
       showSignedOut();
       setAuthStatus("Your session expired. Sign in again.");
