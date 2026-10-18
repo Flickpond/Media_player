@@ -252,9 +252,11 @@ directly, and it gives the autoscaling group a visible reason to scale out.
 
 ### Delivery at scale
 
-- **CloudFront** in front of the segments, so viewers are served from nearby
-  edge servers instead of our instance. (Its signed URLs work differently
-  from S3's, so this is its own piece of work.)
+- **CloudFront on our own domain.** Segments go through CloudFront since
+  sprint 5, on its default `*.cloudfront.net` certificate. With that
+  certificate AWS will not enforce a TLS minimum (it records TLSv1 whatever
+  is asked). An ACM certificate in us-east-1 and an alias such as
+  `cdn.flickpond.com` make `TLSv1.2_2021` enforceable.
 - **Encoding by popularity.** Every upload gets a fast baseline; the
   expensive versions are made only for videos people actually watch.
 - **AV1 for popular videos.** Slower to encode but smaller to stream — worth
