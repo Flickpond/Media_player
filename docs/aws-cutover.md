@@ -167,136 +167,69 @@ docker compose exec -T postgres \
   pg_dump -U flickpond -Fc flickpond > /root/flickpond-rehearsal.dump
 ```
 
-Copy the dump to `/srv/` on the staging core. Stop staging writers and make
-sure D's staging worker desired count is zero, then restore through a temporary
-PostgreSQL client container:
+`deploy/aws/promote.sh` (§8) does this whole step, piping the dump straight
+to the core. Note for running it by hand: the app's `POSTGRES_DSN` is
+SQLAlchemy's (`postgresql+asyncpg://…?ssl=require`, since #77), so
+`pg_restore` needs it rewritten to libpq's form (`postgresql://…?sslmode=require`)
+— the script does exactly that, and TLS stays required.
+
+Verify the old users and jobs exist, an old object still plays after its
+object is copied to S3, and `alembic current` reports the expected revision.
+
+## 8. Promote staging to production — Tuesday 20 October
+
+**Decided:** there is no second AWS environment. The staging stack proven in
+sprint 5 — the core at `47.128.86.77`, RDS, ElastiCache, CloudFront, the
+registry and the spot workers — becomes production when `flickpond.com`
+points at it. Its resources keep their `staging` names; renaming would mean
+recreating the datastores for nothing.
+
+Everything is done by [`deploy/aws/promote.sh`](../deploy/aws/promote.sh),
+run from a machine that can ssh to both hosts. Nothing passes through that
+machine's disk: the dump, the objects and the certificate are piped host to
+host.
+
+| Step | What it does |
+|---|---|
+| 0 | Both hosts answer |
+| 1 | `--cutover` only: stop production's `api`, `worker` and `reaper` (the page stays up; uploads and edits stop) |
+| 2 | `pg_dump` on Alibaba → the core → `pg_restore --clean` into RDS over TLS; the API applies newer migrations as it starts |
+| 3 | Every MinIO object, through production's own API image (no storage credential typed), → `/srv/minio-export` → `aws s3 sync` (incremental); prints both counts |
+| 4 | `deploy/certbot/conf` (the `flickpond.com` certificate and its renewal config) → the core; writes the `flickpond.com` server blocks, tests them with `nginx -t`, restarts nginx |
+| 5 | `https://flickpond.com/api/health` answered **by the AWS core**, through `curl --resolve`, before DNS moves |
+
+On Windows, Git Bash's ssh cannot read the AWS key; use Windows' own client
+for that side:
 
 ```bash
-dc stop api reaper queue-metrics
-docker run --rm -i --env-file .env postgres:16-alpine \
-  sh -c 'exec pg_restore --dbname="$POSTGRES_DSN" --clean --if-exists \
-  --no-owner --no-privileges' < /srv/flickpond-rehearsal.dump
-dc up -d
+export CORE_SSH='/c/Windows/System32/OpenSSH/ssh.exe -o BatchMode=yes -i C:/Users/<you>/.ssh/flickpond-staging.pem ec2-user@47.128.86.77'
+deploy/aws/promote.sh              # rehearsal, any time: production unchanged
 ```
 
-Because `POSTGRES_DSN` ends in `sslmode=require`, `pg_restore` also refuses a
-plaintext connection. Verify the old users and jobs exist, an old object's key
-still resolves after its matching object is copied to S3, and `alembic current`
-reports the expected revision.
+### Tuesday, in order
 
-## 8. Friday preparation
+1. **Rehearse** in the afternoon: `deploy/aws/promote.sh`. It must reach
+   step 5 and print `{"status":"ok"}`. Sign in on
+   <https://47-128-86-77.sslip.io> with a production account and play an
+   old video.
+2. **Announce the freeze** in the group, then
+   `deploy/aws/promote.sh --cutover`. About five minutes; the objects copy
+   only what changed since the rehearsal.
+3. **DNS:** at Spaceship, the A records for `flickpond.com` and
+   `www.flickpond.com` → `47.128.86.77`. The TTL is already 10 s.
+4. **Verify** on <https://flickpond.com>:
+   - sign in (everyone signs in again: the AWS core has its own JWT secret);
+   - play an old video;
+   - upload a new one and watch a spot worker take it;
+   - edit it;
+   - an operator deletes a test account.
+5. **After verification:**
+   - `METRICS_ENVIRONMENT` stays `staging`: the alarms and the worker group
+     are named for it;
+   - rewrite CLAUDE.md's deployment section;
+   - keep Alibaba untouched for a week (§11).
 
-- Every track has an open, green PR and the cutover commit is known.
-- Lower the `flickpond.com` A-record TTL to 300 seconds at Spaceship.
-- Create the AWS monthly budget alert at **USD 80** and confirm its recipient.
-- Take a fresh size reading of MinIO (expected about 465 MB).
-- Confirm the Alibaba host has enough free disk for one dump and one object
-  export.
-- Confirm the rollback host will be kept untouched for one week.
-
-## 9. Saturday cutover
-
-Decide at **12:00 Asia/Singapore**. Announce the write freeze before stopping
-anything.
-
-### a. Freeze writes and take the final database dump
-
-```bash
-ssh -i <key>.pem root@47.238.64.156
-cd /root/Media_player
-docker compose stop api worker reaper
-docker compose exec -T postgres \
-  pg_dump -U flickpond -Fc flickpond > /root/flickpond-cutover.dump
-```
-
-Copy the dump to `/srv/flickpond-cutover.dump` on the AWS core. Stop AWS
-writers and set the production worker group desired count to zero, then:
-
-```bash
-dc stop api reaper queue-metrics
-docker run --rm -i --env-file .env postgres:16-alpine \
-  sh -c 'exec pg_restore --dbname="$POSTGRES_DSN" --clean --if-exists \
-  --no-owner --no-privileges' < /srv/flickpond-cutover.dump
-```
-
-### b. Copy MinIO to S3
-
-On the current server, export the bucket without putting credentials in the
-command line:
-
-```bash
-docker run --rm --network media_player_default --env-file .env \
-  -v /root/minio-export:/out --entrypoint sh minio/mc \
-  -c 'mc alias set old http://minio:9000 "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" && mc mirror old/videos /out'
-```
-
-Copy `/root/minio-export` to `/srv/minio-export` on the core, then:
-
-```bash
-aws s3 sync /srv/minio-export "s3://$(sed -n 's/^MINIO_BUCKET=//p' .env)/"
-```
-
-The object keys remain unchanged, so restored rows need no rewrite. Compare
-object counts and total bytes before continuing.
-
-### c. Certificates, services and DNS
-
-Copy `deploy/certbot/conf/` from the current server to the same path on the
-core. Configure the canonical `flickpond.com` TLS block and the `www` redirect,
-then:
-
-```bash
-git fetch origin
-git reset --hard <cutover-commit>
-deploy/aws/fetch-secrets.sh production
-dc up -d --build
-curl -fsS http://127.0.0.1/api/health
-```
-
-Point the `flickpond.com` A record to the core's Elastic IP. Do not widen the
-session cookie domain; `www` must redirect to the bare domain (T-24).
-
-### d. Production verification
-
-- Sign in and play an old video.
-- Upload a new 4K phone clip and play it at 2160p.
-- Complete and resume a 1 GB direct upload.
-- Confirm thumbnails and editing.
-- Delete a test account and confirm its S3 objects are gone.
-- Confirm the health alarm is armed.
-- With the queue empty, confirm the worker group returns to its scheduled
-  minimum.
-
-## 10. Rotate the operator password
-
-The old operator password appeared in chat logs. Rotate it on the AWS core
-after production verification, and on the rollback host while that host is
-retained. Enter it interactively; never place it in shell history or chat.
-
-```bash
-dc exec api python -c "
-import asyncio, getpass
-from sqlalchemy import update
-from app.database import get_session_factory
-from app.models.user import User
-from app.services.security import hash_password
-email = input('Operator email: ').strip().lower()
-password = getpass.getpass('New password (12+ characters): ')
-if len(password) < 12 or password != getpass.getpass('Again: '):
-    raise SystemExit('Too short, or the two did not match. Nothing changed.')
-async def main():
-    async with get_session_factory()() as session:
-        result = await session.execute(update(User).where(User.email == email).values(password_hash=hash_password(password)))
-        await session.commit()
-        print('Updated' if result.rowcount == 1 else 'No such user; nothing changed.')
-asyncio.run(main())
-"
-```
-
-Signing in with the old password must fail. Existing JWT sessions remain valid
-until their 30-minute maximum lifetime expires.
-
-## 11. Rollback
+## 9. Rollback
 
 Point DNS back to `47.238.64.156` and start `api`, two workers and the reaper
 there:
