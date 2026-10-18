@@ -37,6 +37,28 @@ logger = logging.getLogger("app.worker.storage")
 DEFAULT_MAX_FPS = 30
 
 
+# HDR to standard range: linearise, map primaries to BT.709, compress the
+# highlights with Hable's curve (no desaturation, so colours keep their
+# depth), then back to BT.709's gamma in TV range. The float RGB step is
+# what lets the curve work on real light levels rather than coded values.
+HDR_TO_SDR = (
+    "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
+    "tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv"
+)
+
+# What every browser plays: 8-bit 4:2:0. Without it a 10-bit or 4:2:2 source
+# makes libx264 write a profile (High 10, High 4:2:2) nothing streams.
+SDR_PIXELS = "format=yuv420p"
+
+# Tags for a tone-mapped output, so no player mistakes it for HDR.
+BT709_TAGS = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
+
+
+def sdr_filters(hdr: bool) -> list[str]:
+    """The tail of every video filter chain: tone-map if HDR, then 8-bit 4:2:0."""
+    return [HDR_TO_SDR, SDR_PIXELS] if hdr else [SDR_PIXELS]
+
+
 def fps_cap_filter(max_fps: int) -> str:
     """An FFmpeg filter that lowers the frame rate to `max_fps`, never raises it.
 
@@ -321,6 +343,7 @@ class FfmpegProcessor:
             thumbnail_path = self._take_thumbnail(
                 job_id=job_id, source_path=source_path, probe=probe, temp_dir=temp_dir
             )
+            hdr = probe.hdr if probe is not None else False
             command = [
                 self._ffmpeg_binary,
                 "-hide_banner",
@@ -329,7 +352,16 @@ class FfmpegProcessor:
                 "-i",
                 str(source_path),
                 "-vf",
-                f"{fps_cap_filter(max_fps)},scale=-2:min({self._max_height}\\,ih)",
+                # Tone-mapped after the downscale: the same picture, at a
+                # quarter of the pixels a 4K source would cost.
+                ",".join(
+                    [
+                        fps_cap_filter(max_fps),
+                        f"scale=-2:min({self._max_height}\\,ih)",
+                        *sdr_filters(hdr),
+                    ]
+                ),
+                *(BT709_TAGS if hdr else []),
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -458,8 +490,17 @@ def get_ladder_step():
     from app.worker.hls import HlsLadderBuilder
 
     settings = get_settings()
+    from functools import partial
+
+    from app.worker.probe import probe_source
+
     return HlsLadderBuilder(
         MinioObjectStore(internal_client(), bucket=bucket()),
+        prober=partial(
+            probe_source,
+            ffprobe_binary=settings.worker_ffprobe_binary,
+            timeout_seconds=settings.worker_ffprobe_timeout_seconds,
+        ),
         output_prefix=settings.worker_output_prefix,
         ffmpeg_binary=settings.worker_ffmpeg_binary,
         preset=settings.worker_ffmpeg_preset,

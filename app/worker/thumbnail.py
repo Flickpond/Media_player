@@ -15,6 +15,7 @@ from pathlib import Path
 
 from app.worker.interruption import run as run_process
 from app.worker.probe import SourceProbe
+from app.worker.storage import HDR_TO_SDR
 
 THUMBNAIL_CONTENT_TYPE = "image/jpeg"
 THUMBNAIL_FILENAME = "thumbnail.jpg"
@@ -44,6 +45,7 @@ def build_thumbnail_command(
     max_width: int,
     max_height: int,
     ffmpeg_binary: str = "ffmpeg",
+    hdr: bool = False,
 ) -> list[str]:
     # `-ss` before `-i` seeks the input to the nearest keyframe instead of
     # decoding everything up to the offset, which is what keeps this fast on
@@ -66,7 +68,9 @@ def build_thumbnail_command(
         "1",
         "-an",
         "-vf",
-        scale,
+        # Tone-mapped like the video, or an HDR source's poster frame comes
+        # out as flat and grey as the untreated video would.
+        f"{scale},{HDR_TO_SDR}" if hdr else scale,
         "-q:v",
         "4",
         "-y",
@@ -93,6 +97,7 @@ def extract_thumbnail(
         max_width=max_width,
         max_height=max_height,
         ffmpeg_binary=ffmpeg_binary,
+        hdr=getattr(probe, "hdr", False),
     )
     try:
         result = runner(

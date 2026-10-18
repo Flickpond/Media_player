@@ -85,7 +85,8 @@ def test_probe_asks_for_one_combined_entry_spec():
     assert runner.command.count("-show_entries") == 1
     spec = runner.command[runner.command.index("-show_entries") + 1]
     assert spec == (
-        "stream=width,height:stream_side_data=rotation:stream_tags=rotate:format=duration"
+        "stream=width,height,color_transfer"
+        ":stream_side_data=rotation:stream_tags=rotate:format=duration"
     )
 
 
