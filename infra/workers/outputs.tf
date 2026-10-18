@@ -4,7 +4,7 @@ output "autoscaling_group_name" {
 }
 
 output "worker_security_group_id" {
-  description = "Sprint 5 opens Postgres and Redis (RDS and ElastiCache, #62) to this group only."
+  description = "The group RDS and ElastiCache admit, once open_datastores_to_workers is on."
   value       = aws_security_group.worker.id
 }
 
@@ -13,11 +13,16 @@ output "launch_template_id" {
 }
 
 output "parameter_path" {
-  description = "Create redis-password and postgres-password under this path before the first apply."
+  description = "Workers read postgres_dsn, redis_host and redis_password here at boot; the base writes them."
   value       = local.parameter_path
 }
 
 output "image_tag" {
   description = "The commit every new worker boots."
   value       = local.image_parts.tag
+}
+
+output "interruption_test_template_id" {
+  description = "aws fis start-experiment --experiment-template-id <this>. Null unless interruption_test is on."
+  value       = one(aws_fis_experiment_template.interruption_test[*].id)
 }

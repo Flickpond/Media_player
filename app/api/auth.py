@@ -12,6 +12,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import CurrentUser
 from app.config import get_settings
@@ -52,7 +53,9 @@ async def register(credentials: Credentials, session: SessionDependency, respons
         user = await create_user(
             session,
             email=credentials.email,
-            password_hash=hash_password(credentials.password),
+            # In a thread, like verify_password below: ~220 ms of bcrypt on the
+            # event loop stalls every other request, not just this one.
+            password_hash=await run_in_threadpool(hash_password, credentials.password),
         )
     except EmailAlreadyRegisteredError:
         # 409 rather than a generic error: the caller is the person choosing
@@ -73,7 +76,12 @@ async def login(credentials: Credentials, session: SessionDependency, response: 
     # dummy hash when the user is missing so the timing does not give it away
     # either.
     candidate = user.password_hash if user else "$2b$12$" + "." * 53
-    if not verify_password(credentials.password, candidate) or user is None:
+    # bcrypt is ~220 ms of CPU. On the event loop it made logins queue behind
+    # each other and every other route queue behind them: login p90 5.8 s at
+    # 50 users (docs/login-latency-investigation.md). bcrypt releases the GIL,
+    # so in the thread pool hashes run in parallel and nothing else waits.
+    password_matches = await run_in_threadpool(verify_password, credentials.password, candidate)
+    if not password_matches or user is None:
         raise ApiUnauthorizedError("invalid email or password")
 
     _set_cookie(response, issue_token(user_id=user.id, role=user.role))

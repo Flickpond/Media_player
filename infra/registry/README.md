@@ -1,4 +1,4 @@
-# Image registry (sprint 4, Track D)
+# Image registry (Track D)
 
 Sprint 5's autoscaling workers boot from an image in ECR instead of building
 one. This root creates the repository and the role CI pushes it with. It is
@@ -16,12 +16,14 @@ run, and AWS trusts it for one repository and one branch.
 
 ## Apply
 
-Needs credentials that can create IAM roles and an OIDC provider.
+Needs credentials that can create IAM roles and an OIDC provider, and the
+state bucket from [`../bootstrap`](../bootstrap).
 
 ```bash
 cd infra/registry
 aws iam list-open-id-connect-providers   # one for token.actions.githubusercontent.com already?
-terraform init
+cp example.backend.hcl registry.backend.hcl   # gitignored; set the state bucket
+terraform init -backend-config=registry.backend.hcl
 terraform plan -out=registry.plan        # add -var create_github_oidc_provider=false if it exists
 terraform apply registry.plan
 terraform output

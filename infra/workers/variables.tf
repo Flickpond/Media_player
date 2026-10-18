@@ -15,11 +15,6 @@ variable "subnet_ids" {
   }
 }
 
-variable "security_group_id" {
-  description = "The core host's security group: workers reach Postgres and Redis through it."
-  type        = string
-}
-
 variable "instance_profile_name" {
   description = "Workers need exactly the bucket access the core host has."
   type        = string
@@ -38,21 +33,27 @@ variable "region" {
   type = string
 }
 
-# --- Not in the base outputs yet ---------------------------------------------
+# --- The managed datastores (contract 2.1) ----------------------------------
+# Only the security groups and ports. The endpoints and credentials are read
+# from Parameter Store at boot, like the core host does, so they are in
+# neither this root's state nor the launch template.
 
-variable "core_private_ip" {
-  description = <<-EOT
-    The core host's private address, where workers reach Postgres and Redis
-    in the sprint 4 shape. Becomes a base output (#62); until then:
-      terraform -chdir=../terraform state show aws_instance.app | grep private_ip
-    Replaced by the RDS and ElastiCache endpoints when the datastores move.
-  EOT
+variable "db_security_group_id" {
+  description = "RDS PostgreSQL's security group. Workers are admitted to it by a rule this root adds."
   type        = string
+}
 
-  validation {
-    condition     = can(cidrhost("${var.core_private_ip}/32", 0))
-    error_message = "An IPv4 address, e.g. 172.31.5.20."
-  }
+variable "db_port" {
+  type = number
+}
+
+variable "cache_security_group_id" {
+  description = "ElastiCache Valkey's security group. Workers are admitted to it by a rule this root adds."
+  type        = string
+}
+
+variable "cache_port" {
+  type = number
 }
 
 # --- This root's own settings ------------------------------------------------
@@ -92,11 +93,14 @@ variable "instance_types" {
   description = <<-EOT
     Graviton types the group may use, in no particular order: spot draws from
     whichever pool is cheapest and least likely to be reclaimed, so more types
-    means fewer interruptions. All 8 vCPU, the size A's timing showed encodes
-    a 4K ladder inside the job timeout.
+    means fewer interruptions. All 4 vCPU: sprint 5 sized workers at
+    c7g.xlarge once the ladder got cheaper to encode (30 fps cap, lower rungs
+    from the 1080p rendition, audio encoded once). If the Thursday 4K timing
+    misses the job timeout, set instance_types to the 2xlarge sizes in
+    workers.tfvars.
   EOT
   type        = list(string)
-  default     = ["c7g.2xlarge", "c6g.2xlarge", "c6gn.2xlarge", "m7g.2xlarge", "m6g.2xlarge"]
+  default     = ["c7g.xlarge", "c6g.xlarge", "c6gn.xlarge", "m7g.xlarge", "m6g.xlarge"]
 
   validation {
     condition     = length(var.instance_types) > 0 && alltrue([for t in var.instance_types : can(regex("^[a-z0-9]+g[a-z0-9]*\\.", t))])
@@ -105,7 +109,7 @@ variable "instance_types" {
 }
 
 variable "max_workers" {
-  description = "The cost ceiling. Each is one 8 vCPU spot instance running one job at a time."
+  description = "The cost ceiling. Each is one 4 vCPU spot instance running one job at a time."
   type        = number
   default     = 4
 
@@ -178,11 +182,17 @@ variable "alarm_topic_arn" {
 
 variable "open_datastores_to_workers" {
   description = <<-EOT
-    Adds Postgres and Redis ingress from the worker security group to the
-    datastores' security group. Off in sprint 4 (plan only). Today that group
-    is the base's app group; after #62 it is the RDS and ElastiCache groups,
-    so turning this on no longer needs any change on the core host.
+    Adds ingress from the worker security group to the RDS and ElastiCache
+    security groups. Off by default: anything that opens a datastore is
+    reviewed before it is applied, by someone other than whoever applies it
+    (docs/datastore-review.md). Nothing on the core host changes either way.
   EOT
+  type        = bool
+  default     = false
+}
+
+variable "interruption_test" {
+  description = "Creates the FIS experiment that sends one worker a spot interruption notice (fis.tf). On only for the test."
   type        = bool
   default     = false
 }

@@ -38,6 +38,9 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
       # Uncomment POSTGRES_DSN in .env to use a cloud PostgreSQL instance.
       POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://${POSTGRES_USER:-flickpond}:${POSTGRES_PASSWORD:-flickpond_dev_password}@postgres:5432/${POSTGRES_DB:-flickpond}}
+      # The worker's MP4 cap, passed here too: the API offers edit scales from
+      # it, so the two must agree or the editor offers sizes the MP4 lacks.
+      WORKER_FFMPEG_MAX_HEIGHT: ${WORKER_FFMPEG_MAX_HEIGHT:-1080}
     depends_on:
       redis:
         condition: service_healthy
@@ -84,7 +87,7 @@ services:
       # property of the image, installed by the Dockerfile at a known path.
       WORKER_FFMPEG_PRESET: ${WORKER_FFMPEG_PRESET:-veryfast}
       WORKER_FFMPEG_CRF: ${WORKER_FFMPEG_CRF:-23}
-      WORKER_FFMPEG_MAX_HEIGHT: ${WORKER_FFMPEG_MAX_HEIGHT:-720}
+      WORKER_FFMPEG_MAX_HEIGHT: ${WORKER_FFMPEG_MAX_HEIGHT:-1080}
       WORKER_FFMPEG_TIMEOUT_SECONDS: ${WORKER_FFMPEG_TIMEOUT_SECONDS:-870}
       WORKER_JOB_TIMEOUT_SECONDS: ${WORKER_JOB_TIMEOUT_SECONDS:-900}
       WORKER_OUTPUT_PREFIX: ${WORKER_OUTPUT_PREFIX:-outputs}
