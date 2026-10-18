@@ -1278,6 +1278,43 @@ describe("polling", () => {
     expect(el.player.hidden).toBe(false);
   });
 
+  it("keeps the same player while the ladder builds, though each poll re-signs the MP4", async () => {
+    const el = await loadApp();
+    mockDirectUpload();
+    let poll = 0;
+    // A presigned URL is new on every response. Keying the player on it
+    // rebuilt the box every two seconds for the whole ladder.
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({
+        id: "job-1",
+        status: "done",
+        output_url: `http://minio/out.mp4?X-Amz-Signature=${(poll += 1)}`,
+        hls_status: "pending",
+      }),
+    );
+
+    await uploadFile(el);
+    const first = el.player.querySelector("video");
+    await vi.advanceTimersByTimeAsync(10000);
+
+    expect(poll).toBeGreaterThan(3);
+    expect(el.player.querySelector("video")).toBe(first);
+
+    // The ladder arriving is the one change that does swap it.
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({
+        id: "job-1",
+        status: "done",
+        output_url: "http://minio/out.mp4?X-Amz-Signature=last",
+        hls_url: "/api/jobs/job-1/hls/master.m3u8",
+        hls_status: "ready",
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(el.player.querySelector("video")).not.toBe(first);
+  });
+
   // --- a job that never finishes (P4) -------------------------------------
 
   /** 30 polls at 2s: the point where the page starts saying it is slow. */

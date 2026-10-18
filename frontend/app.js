@@ -1406,13 +1406,18 @@ let uploadPlayerKey = null;
 /** Put the job's playable source in the upload card.
  *
  * The same job document arrives on every poll, so mounting unconditionally
- * would tear Plyr down and start playback over under the reader. Keying on the
- * URL means the MP4 that goes up first is replaced exactly once, when the
- * ladder takes its place.
+ * would tear Plyr down and start playback over under the reader. Keying on
+ * which job and which kind of source means the MP4 that goes up first is
+ * replaced exactly once, when the ladder takes its place.
+ *
+ * Not on the URL: `output_url` is presigned, so it comes back with a new
+ * signature on every poll, and keying on it rebuilt the player every two
+ * seconds for as long as the ladder took -- the box collapsing and expanding.
  */
 function showUploadPlayer(job) {
-  const key = job.hls_url ?? job.output_url ?? null;
-  if (key === null || key === uploadPlayerKey) return;
+  if (!job.hls_url && !job.output_url) return;
+  const key = `${job.id}:${job.hls_url ? "hls" : "mp4"}`;
+  if (key === uploadPlayerKey) return;
   uploadPlayerKey = key;
   mountPlayer(el.player, job);
 }
