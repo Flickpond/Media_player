@@ -19,12 +19,17 @@ from app.services.worker_wake import wake_workers
 # put a job id on the queue.
 PROCESS_JOB_TASK = "app.worker.tasks.process_job"
 BUILD_LADDER_TASK = "app.worker.tasks.build_ladder"
+HELP_ENCODE_TASK = "app.worker.tasks.help_encode"
 
 # Ladders get a queue of their own, named after the main one, so a worker can
 # list the two in priority order: an uploader waiting for their MP4 is never
 # stuck behind someone else's 4K ladder. Derived rather than configured, so
 # the API, every worker and the reaper cannot disagree about it.
 LADDER_QUEUE_SUFFIX = "-ladder"
+# Pieces of a chunked MP4 (app.worker.chunked): after uploads waiting for a
+# worker of their own, before ladders, since a piece speeds up a video an
+# uploader is already waiting on.
+CHUNK_QUEUE_SUFFIX = "-chunks"
 
 
 @lru_cache
@@ -48,6 +53,21 @@ def get_ladder_queue(connection: Redis | None = None) -> Queue:
         connection=connection or get_redis_connection(),
         default_timeout=settings.worker_job_timeout_seconds,
     )
+
+
+def get_chunk_queue(connection: Redis | None = None) -> Queue:
+    settings = get_settings()
+    return Queue(
+        settings.redis_queue + CHUNK_QUEUE_SUFFIX,
+        connection=connection or get_redis_connection(),
+        default_timeout=settings.worker_job_timeout_seconds,
+    )
+
+
+def enqueue_helper(job_id: UUID, *, queue: Queue | None = None) -> str:
+    """Ask one more worker to help encode `job_id`'s pieces."""
+    target = queue or get_chunk_queue()
+    return target.enqueue(HELP_ENCODE_TASK, str(job_id)).id
 
 
 def ladder_rq_job_id(job_id: UUID) -> str:

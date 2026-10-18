@@ -348,6 +348,27 @@ edited; see `frontend/EDITOR-COMPONENTS.md`.
 `hook(job_id, output_key)` runs in the ladder job after `hls_status` is
 `ready`. What it raises is logged and never changes the job.
 
+## Sprint 6: chunked MP4, phase 1 (A; nobody depends on it)
+
+Off unless `WORKER_CHUNKED_MP4=true`. The job row, its states and who writes
+them do not change: the job's own worker coordinates and records the result
+through `app/repositories/jobs.py` as always.
+
+- A source of `WORKER_CHUNK_MIN_DURATION_SECONDS` (60) or longer is cut into
+  pieces of about `WORKER_CHUNK_SECONDS` (10), **starting on real source
+  frames** read from its packets. A source whose frame times cannot be read
+  is encoded in one run instead.
+- The coordinator queues up to `WORKER_CHUNK_HELPERS` (3) helper jobs,
+  `app.worker.tasks.help_encode`, on **`<REDIS_QUEUE>-chunks`**. Workers take
+  queues in the order main, pieces, ladder. The queue-depth publisher counts
+  it, so waiting helpers scale the pool like any job.
+- Redis keys `flickpond:pieces:<job>:{plan,todo,inflight,done}`, deleted when
+  the job ends; S3 objects `outputs/<job>/pieces/NNNN.mp4`, deleted likewise.
+- A helper stopped by SIGTERM gives its piece back; a piece in flight longer
+  than `WORKER_CHUNK_STALE_SECONDS` (300) is encoded by the coordinator.
+- Audio is encoded once for the whole file; the video pieces are joined
+  without re-encoding.
+
 ## Shared configuration
 
 | Variable | Purpose |

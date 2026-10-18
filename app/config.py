@@ -93,6 +93,16 @@ class Settings(BaseSettings):
     # can encode 4K in time sets 2160. Never above the source either way.
     worker_hls_max_height: int = 1080
     worker_ffmpeg_timeout_seconds: int = 870
+    # Chunked MP4 (app/worker/chunked.py, sprint 6 plan 2.3). Off until a
+    # 10-minute video has been timed and its joins checked on spot workers.
+    worker_chunked_mp4: bool = False
+    worker_chunk_seconds: int = 10
+    # Shorter than this, one run is as fast: pieces cost a download each.
+    worker_chunk_min_duration_seconds: int = 60
+    # Helper jobs queued per video; the pool's size decides how many run.
+    worker_chunk_helpers: int = 3
+    # A helper's piece not done after this long is taken to be lost.
+    worker_chunk_stale_seconds: int = 300
     # The longest source the worker accepts, checked right after the probe
     # and before any encoding. By duration rather than bytes: encode time --
     # and so whether a job finishes inside the timeout above -- follows how

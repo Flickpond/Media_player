@@ -59,6 +59,16 @@ def sdr_filters(hdr: bool) -> list[str]:
     return [HDR_TO_SDR, SDR_PIXELS] if hdr else [SDR_PIXELS]
 
 
+def mp4_video_filters(max_fps: int, max_height: int, hdr: bool) -> list[str]:
+    """The MP4's video chain: cap the rate, cap the height, then 8-bit SDR.
+
+    Tone-mapped after the downscale: the same picture, at a quarter of the
+    pixels a 4K source would cost. One definition for the single encode and
+    every piece of a chunked one (app.worker.chunked), so they cannot drift.
+    """
+    return [fps_cap_filter(max_fps), f"scale=-2:min({max_height}\\,ih)", *sdr_filters(hdr)]
+
+
 def fps_cap_filter(max_fps: int) -> str:
     """An FFmpeg filter that lowers the frame rate to `max_fps`, never raises it.
 
@@ -230,6 +240,7 @@ class FfmpegProcessor:
         prober=None,
         source_check=None,
         thumbnailer=None,
+        chunked=None,
     ) -> None:
         self._store = store
         self._output_prefix = output_prefix.strip("/")
@@ -254,6 +265,9 @@ class FfmpegProcessor:
         # Track C's poster frame: `thumbnailer(source_path, output_path, probe)`
         # writes a JPEG. Best-effort; see `_take_thumbnail`.
         self._thumbnailer = thumbnailer
+        # app.worker.chunked.ChunkedMp4, when WORKER_CHUNKED_MP4 is on: a long
+        # source is encoded in pieces across workers instead of in one run.
+        self._chunked = chunked
 
     def output_key_for(self, *, job_id: UUID, source_key: str) -> str:
         stem = PurePosixPath(source_key).stem or str(job_id)
@@ -344,60 +358,21 @@ class FfmpegProcessor:
                 job_id=job_id, source_path=source_path, probe=probe, temp_dir=temp_dir
             )
             hdr = probe.hdr if probe is not None else False
-            command = [
-                self._ffmpeg_binary,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-i",
-                str(source_path),
-                "-vf",
-                # Tone-mapped after the downscale: the same picture, at a
-                # quarter of the pixels a 4K source would cost.
-                ",".join(
-                    [
-                        fps_cap_filter(max_fps),
-                        f"scale=-2:min({self._max_height}\\,ih)",
-                        *sdr_filters(hdr),
-                    ]
-                ),
-                *(BT709_TAGS if hdr else []),
-                "-c:v",
-                "libx264",
-                "-preset",
-                self._preset,
-                "-crf",
-                str(self._crf),
-                "-c:a",
-                "aac",
-                "-movflags",
-                "+faststart",
-                "-y",
-                str(output_path),
-            ]
-            try:
-                result = self._runner(
-                    command,
-                    capture_output=True,
-                    text=True,
-                    timeout=self._timeout_seconds,
-                    check=False,
+            chunked = (
+                self._chunked is not None
+                and self._chunked.wants(probe)
+                and self._chunked.encode(
+                    job_id=job_id,
+                    source_key=source_key,
+                    source_path=source_path,
+                    probe=probe,
+                    max_fps=max_fps,
+                    output_path=output_path,
+                    work_dir=temp_dir,
                 )
-            except subprocess.TimeoutExpired as exc:
-                raise ObjectStoreError(
-                    f"transcoding timed out after {self._timeout_seconds} seconds",
-                    user_message=(
-                        "processing took too long and was stopped after about "
-                        f"{self._timeout_seconds // 60} minutes; "
-                        "try a shorter or smaller video"
-                    ),
-                ) from exc
-            if result.returncode != 0:
-                stderr_lines = (result.stderr or "").strip().splitlines()
-                detail = "\n".join(stderr_lines[-5:])[:1000] or "no FFmpeg error output"
-                # `detail` is up to 1000 characters of FFmpeg stderr, naming the
-                # temp path it was working on. Diagnostic only.
-                raise ObjectStoreError(f"FFmpeg failed: {detail}", user_message=UNPROCESSABLE_VIDEO)
+            )
+            if not chunked:
+                self._encode_once(source_path, output_path, max_fps=max_fps, hdr=hdr)
             if not output_path.is_file():
                 raise ObjectStoreError(
                     "FFmpeg completed without producing an output file",
@@ -416,6 +391,55 @@ class FfmpegProcessor:
             )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _encode_once(self, source_path: Path, output_path: Path, *, max_fps: int, hdr: bool):
+        """The whole MP4 in one FFmpeg run."""
+        command = [
+            self._ffmpeg_binary,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(source_path),
+            "-vf",
+            ",".join(mp4_video_filters(max_fps, self._max_height, hdr)),
+            *(BT709_TAGS if hdr else []),
+            "-c:v",
+            "libx264",
+            "-preset",
+            self._preset,
+            "-crf",
+            str(self._crf),
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+            "-y",
+            str(output_path),
+        ]
+        try:
+            result = self._runner(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=self._timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ObjectStoreError(
+                f"transcoding timed out after {self._timeout_seconds} seconds",
+                user_message=(
+                    "processing took too long and was stopped after about "
+                    f"{self._timeout_seconds // 60} minutes; "
+                    "try a shorter or smaller video"
+                ),
+            ) from exc
+        if result.returncode != 0:
+            stderr_lines = (result.stderr or "").strip().splitlines()
+            detail = "\n".join(stderr_lines[-5:])[:1000] or "no FFmpeg error output"
+            # `detail` is up to 1000 characters of FFmpeg stderr, naming the
+            # temp path it was working on. Diagnostic only.
+            raise ObjectStoreError(f"FFmpeg failed: {detail}", user_message=UNPROCESSABLE_VIDEO)
 
 
 class CopyProcessor:
@@ -481,6 +505,29 @@ def get_processing_step() -> ProcessingStep:
             max_height=settings.thumbnail_max_height,
             timeout_seconds=settings.worker_ffprobe_timeout_seconds,
         ),
+        chunked=_chunked_mp4(store, settings) if settings.worker_chunked_mp4 else None,
+    )
+
+
+def _chunked_mp4(store: "ObjectStore", settings):
+    from app.queue import enqueue_helper, get_redis_connection
+    from app.worker.chunked import ChunkedMp4
+
+    return ChunkedMp4(
+        store,
+        get_redis_connection(),
+        enqueue_helper=enqueue_helper,
+        output_prefix=settings.worker_output_prefix,
+        ffmpeg_binary=settings.worker_ffmpeg_binary,
+        ffprobe_binary=settings.worker_ffprobe_binary,
+        preset=settings.worker_ffmpeg_preset,
+        crf=settings.worker_ffmpeg_crf,
+        max_height=settings.worker_ffmpeg_max_height,
+        chunk_seconds=settings.worker_chunk_seconds,
+        min_duration_seconds=settings.worker_chunk_min_duration_seconds,
+        helpers=settings.worker_chunk_helpers,
+        stale_after_seconds=settings.worker_chunk_stale_seconds,
+        timeout_seconds=settings.worker_ffmpeg_timeout_seconds,
     )
 
 

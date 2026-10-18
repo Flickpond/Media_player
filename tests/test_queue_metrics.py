@@ -70,7 +70,8 @@ def test_waiting_jobs_are_counted_on_each_queue_a_worker_takes_from(connection, 
 
     depths = by_queue(read_depths(connection))
 
-    assert set(depths) == {main, ladder}
+    # The pieces queue is measured too, so helpers count toward scaling.
+    assert set(depths) == {main, f"{main}-chunks", ladder}
     assert (depths[main].queued, depths[ladder].queued) == (2, 1)
     assert depths[main].running == depths[ladder].running == 0
 

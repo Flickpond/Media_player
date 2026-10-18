@@ -24,7 +24,7 @@ from rq import Queue
 from rq.registry import StartedJobRegistry
 
 from app.config import get_settings
-from app.queue import get_ladder_queue, get_queue, get_redis_connection
+from app.queue import get_chunk_queue, get_ladder_queue, get_queue, get_redis_connection
 from app.worker.__main__ import configure_logging
 
 logger = logging.getLogger("app.metrics.queue_depth")
@@ -62,7 +62,11 @@ def read_depths(connection: Redis, *, now: float | None = None) -> list[QueueDep
     now = time.time() if now is None else now
     return [
         QueueDepth(queue=queue.name, queued=queue.count, running=_running(queue, now))
-        for queue in (get_queue(connection), get_ladder_queue(connection))
+        for queue in (
+            get_queue(connection),
+            get_chunk_queue(connection),
+            get_ladder_queue(connection),
+        )
     ]
 
 
