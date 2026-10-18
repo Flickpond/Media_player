@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job import HlsStatus, Job, JobStatus
@@ -445,3 +445,49 @@ async def mark_stale_failed(session: AsyncSession, job_id: UUID) -> Job | None:
         return None
     await session.commit()
     return job
+
+
+# Chains are one hop for every edit made since sprint 5 and a few hops for
+# older ones; a bound so a corrupt cycle can never loop.
+MAX_EDIT_CHAIN = 8
+
+
+async def resolve_edit_roots(session: AsyncSession, jobs: list[Job]) -> dict[UUID, Job]:
+    """Each job's original upload, by job id. One query per hop, not per job.
+
+    An edit made since sprint 5 shares its upload's `source_key`; an older
+    one's `source_key` is its parent's `output_key`. Both are followed, only
+    within the same owner. A job whose chain is broken -- its upload was
+    deleted -- maps to the furthest ancestor still there, possibly itself;
+    an upload maps to itself.
+    """
+    roots = {job.id: job for job in jobs}
+    pending = {job.id: job for job in jobs if job.operations is not None}
+    for _ in range(MAX_EDIT_CHAIN):
+        if not pending:
+            break
+        keys = {job.source_key for job in pending.values()}
+        owners = {job.owner_id for job in pending.values()}
+        rows = (
+            await session.execute(
+                select(Job).where(
+                    Job.owner_id.in_(owners),
+                    or_(
+                        and_(Job.operations.is_(None), Job.source_key.in_(keys)),
+                        Job.output_key.in_(keys),
+                    ),
+                )
+            )
+        ).scalars().all()
+        uploads = {row.source_key: row for row in rows if row.operations is None}
+        outputs = {row.output_key: row for row in rows if row.output_key}
+        still_pending = {}
+        for job_id, current in pending.items():
+            parent = uploads.get(current.source_key) or outputs.get(current.source_key)
+            if parent is None or parent.owner_id != current.owner_id or parent.id == current.id:
+                continue
+            roots[job_id] = parent
+            if parent.operations is not None:
+                still_pending[job_id] = parent
+        pending = still_pending
+    return roots

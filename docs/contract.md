@@ -97,10 +97,12 @@ POST /upload                    // multipart: file, optional max_fps=30|60 (defa
 GET /jobs/{id}
   200 { "id", "filename", "status", "hls_status",
         "output_url"?, "hls_url"?, "width"?, "height"?, "duration_seconds"?,
-        "thumbnail_url"?, "edit_options"?, "error"? }
+        "thumbnail_url"?, "max_fps", "edit_source"?, "edit_options"?, "error"? }
   404 { "error": "not found" }
 
-  edit_options: { "downscale": [480, 360, 240], "upscale": [1080, 1440, 2160] }
+  edit_source:  { "job_id", "width"?, "height"?, "duration_seconds"? }
+                // done jobs only: the original upload every edit starts from
+  edit_options: { "downscale": [1440, 1080, 720, 480, 360, 240], "upscale": [] }
                 // only on a done job with known dimensions; see "Media rules"
 
 POST /jobs/{id}/retry
@@ -274,9 +276,13 @@ jobs have none yet.
 **Scale rules.** An edit may scale only to a rung: 240, 360, 480, 720, 1080,
 1440 or 2160. Downscale must be below, and upscale above, the height of the
 frame it is applied to: the crop's height when there is a crop, otherwise
-the height of the copy the edit starts from. Today that copy is the MP4, so
-for an upload it is `min(height, WORKER_FFMPEG_MAX_HEIGHT)`; for an edit job
-it is the edit's own stored `height`. Crop or scale combined with MP3 is
+the height of the file the edit starts from. **Since sprint 5 that is the
+original upload** (`edit_source`), not its MP4: a 4K upload can be scaled down
+to any rung below 2160 and has nothing to scale up to. An edit of an edit is
+a fresh edit *of the original*, so the editor plays `edit_source` and its crop
+rectangle (pixels) and clip range (seconds) are measured against it. Only an
+edit whose upload was deleted falls back to editing its own output, at its
+own stored `height`. Crop or scale combined with MP3 is
 refused. `edit_options` on the job lists exactly the heights these rules
 accept, and the API answers anything else with a 422 before creating a job.
 With no stored dimensions the API checks only the rung, and the worker
