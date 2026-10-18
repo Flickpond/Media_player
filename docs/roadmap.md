@@ -245,10 +245,29 @@ into chunks of a few seconds, encode every chunk as its own job across all
 workers at once, then join them with one final job. It fits our queue
 directly, and it gives the autoscaling group a visible reason to scale out.
 
-- Split at keyframes, so chunks join without re-encoding.
-- The joining job waits until every chunk job has finished — RQ supports job dependencies.
-- A failed chunk retries on its own, without restarting the whole video. This is also why it pairs well with cheap spot instances.
-- Every chunk uses identical encoder settings, so no seams show where they join.
+**Phase 1, the MP4, is built (sprint 6, #95)**, behind `WORKER_CHUNKED_MP4`.
+What it settled, against a single encode frame by frame:
+
+- Pieces start on **real source frames** read from the packets, not on
+  fixed seconds: a cut between frames (every boundary at 29.97 fps) added
+  or lost a frame.
+- MP4 pieces joined by the concat demuxer with each piece's **measured
+  duration**; MPEG-TS pieces overlap at every join.
+- Audio encoded once for the whole file, so no clicks at the joins.
+- The job's own worker coordinates; helpers are optional, and a stopped or
+  dead one's piece is done by someone else. No RQ dependencies needed.
+
+**Phase 2 (sprint 7):**
+
+- **The ladder in pieces**, which also gives **720p first**: early rungs
+  can be published as their pieces finish, without a second decode of the
+  source. (Doing 720p-first on today's single ladder run would decode a 4K
+  source twice and needs a "partly ready" `hls_status`.)
+- **One frame-rate schedule for the whole video.** When pieces also halve
+  the rate (60 → 30), each restarts the drop schedule, so some stretches keep
+  the neighbouring source frame, 1/60 s away. Not a seam, but not identical
+  to one encode: slot-aligned windows with a frame of margin and a trim
+  would make it so.
 
 ### Delivery at scale
 
