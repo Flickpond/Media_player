@@ -11,10 +11,22 @@ COPY alembic.ini ./
 COPY migrations ./migrations
 
 # Pick up Debian security fixes the slim base image has not been rebuilt with yet.
+#
+# Then drop what FFmpeg's package chain brings but a command-line encode never
+# loads: Mesa's GPU drivers (LLVM, gallium, z3 -- about 190 MB) are opened only
+# by an OpenGL context, which nothing here creates; `ldd` on ffmpeg and ffprobe
+# lists none of them. Every spot worker pulls this image as it boots, so its
+# size is part of the first job's wait. The version checks make the build fail
+# here, not on a worker, if that ever stops being true.
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /usr/lib/*-linux-gnu/libLLVM*.so* /usr/lib/*-linux-gnu/libgallium*.so* \
+        /usr/lib/*-linux-gnu/libz3.so* \
+    && rm -rf /usr/share/doc /usr/share/man \
+    && ffmpeg -hide_banner -version >/dev/null \
+    && ffprobe -hide_banner -version >/dev/null
 
 RUN python -m pip install --no-cache-dir .
 
