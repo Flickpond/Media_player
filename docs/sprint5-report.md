@@ -16,7 +16,7 @@ edits from the original.
 
 | | |
 |---|---|
-| Deployed at | **<https://flickpond.com>** — still Alibaba ECS `47.238.64.156`, at `473f117` (sprint 4). **AWS staging** — <https://47-128-86-77.sslip.io> — runs `main` with everything below |
+| Deployed at | **<https://flickpond.com>** — still Alibaba ECS `47.238.64.156`, at `735da33` (#80, deployed during the sprint). **AWS staging** — <https://47-128-86-77.sslip.io> — runs `main` with everything below |
 | Tests | **1,012 pass at `77c6185`:** 766 Python with the Postgres suite (694 without it), 246 frontend |
 | Merged this sprint | 20 PRs, #70 – #89, from all five tracks. #70 – #80 merged on 10 October, ahead of the window |
 | 4K end to end | **On staging, a real 4K HDR phone clip** (384 MB, 2 min 7 s, AV1 10-bit): MP4 ready in **5 min 25 s**, the full ladder 360p – 2160p **13 min 26 s** later, on one spot worker |
@@ -181,7 +181,7 @@ and on MP4-or-ladder; a test where each poll re-signs fails on the old code.
 
 ## 5. Known limitations
 
-- **Production is still on Alibaba**, at sprint 4's `473f117`. The cutover
+- **Production is still on Alibaba**, at `735da33` (#80). The cutover
   runbook is rehearsed; the data move was restored into staging's RDS.
 - **Overnight, the first job waits about 3½ minutes** for a spot worker.
   A warm pool (sprint 6) should bring it near one minute.
