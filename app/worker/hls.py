@@ -389,7 +389,9 @@ class HlsLadderBuilder:
                 )
             if probe.frame_rate:
                 rate = min(float(max_fps), probe.frame_rate)
-                master.write_text(
+                # A fresh mkdtemp directory and a constant file name: no part
+                # of this path comes from a request.
+                master.write_text(  # NOSONAR
                     label_frame_rates(master.read_text(encoding="utf-8"), rate),
                     encoding="utf-8",
                 )

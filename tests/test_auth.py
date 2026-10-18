@@ -51,7 +51,8 @@ def test_a_wrong_password_does_not_verify():
 
 def test_the_same_password_hashes_differently_each_time():
     """A shared salt would make identical passwords visibly identical."""
-    assert hash_password("same") != hash_password("same")
+    first, second = hash_password("same"), hash_password("same")
+    assert first != second
 
 
 def test_a_password_past_bcrypt_s_limit_is_refused_rather_than_truncated():
