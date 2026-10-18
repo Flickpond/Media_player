@@ -162,7 +162,7 @@ curl -sS -o /dev/null -w 'www redirect: %{http_code} -> %{redirect_url}\n' \
 if [[ $mode == cutover ]]; then
   step "Done. Now, at Spaceship: set the A record for $DOMAIN (and www) to $CORE_IP."
   echo "Production's writers stay stopped; its page still serves the old data until DNS moves."
-  echo "Rollback: docs/aws-cutover.md, section 11."
+  echo "Rollback: docs/aws-cutover.md, section 9."
 else
   step "Rehearsal done. Production was not changed; DNS still points at Alibaba."
 fi

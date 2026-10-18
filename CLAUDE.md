@@ -1,7 +1,7 @@
 # Flickpond — working notes
 
 Asynchronous video upload and processing platform. Five-person team project;
-sprint 2 is complete and deployed.
+sprint 5 is complete, and production runs on AWS since sprint 6.
 
 ```
 browser -> nginx -> FastAPI -> MinIO + PostgreSQL + Redis/RQ -> worker (1..N)
@@ -85,29 +85,48 @@ Sprint 1 split five ways and ownership follows the code into `main`:
 
 ## Deployment
 
-**<https://flickpond.com>** — Alibaba ECS `47.238.64.156` (cn-hongkong, so no
-ICP filing needed), tracking `origin/main` at `/root/Media_player`. Eight
-containers: nginx, api, 2 workers, reaper, postgres, redis, minio.
+**<https://flickpond.com>** — AWS `ap-southeast-1` since **19 Oct 2026**
+(sprint 6 cutover, `docs/aws-cutover.md`). The stack proven as staging became
+production, so its AWS resources keep `staging` in their names.
 
-TLS via Let's Encrypt, renewed automatically; 80 redirects to 443. Sign-in is
-the app's own.
+| Part | What |
+|---|---|
+| Core `47.128.86.77` (Elastic IP) | `t4g.small`, `/srv/Media_player`: nginx, api, reaper, queue-metrics. No workers, no local datastores |
+| Datastores | RDS PostgreSQL and ElastiCache Valkey, private, TLS-only. Secrets in SSM `/flickpond/staging/*` |
+| Video | S3 `flickpond-staging-videos-919e62dc`; HLS segments through CloudFront |
+| Workers | Spot group `flickpond-staging-workers`, 0–4, booting `flickpond/worker:<sha>` from ECR. One by day (08–24 Asia/Shanghai), none overnight; the API wakes it when a job is queued |
+| Infra | `infra/terraform` (base), `infra/registry`, `infra/workers`; state in S3 |
+
+TLS via Let's Encrypt on the core, renewed by the `certbot` service; 80
+redirects to 443; `www` redirects to the bare domain (T-24).
+
+Deploy the core (SSH from PowerShell — Git Bash's ssh cannot read this key):
 
 ```bash
-ssh -i <key>.pem root@47.238.64.156
-cd /root/Media_player
-git fetch origin && git reset --hard origin/main      # fetch first (T-20)
-docker compose up -d --build --scale worker=2         # both flags matter
+ssh -i ~/.ssh/flickpond-staging.pem ec2-user@47.128.86.77
+cd /srv/Media_player
+sudo git fetch origin && sudo git reset --hard origin/main     # fetch first (T-20)
+sudo bash deploy/aws/fetch-secrets.sh staging                  # .env from SSM
+sudo docker compose -f docker-compose.yml -f deploy/aws/compose.aws.yml \
+  -f deploy/aws/compose.core.yml up -d --build                 # --build (T-21)
 ```
 
-**`--build`** or a code change silently will not ship (T-21). **`--scale
-worker=2`** or the second worker silently disappears (T-23) — the replica count
-is not in `docker-compose.yml`.
+**Workers do not deploy with the core.** They boot the image the launch
+template pins: after a worker change, `infra/workers`'s `worker_image` moves to
+the new commit's tag (CI pushes one per merge to `main`) and is applied.
 
 Verify by asking the application, not the environment:
 
 ```bash
-docker compose exec api python -c "from app.config import get_settings; print(get_settings().minio_public_endpoint)"
+sudo docker compose -f docker-compose.yml -f deploy/aws/compose.aws.yml \
+  -f deploy/aws/compose.core.yml exec api python -c \
+  "from app.config import get_settings as g; s=g(); print(s.worker_group_name, s.redis_ssl)"
+curl -fsS https://flickpond.com/api/health
 ```
+
+**Rollback until 26 Oct 2026:** the Alibaba host `47.238.64.156` is kept
+untouched with its writers stopped — `docs/aws-cutover.md` §9. Then one final
+dump, and it is shut down.
 
 ## Conventions
 
