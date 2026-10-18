@@ -30,7 +30,6 @@ mock_provider "aws" {
 variables {
   vpc_id                  = "vpc-0123456789abcdef0"
   subnet_ids              = ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"]
-  instance_profile_name   = "flickpond-staging-app"
   app_role_name           = "flickpond-staging-app"
   bucket_name             = "flickpond-staging-videos-abcd1234"
   region                  = "ap-southeast-1"
@@ -228,10 +227,10 @@ run "a_stopping_worker_gets_100_seconds_to_give_its_job_back" {
 
   assert {
     condition = anytrue([
-      for s in data.aws_iam_policy_document.workers.statement :
+      for s in data.aws_iam_policy_document.worker.statement :
       s.sid == "FinishDrainingThisGroup" && s.actions == toset(["autoscaling:CompleteLifecycleAction"]) && length(s.resources) == 1
     ])
-    error_message = "Completing the lifecycle action is allowed on this group only: the core host shares the role."
+    error_message = "Completing the lifecycle action is allowed on this group only."
   }
 }
 
@@ -361,5 +360,51 @@ run "the_interruption_experiment_warns_one_worker_of_this_group_two_minutes_out"
   assert {
     condition     = strcontains(aws_iam_role_policy.interruption_test[0].policy, "\"ec2:ResourceTag/aws:autoscaling:groupName\":\"flickpond-staging-workers\"")
     error_message = "The experiment's role may interrupt only this group's instances."
+  }
+}
+
+run "workers_have_a_role_of_their_own_and_boot_fast" {
+  command = plan
+
+  expect_failures = [check.workers_can_reach_the_datastores]
+
+  assert {
+    condition     = aws_iam_role.worker.name == "flickpond-staging-worker" && aws_iam_instance_profile.worker.role == aws_iam_role.worker.name
+    error_message = "Workers should have their own role and instance profile."
+  }
+
+  assert {
+    condition     = aws_launch_template.worker.iam_instance_profile[0].name == aws_iam_instance_profile.worker.name
+    error_message = "The launch template should use the workers' own profile, not the core's."
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.workers.role == "flickpond-staging-app" && aws_iam_role_policy.worker.name == "worker"
+    error_message = "The core keeps one inline policy from here; the workers have a policy of their own."
+  }
+
+  assert {
+    condition = alltrue([
+      for snippet in ["command -v docker >/dev/null || dnf install -y docker", "systemctl disable --now ecs"] :
+      strcontains(base64decode(aws_launch_template.worker.user_data), snippet)
+    ])
+    error_message = "User data should install only what the image lacks, and stop the ECS agent."
+  }
+
+  assert {
+    condition = alltrue([
+      for s in data.aws_iam_policy_document.worker.statement :
+      length(s.resources) == 3 && alltrue([for r in s.resources : !endswith(r, "*")])
+      if s.sid == "ReadTheConnectionSettings"
+    ])
+    error_message = "Workers read exactly the three connection settings, never the whole parameter path (the CloudFront key lives there)."
+  }
+
+  assert {
+    condition = anytrue([
+      for s in data.aws_iam_policy_document.core.statement :
+      s.sid == "WakeThisGroup" && s.actions == toset(["autoscaling:SetDesiredCapacity"]) && length(s.resources) == 1
+    ])
+    error_message = "The core may wake this group and no other."
   }
 }

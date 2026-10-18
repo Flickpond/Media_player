@@ -41,6 +41,9 @@ services:
       CLOUDFRONT_DOMAIN: ${CLOUDFRONT_DOMAIN:-}
       CLOUDFRONT_KEY_PAIR_ID: ${CLOUDFRONT_KEY_PAIR_ID:-}
       CLOUDFRONT_PRIVATE_KEY_B64: ${CLOUDFRONT_PRIVATE_KEY_B64:-}
+      # Woken from zero as a job is queued (app/services/worker_wake.py).
+      WORKER_GROUP_NAME: ${WORKER_GROUP_NAME:-}
+      WORKER_GROUP_REGION: ${AWS_REGION:-}
 
   worker:
     # A stopped worker gives its job back (app.worker.interruption) in a few
@@ -65,3 +68,6 @@ services:
       # Must outlast the longest job, or the reaper fails a job that is
       # still legitimately encoding.
       REAPER_LEASE_SECONDS: ${REAPER_LEASE_SECONDS:-2400}
+      # A job the reaper puts back can wake an empty pool too.
+      WORKER_GROUP_NAME: ${WORKER_GROUP_NAME:-}
+      WORKER_GROUP_REGION: ${AWS_REGION:-}

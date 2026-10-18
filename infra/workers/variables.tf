@@ -15,13 +15,8 @@ variable "subnet_ids" {
   }
 }
 
-variable "instance_profile_name" {
-  description = "Workers need exactly the bucket access the core host has."
-  type        = string
-}
-
 variable "app_role_name" {
-  description = "The role behind instance_profile_name. This root attaches its extra permissions here, as a separate policy."
+  description = "The core host's role. This root adds what the core does about workers (publish queue depth, wake the group) as one inline policy; workers have a role of their own (iam.tf)."
   type        = string
 }
 

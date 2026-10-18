@@ -12,6 +12,7 @@ from redis import Redis
 from rq import Queue
 
 from app.config import get_settings
+from app.services.worker_wake import wake_workers
 
 # Enqueue by string reference rather than by importing the callable: the API
 # process should not have to import the worker's MinIO dependencies just to
@@ -63,6 +64,9 @@ def enqueue_job(job_id: UUID, *, queue: Queue | None = None) -> str:
     """
     target = queue or get_queue()
     enqueued = target.enqueue(PROCESS_JOB_TASK, str(job_id), job_id=str(job_id))
+    # Overnight the pool is at zero: start a worker now rather than after
+    # the scale-out alarm's two minutes of samples. Best-effort, never raises.
+    wake_workers(target.connection)
     return enqueued.id
 
 
