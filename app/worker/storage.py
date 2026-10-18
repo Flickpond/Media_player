@@ -573,7 +573,16 @@ def _chunked_mp4(store: "ObjectStore", settings):
         stale_after_seconds=settings.worker_chunk_stale_seconds,
         timeout_seconds=settings.worker_ffmpeg_timeout_seconds,
         progress=_progress_reporter(),
+        wake=_helper_waker(),
     )
+
+
+def _helper_waker():
+    from app.queue import get_redis_connection
+    from app.services.worker_wake import wake_workers
+
+    connection = get_redis_connection()
+    return lambda workers: wake_workers(connection, at_least=workers)
 
 
 @lru_cache

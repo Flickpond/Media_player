@@ -1345,6 +1345,16 @@ describe("polling", () => {
     expect(el.status.textContent).toContain("job-1");
   });
 
+  it("keeps showing the percentage of a long encode instead of calling it slow", async () => {
+    const el = await pollReturning({ status: "processing", progress: 37 });
+
+    await vi.advanceTimersByTimeAsync(SLOW_AFTER_MS);
+
+    // A 4K encode takes minutes; a worker reporting progress is not stuck.
+    expect(el.status.textContent).toBe("Processing... 37%");
+    expect(el.jobActions.hidden).toBe(false);
+  });
+
   it("hands the form back so a stuck job does not lock the page", async () => {
     const el = await pollReturning({ status: "processing" });
     expect(el.jobActions.hidden).toBe(true);

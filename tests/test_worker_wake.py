@@ -103,3 +103,36 @@ def test_queueing_a_job_wakes_an_empty_pool(group, redis, monkeypatch):
 
     assert len(aws.set_calls) == 1
     assert queue.count == 1
+
+
+def test_a_coordinator_is_given_workers_for_its_helpers(group, redis):
+    aws = FakeAutoscaling(desired=1)
+
+    assert wake_workers(redis, client=aws, at_least=4) is True
+    assert aws.set_calls[-1]["DesiredCapacity"] == 4
+
+
+def test_never_past_the_groups_maximum_and_never_down(group, redis):
+    class Capped(FakeAutoscaling):
+        def describe_auto_scaling_groups(self, AutoScalingGroupNames):
+            found = super().describe_auto_scaling_groups(AutoScalingGroupNames)
+            found["AutoScalingGroups"][0]["MaxSize"] = 4
+            return found
+
+    aws = Capped(desired=0)
+    wake_workers(redis, client=aws, at_least=9)
+    assert aws.set_calls[-1]["DesiredCapacity"] == 4
+
+    busy = Capped(desired=4)
+    assert wake_workers(fakeredis.FakeRedis(), client=busy, at_least=2) is False
+    assert busy.set_calls == []
+
+
+def test_the_apis_one_worker_does_not_swallow_a_coordinators_four(group, redis):
+    aws = FakeAutoscaling(desired=0)
+
+    wake_workers(redis, client=aws)
+    aws.desired = 1
+    wake_workers(redis, client=aws, at_least=4)
+
+    assert [call["DesiredCapacity"] for call in aws.set_calls] == [1, 4]

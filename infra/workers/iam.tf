@@ -97,6 +97,20 @@ data "aws_iam_policy_document" "worker" {
     actions   = ["autoscaling:CompleteLifecycleAction"]
     resources = [aws_autoscaling_group.worker.arn]
   }
+
+  # A chunked MP4's coordinator starts workers for the helpers it queues
+  # (app/services/worker_wake.py). Up only, and never past max_size.
+  statement {
+    sid       = "StartWorkersForHelpers"
+    actions   = ["autoscaling:SetDesiredCapacity"]
+    resources = [aws_autoscaling_group.worker.arn]
+  }
+
+  statement {
+    sid       = "SeeHowManyAreRunning"
+    actions   = ["autoscaling:DescribeAutoScalingGroups"]
+    resources = ["*"] # Describe* has no resource-level permissions
+  }
 }
 
 resource "aws_iam_role_policy" "worker" {

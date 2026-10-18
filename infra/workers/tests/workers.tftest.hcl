@@ -407,4 +407,17 @@ run "workers_have_a_role_of_their_own_and_boot_fast" {
     ])
     error_message = "The core may wake this group and no other."
   }
+
+  assert {
+    condition = anytrue([
+      for s in data.aws_iam_policy_document.worker.statement :
+      s.sid == "StartWorkersForHelpers" && s.actions == toset(["autoscaling:SetDesiredCapacity"]) && length(s.resources) == 1
+    ])
+    error_message = "A coordinator may start workers in this group and no other."
+  }
+
+  assert {
+    condition     = strcontains(base64decode(aws_launch_template.worker.user_data), "WORKER_GROUP_NAME=flickpond-staging-workers")
+    error_message = "Workers need their group's name to start workers for their helpers."
+  }
 }

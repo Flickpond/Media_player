@@ -297,6 +297,7 @@ class ChunkedMp4:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         progress: Callable[[UUID, float], None] | None = None,
+        wake: Callable[[int], object] | None = None,
     ) -> None:
         self._store = store
         self._redis = connection
@@ -313,6 +314,9 @@ class ChunkedMp4:
         self._runner = runner
         self._clock, self._sleep = clock, sleep
         self._progress = progress
+        # app.services.worker_wake: helpers are only useful if workers start
+        # for them now, not when the scale-out alarm notices the queue.
+        self._wake = wake
 
     def wants(self, probe) -> bool:
         """Long enough that pieces pay for their overhead."""
@@ -357,8 +361,11 @@ class ChunkedMp4:
         board.open(plan)
         started = self._clock()
         try:
-            for _ in range(min(self._helpers, plan.count - 1)):
+            helpers = min(self._helpers, plan.count - 1)
+            for _ in range(helpers):
                 self._enqueue_helper(job_id)
+            if self._wake is not None and helpers:
+                self._wake(1 + helpers)
             logger.info("job %s: %d pieces of about %ss", job_id, plan.count, self._chunk_seconds)
             audio = self._encode_audio(source_path, work_dir)
             mine = self._encode_until_all_done(plan, board, source_path, work_dir, started)

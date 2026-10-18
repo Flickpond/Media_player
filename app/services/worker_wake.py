@@ -1,14 +1,18 @@
-"""Start a spot worker the moment a job is queued while the pool is at zero.
+"""Start spot workers as soon as there is work, not after the alarm notices.
 
-The scale-out alarm needs two one-minute samples of a waiting job before it
-adds a worker, about 85 s of an overnight cold start's 3 min 30 s (sprint 5
-report, §3). This asks for one worker as soon as the job is queued instead.
-The alarm stays as it was: it adds workers under load, and it still starts
-one if this call fails, so a failure here only costs the 85 s back.
+The scale-out alarm needs two one-minute samples of waiting work before it
+adds a worker. Two callers ask directly instead:
 
-Off unless `WORKER_GROUP_NAME` is set: local stacks and the Alibaba host have
-no group to wake. Only from zero to one -- how many workers a busy queue
-needs stays the scaling policy's decision, not the API's.
+* the API, when a job is queued and the pool is at zero: one worker, about
+  85 s off an overnight cold start's 3 min 30 s (sprint 5 report, §3);
+* a chunked MP4's coordinator, when it queues helpers: enough workers for
+  them, or they arrive after a two-minute video is already done (measured
+  on flickpond.com, 19 Oct: the second worker launched 3.5 min in).
+
+Only ever up, to `at_least` and never past the group's maximum; scaling in
+stays the idle alarm's. The alarm still adds workers if a call here fails, so
+a failure only costs the minutes back. Off unless `WORKER_GROUP_NAME` is set:
+local stacks have no group to wake.
 """
 
 import logging
@@ -26,30 +30,37 @@ WAKE_KEY = "flickpond:worker-wake"
 WAKE_EVERY_SECONDS = 60
 
 
-def wake_workers(connection: Redis, *, client=None) -> bool:
-    """Ask for one worker if the group has none. True if it asked.
+def wake_workers(connection: Redis, *, client=None, at_least: int = 1) -> bool:
+    """Ask for `at_least` workers if the group wants fewer. True if it asked.
 
-    Never raises: it runs in the request that queued the job, and that
-    request has already succeeded.
+    Never raises: callers have already done their real work (queued the job,
+    queued the helpers) and this only makes it start sooner.
     """
     settings = get_settings()
     group = settings.worker_group_name
     if not group:
         return False
     try:
-        if not connection.set(WAKE_KEY, "1", nx=True, ex=WAKE_EVERY_SECONDS):
+        # One throttle per size asked for: the API's "one" a moment ago must
+        # not swallow a coordinator's "four".
+        key = WAKE_KEY if at_least == 1 else f"{WAKE_KEY}:{at_least}"
+        if not connection.set(key, "1", nx=True, ex=WAKE_EVERY_SECONDS):
             return False
         client = client or boto3.client(
             "autoscaling", region_name=settings.worker_group_region or None
         )
         found = client.describe_auto_scaling_groups(AutoScalingGroupNames=[group])
         groups = found.get("AutoScalingGroups") or []
-        if not groups or groups[0].get("DesiredCapacity", 0) > 0:
+        if not groups:
+            return False
+        desired = groups[0].get("DesiredCapacity", 0)
+        target = min(at_least, groups[0].get("MaxSize", at_least))
+        if desired >= target:
             return False
         client.set_desired_capacity(
-            AutoScalingGroupName=group, DesiredCapacity=1, HonorCooldown=False
+            AutoScalingGroupName=group, DesiredCapacity=target, HonorCooldown=False
         )
-        logger.info("worker group %s was at zero; asked for one worker", group)
+        logger.info("worker group %s: %d wanted, asked for %d", group, desired, target)
         return True
     except Exception:
         logger.warning(
