@@ -1252,6 +1252,18 @@ describe("polling", () => {
     expect(el.status.textContent).toBe("Processing...");
   });
 
+  it("says how far the MP4 has got when the worker has reported it", async () => {
+    const el = await pollReturning({ status: "processing", progress: 42 });
+
+    expect(el.status.textContent).toBe("Processing... 42%");
+  });
+
+  it("says nothing of a percentage the worker has not reported, rather than 0%", async () => {
+    const el = await pollReturning({ status: "processing", progress: null });
+
+    expect(el.status.textContent).toBe("Processing...");
+  });
+
   it("shows the progress sweep only while the job is processing", async () => {
     const el = await pollReturning({ status: "processing" });
 

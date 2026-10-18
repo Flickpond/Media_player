@@ -348,6 +348,11 @@ const COLD_START_LABEL = "Queued — starting a worker, this can take a few minu
 /** What to say about a job still in flight, `attempt` polls in. */
 function progressLabel(job, attempt) {
   if (job.status === "queued" && attempt >= COLD_START_AFTER_POLLS) return COLD_START_LABEL;
+  // How far the MP4 has got, when the worker has said (sprint 6). Absent
+  // means not yet known, not zero.
+  if (job.status === "processing" && Number.isInteger(job.progress)) {
+    return `Processing... ${job.progress}%`;
+  }
   return PROGRESS_LABEL[job.status] ?? job.status;
 }
 
