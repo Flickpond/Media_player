@@ -1231,6 +1231,24 @@ describe("polling", () => {
     expect(fetchMock).toHaveBeenCalledTimes(UPLOAD_CALLS + 6);
   });
 
+  it("says a worker is starting once a job has sat in the queue for ten seconds", async () => {
+    const el = await pollReturning({ status: "queued" });
+
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(el.status.textContent).toBe("Queued...");
+
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(el.status.textContent).toContain("starting a worker");
+  });
+
+  it("does not blame a cold start on a job that is already processing", async () => {
+    const el = await pollReturning({ status: "processing" });
+
+    await vi.advanceTimersByTimeAsync(20000);
+
+    expect(el.status.textContent).toBe("Processing...");
+  });
+
   it("shows the progress sweep only while the job is processing", async () => {
     const el = await pollReturning({ status: "processing" });
 
@@ -1849,6 +1867,176 @@ describe("admin", () => {
     expect(el.viewAdmin.hidden).toBe(true);
   });
 
+  // --- accounts: listing them, and deleting one with everything it owns ----
+
+  const ACCOUNTS = [
+    { id: "u-1", email: "maya@example.test", role: "operator", job_count: 3 },
+    { id: "u-2", email: "sam@example.test", role: "user", job_count: 1 },
+    { id: "u-3", email: "lee@example.test", role: "user", job_count: 4 },
+  ];
+
+  async function openAccounts(el, accounts = ACCOUNTS) {
+    fetchMock.mockImplementation(async (url) => {
+      if (url.startsWith("/api/admin/users?")) return jsonResponse(accounts);
+      if (url.startsWith("/api/admin/jobs?")) return jsonResponse(ROWS);
+      return jsonResponse({ error: `unexpected request to ${url}` }, false, 500);
+    });
+    el.navAdmin.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+  }
+
+  const accountRows = () => [...document.querySelectorAll("#admin-users-tbody tr")];
+  const accountRow = (email) =>
+    accountRows().find((row) => row.firstElementChild.textContent === email);
+  const usersStatus = () => document.getElementById("admin-users-status");
+
+  it("lists every account with how many videos it owns", async () => {
+    const el = await loadApp({ role: "operator" });
+    await openAccounts(el);
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/users?limit=200");
+    const cells = accountRows().map((row) => [...row.cells].slice(0, 3).map((c) => c.textContent));
+    expect(cells).toEqual([
+      ["maya@example.test", "operator", "3"],
+      ["sam@example.test", "user", "1"],
+      ["lee@example.test", "user", "4"],
+    ]);
+    expect(document.getElementById("admin-users-more").hidden).toBe(true);
+  });
+
+  it("offers no Delete on the operator's own account, which the API refuses", async () => {
+    const el = await loadApp({ role: "operator" });
+    await openAccounts(el);
+
+    expect(accountRow("maya@example.test").querySelector("button")).toBeNull();
+    expect(accountRow("sam@example.test").querySelector("button")).not.toBeNull();
+  });
+
+  it("says when there are more accounts than one page shows", async () => {
+    const el = await loadApp({ role: "operator" });
+    const many = Array.from({ length: 200 }, (_, i) => ({
+      id: `x-${i}`,
+      email: `${i}@example.test`,
+      role: "user",
+      job_count: 0,
+    }));
+    await openAccounts(el, many);
+
+    expect(document.getElementById("admin-users-more").hidden).toBe(false);
+  });
+
+  it("shows no accounts when the list cannot be loaded", async () => {
+    const el = await loadApp({ role: "operator" });
+    fetchMock.mockImplementation(async (url) => {
+      if (url.startsWith("/api/admin/users?")) throw new Error("offline");
+      return jsonResponse(ROWS);
+    });
+    el.navAdmin.dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(accountRows()).toHaveLength(0);
+  });
+
+  it("names the account and its video count, and does nothing if declined", async () => {
+    const el = await loadApp({ role: "operator" });
+    await openAccounts(el);
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    fetchMock.mockClear();
+
+    accountRow("sam@example.test").querySelector("button").dispatchEvent(new Event("click"));
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      "Delete the account sam@example.test and its 1 video? This cannot be undone.",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("deletes a confirmed account and reloads the jobs that went with it", async () => {
+    const el = await loadApp({ role: "operator" });
+    await openAccounts(el);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === "/api/admin/users/u-3" && init?.method === "DELETE") {
+        return jsonResponse(null, true, 204);
+      }
+      if (url.startsWith("/api/admin/jobs?")) return jsonResponse([ROWS[0]]);
+      return jsonResponse({ error: `unexpected request to ${url}` }, false, 500);
+    });
+
+    accountRow("lee@example.test").querySelector("button").dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(window.confirm.mock.calls[0][0]).toContain("its 4 videos");
+    expect(accountRow("lee@example.test")).toBeUndefined();
+    expect(usersStatus().textContent).toBe("Deleted lee@example.test.");
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/jobs?limit=12&offset=0");
+    expect(el.adminTbody.querySelectorAll("tr")).toHaveLength(1);
+  });
+
+  it("treats an account someone else already deleted as gone", async () => {
+    const el = await loadApp({ role: "operator" });
+    await openAccounts(el);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockImplementation(async (url) =>
+      url.startsWith("/api/admin/users/")
+        ? jsonResponse({ error: "not found" }, false, 404)
+        : jsonResponse(ROWS),
+    );
+
+    accountRow("sam@example.test").querySelector("button").dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(accountRow("sam@example.test")).toBeUndefined();
+  });
+
+  it.each([
+    [503, { error: "account deletion could not be confirmed; please try again" }, "could not be confirmed"],
+    [500, {}, "500"],
+  ])("keeps the account and says why when the API answers %s", async (status, body, text) => {
+    const el = await loadApp({ role: "operator" });
+    await openAccounts(el);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockImplementation(async () => jsonResponse(body, false, status));
+
+    accountRow("sam@example.test").querySelector("button").dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(accountRow("sam@example.test")).toBeDefined();
+    expect(usersStatus().hidden).toBe(false);
+    expect(usersStatus().textContent).toContain(text);
+  });
+
+  it("reports a request that never reached the API", async () => {
+    const el = await loadApp({ role: "operator" });
+    await openAccounts(el);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockRejectedValue(new Error("offline"));
+
+    accountRow("sam@example.test").querySelector("button").dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(usersStatus().textContent).toBe("Request failed: offline");
+  });
+
+  it("signs out on 401 and leaves the tab on 403", async () => {
+    const el = await loadApp({ role: "operator" });
+    await openAccounts(el);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    fetchMock.mockImplementation(async () => jsonResponse({ error: "forbidden" }, false, 403));
+    accountRow("sam@example.test").querySelector("button").dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(el.viewUpload.hidden).toBe(false);
+
+    await openAccounts(el);
+    fetchMock.mockImplementation(async () => jsonResponse({ error: "expired" }, false, 401));
+    accountRow("sam@example.test").querySelector("button").dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(el.auth.hidden).toBe(false);
+  });
+
   // --- previewing without downloading, and deleting any user's upload ----
 
   async function openAdminWith(el, rows) {
@@ -2213,6 +2401,19 @@ describe("player", () => {
     expect(hls.loadedSource).toBe(ADAPTIVE.hls_url);
   });
 
+  it("uses hls.js even when the browser claims it plays HLS itself", async () => {
+    // Chrome answers "maybe" now, and its own player fails on this ladder.
+    vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue("maybe");
+    const el = await loadAppWithLibraries();
+    await openLibrary(el, [ADAPTIVE]);
+    const card = cardFor(el, "holiday.mp4");
+
+    play(card);
+
+    expect(FakeHls.instances[0].loadedSource).toBe(ADAPTIVE.hls_url);
+    expect(videoIn(card).getAttribute("src")).toBeNull();
+  });
+
   it("waits for the manifest, so the menu lists the ladder's own levels", async () => {
     const el = await loadAppWithLibraries();
     await openLibrary(el, [ADAPTIVE]);
@@ -2233,6 +2434,28 @@ describe("player", () => {
     // The settings menu reads the player's current quality, and "undefined" is
     // what it says unless the app tells it where the ladder starts.
     expect(FakePlyr.created[0].quality).toBe(0);
+  });
+
+  it("labels a rung that runs above 30 fps, and leaves 4K to Plyr's own badge", async () => {
+    const levels = FakeHls.levels;
+    FakeHls.levels = [
+      { height: 2160, frameRate: 60 },
+      { height: 1080, frameRate: "59.940" },
+      { height: 360, frameRate: 30 },
+      { height: 240 },
+    ];
+    try {
+      const el = await loadAppWithLibraries();
+      await openLibrary(el, [ADAPTIVE]);
+      play(cardFor(el, "holiday.mp4"));
+      FakeHls.instances[0].emit(HLS_EVENTS.MANIFEST_PARSED);
+
+      const { config } = FakePlyr.created[0];
+      expect(config.quality.options).toEqual([0, 2160, 1080, 360, 240]);
+      expect(config.i18n.qualityLabel).toEqual({ 0: "Auto", 2160: "2160p60", 1080: "1080p60" });
+    } finally {
+      FakeHls.levels = levels;
+    }
   });
 
   it("switches the hls.js level when a quality is picked, and back to auto", async () => {
@@ -2522,6 +2745,117 @@ describe("editor", () => {
     expect(el.editSource.textContent).toBe("holiday.mp4");
     expect(el.editPlayer.querySelector("video").getAttribute("src")).toBe(SOURCE.output_url);
     expect(FakePlyr.created).toHaveLength(1);
+  });
+
+  describe("on an edit", () => {
+    const ORIGINAL = {
+      id: "0",
+      filename: "holiday.mov",
+      status: "done",
+      output_url: "http://minio/holiday-original.mp4",
+    };
+    const AN_EDIT = {
+      ...SOURCE,
+      filename: "holiday-clip.mp4",
+      edit_source: { job_id: "0", width: 3840, height: 2160, duration_seconds: 41.2 },
+    };
+
+    function answerOriginal(response) {
+      fetchMock.mockImplementation(async (url) =>
+        url === "/api/jobs/0" ? response() : jsonResponse({ error: "unexpected" }, false, 500),
+      );
+    }
+
+    it("plays the original and measures crop against its real size", async () => {
+      const crop = fakeComponent();
+      crop.mount = function (video, onChange, options) {
+        this.calls.push({ video, onChange, options });
+        return this.cleanup;
+      };
+      const clip = fakeComponent();
+      window.mountCropBox = crop.mount.bind(crop);
+      window.mountClipScrubber = clip.mount.bind(clip);
+      const el = await loadApp();
+      await openLibraryWith(el, [AN_EDIT]);
+      answerOriginal(() => jsonResponse(ORIGINAL));
+
+      el.libraryGrid.querySelector(".card-edit").dispatchEvent(new Event("click"));
+      expect(el.editStatus.textContent).toContain("Loading the original");
+      expect(el.editCrop.disabled).toBe(true);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchMock).toHaveBeenCalledWith("/api/jobs/0");
+      expect(el.editPlayer.querySelector("video").getAttribute("src")).toBe(ORIGINAL.output_url);
+      expect(el.editSource.textContent).toBe("holiday.mov — the original of holiday-clip.mp4");
+      expect(el.editStatus.hidden).toBe(true);
+      expect(crop.calls.at(-1).options).toEqual({ width: 3840, height: 2160 });
+      expect(el.editCrop.disabled).toBe(false);
+
+      // The edit is still asked for on the job that was clicked; the API
+      // resolves the original itself.
+      mockEditFlow([{ ...EDITED }]);
+      el.editCrop.checked = true;
+      el.editCrop.dispatchEvent(new Event("change"));
+      crop.report({ x: 0, y: 0, w: 1920, h: 1080 });
+      submit(el);
+      expect(sentOperations()).toEqual([
+        { operation: "crop", params: { x: 0, y: 0, w: 1920, h: 1080 } },
+      ]);
+    });
+
+    it("says so and offers no crop or clip when the original cannot be loaded", async () => {
+      window.mountCropBox = fakeComponent().mount;
+      const el = await loadApp();
+      await openLibraryWith(el, [AN_EDIT]);
+      answerOriginal(() => jsonResponse({ error: "boom" }, false, 500));
+
+      el.libraryGrid.querySelector(".card-edit").dispatchEvent(new Event("click"));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(el.editStatus.textContent).toBe("Could not load the original upload: HTTP 500");
+      expect(el.editCrop.disabled).toBe(true);
+      expect(el.editPlayer.querySelector("video")).toBeNull();
+    });
+
+    it("signs out when the session ended before the original arrived", async () => {
+      const el = await loadApp();
+      await openLibraryWith(el, [AN_EDIT]);
+      answerOriginal(() => jsonResponse({ error: "not authenticated" }, false, 401));
+
+      el.libraryGrid.querySelector(".card-edit").dispatchEvent(new Event("click"));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(el.auth.hidden).toBe(false);
+      expect(el.editPlayer.querySelector("video")).toBeNull();
+    });
+
+    it("drops an original that arrives after the reader left the editor", async () => {
+      const el = await loadApp();
+      await openLibraryWith(el, [AN_EDIT]);
+      let answer;
+      answerOriginal(
+        () =>
+          new Promise((resolve) => {
+            answer = resolve;
+          }),
+      );
+
+      el.libraryGrid.querySelector(".card-edit").dispatchEvent(new Event("click"));
+      el.editBack.dispatchEvent(new Event("click"));
+      answer(jsonResponse(ORIGINAL));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(el.editPlayer.querySelector("video")).toBeNull();
+    });
+
+    it("plays the job itself when it is its own original", async () => {
+      const el = await loadApp();
+      await openEditor(el, [{ ...SOURCE, edit_source: { job_id: "1", width: 1920, height: 1080 } }]);
+
+      expect(fetchMock).not.toHaveBeenCalledWith("/api/jobs/1");
+      expect(el.editSource.textContent).toBe("holiday.mp4");
+      expect(el.editPlayer.querySelector("video").getAttribute("src")).toBe(SOURCE.output_url);
+    });
   });
 
   it("offers no Edit for a job that has not finished", async () => {

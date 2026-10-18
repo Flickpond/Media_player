@@ -85,7 +85,7 @@ def test_probe_asks_for_one_combined_entry_spec():
     assert runner.command.count("-show_entries") == 1
     spec = runner.command[runner.command.index("-show_entries") + 1]
     assert spec == (
-        "stream=width,height,color_transfer"
+        "stream=width,height,color_transfer,avg_frame_rate"
         ":stream_side_data=rotation:stream_tags=rotate:format=duration"
     )
 
@@ -242,3 +242,24 @@ def test_a_file_with_no_video_stream_tells_the_uploader_what_to_do_about_it():
         probe_source(SOURCE, runner=runner_returning(payload))
 
     assert caught.value.user_message == NO_VIDEO_STREAM
+
+
+@pytest.mark.parametrize(
+    ("avg_frame_rate", "expected"),
+    [("60/1", 60.0), ("30000/1001", 30000 / 1001), ("25", 25.0), ("0/0", None), ("n/a", None)],
+)
+def test_the_frame_rate_is_read_and_an_unknown_one_is_none(avg_frame_rate, expected):
+    stdout = json.dumps(
+        {
+            "streams": [{"width": 1920, "height": 1080, "avg_frame_rate": avg_frame_rate}],
+            "format": {"duration": "4.0"},
+        }
+    )
+
+    probe = probe_source(SOURCE, runner=runner_returning(stdout))
+
+    assert probe.frame_rate == expected
+
+
+def test_a_stream_that_reports_no_frame_rate_still_probes():
+    assert probe_source(SOURCE, runner=runner_returning(ffprobe_output())).frame_rate is None

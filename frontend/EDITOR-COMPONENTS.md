@@ -7,8 +7,8 @@ contract below instead of implementing them.
 
 ```js
 // Each is a global the panel looks up when the editor opens.
-window.mountCropBox(video, onChange);      // Track B
-window.mountClipScrubber(video, onChange); // Track C
+window.mountCropBox(video, onChange, { width, height }); // crop-box.js
+window.mountClipScrubber(video, onChange);                // clip-scrubber.js, Track C
 ```
 
 **Both take the `<video>` element the selection is drawn against and a
@@ -39,7 +39,18 @@ Three things the panel relies on, from `sprint3-plan.md` §1:
   saying whose work it is. That is deliberate: an operation with no parameters
   is a request the worker answers with a 422.
 
-The video's real dimensions are on the element (`videoWidth`, `videoHeight`)
-once it has metadata — that is the number the crop box has to convert to, and
-the trap in `known-traps.md` about a 16:9 desktop clip looking perfect while a
-vertical phone video is wrong everywhere else is exactly this conversion.
+**Edits start from the original upload** (sprint 5). When the clicked job is
+itself an edit, the panel fetches `GET /jobs/{edit_source.job_id}` and plays
+that, so crop is drawn in the original's pixels and clip runs on the original's
+timeline. Until it arrives both sections stay disabled.
+
+The crop box's third argument is the original's real size, from
+`edit_source`. It is not optional in practice: `videoWidth` and `videoHeight`
+on the element are only the rendition playing *right now*, and an adaptive
+ladder can start a 4K upload at 360p. The element's own size is the fallback
+for a job the API sent no size for. Getting this conversion wrong is the trap
+in `known-traps.md` about a 16:9 desktop clip looking perfect while a vertical
+phone video is wrong everywhere else.
+
+The crop box reports even, whole numbers: libx264 refuses an odd-sized 4:2:0
+picture, and the worker's `validate_crop` refuses anything but integers.
