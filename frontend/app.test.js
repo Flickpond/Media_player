@@ -1967,6 +1967,27 @@ describe("admin", () => {
     expect(accountRow("sam@example.test").querySelector("button")).not.toBeNull();
   });
 
+  it("a page button signs out on 401 and leaves the tab on 403 by itself", async () => {
+    const el = await loadApp({ role: "operator" });
+    await openAccounts(el, Array.from({ length: 25 }, (_, i) => ({
+      id: `x-${i}`, email: `${i}@example.test`, role: "user", job_count: 0,
+    })));
+    const next = document.getElementById("admin-users-next");
+
+    fetchMock.mockResolvedValue(jsonResponse({ error: "forbidden" }, false, 403));
+    next.dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(el.viewUpload.hidden).toBe(false);
+
+    await openAccounts(el, Array.from({ length: 25 }, (_, i) => ({
+      id: `y-${i}`, email: `y${i}@example.test`, role: "user", job_count: 0,
+    })));
+    fetchMock.mockResolvedValue(jsonResponse({ error: "expired" }, false, 401));
+    next.dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(el.auth.hidden).toBe(false);
+  });
+
   it("pages through accounts a page at a time", async () => {
     const el = await loadApp({ role: "operator" });
     const page = (from) =>

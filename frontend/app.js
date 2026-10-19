@@ -2513,7 +2513,17 @@ async function loadAdminUsers() {
     const res = await fetch(
       `${API}/admin/users?limit=${ADMIN_USERS_PAGE}&offset=${adminUsersOffset}`,
     );
-    // 401 and 403 are the jobs table's to act on; it asks at the same moment.
+    // Handled here too, not left to the jobs table: the page buttons ask
+    // for accounts on their own.
+    if (res.status === 401) {
+      showSignedOut();
+      setAuthStatus("Your session expired. Sign in again.");
+      return;
+    }
+    if (res.status === 403) {
+      switchView("upload");
+      return;
+    }
     adminUsers = res.ok ? await res.json() : [];
   } catch {
     adminUsers = [];
