@@ -333,3 +333,29 @@ def test_safe_hls_path_refuses_anything_outside_a_ladder(path: str):
 )
 def test_safe_hls_path_allows_what_ffmpeg_actually_writes(path: str):
     assert safe_hls_path(path) == path
+
+
+@pytest.mark.asyncio
+async def test_opening_the_master_counts_a_play_and_a_segment_does_not(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Encode by popularity counts plays where a player starts one."""
+    import fakeredis
+
+    from app.api import hls as hls_api
+    from app.config import get_settings
+
+    job = make_job()
+    serve(monkeypatch, job)
+    redis = fakeredis.FakeRedis()
+    queued = []
+    monkeypatch.setattr(hls_api, "get_redis_connection", lambda: redis)
+    monkeypatch.setattr(hls_api, "enqueue_rendition", lambda j, kind: queued.append(kind))
+    monkeypatch.setattr(get_settings(), "av1_popular_views", 2)
+
+    await client.get(f"/jobs/{job.id}/hls/master.m3u8")
+    await client.get(f"/jobs/{job.id}/hls/v0/seg00001.ts", follow_redirects=False)
+    assert queued == []
+    await client.get(f"/jobs/{job.id}/hls/master.m3u8")
+
+    assert queued == ["av1"]

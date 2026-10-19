@@ -366,6 +366,46 @@ def help_encode(job_id: str) -> str:
     return f"encoded {encoded} pieces"
 
 
+def build_rendition(job_id: str, kind: str) -> str:
+    """RQ entrypoint for an extra AV1 rendition (app.worker.renditions).
+
+    Never touches the job's row: the video was finished long before, and a
+    failure here costs only the rendition, logged like any other job's.
+    """
+    from functools import partial
+
+    from app.config import get_settings
+    from app.services.minio_client import bucket, internal_client
+    from app.worker.probe import probe_source
+    from app.worker.renditions import RenditionBuilder
+    from app.worker.storage import MinioObjectStore
+
+    settings = get_settings()
+
+    async def load():
+        async with get_worker_session_factory()() as session:
+            return await get_job(session, UUID(job_id))
+
+    with stop_on_sigterm():
+        job = asyncio.run(load())
+        if job is None or job.hls_key is None:
+            return "skipped: no ladder"
+        builder = RenditionBuilder(
+            MinioObjectStore(internal_client(), bucket=bucket()),
+            prober=partial(
+                probe_source,
+                ffprobe_binary=settings.worker_ffprobe_binary,
+                timeout_seconds=settings.worker_ffprobe_timeout_seconds,
+            ),
+            ffmpeg_binary=settings.worker_ffmpeg_binary,
+            timeout_seconds=settings.worker_ffmpeg_timeout_seconds,
+        )
+        # An upload's rendition from its original; an edit's from the edit.
+        source = job.source_key if job.operations is None else job.output_key
+        built = builder.run(kind=kind, source_key=source, hls_key=job.hls_key, max_fps=job.max_fps)
+    return f"{kind} rendition {'added' if built else 'not needed'}"
+
+
 def _previous_interruptions() -> int:
     """How many times RQ has already re-run this queue entry.
 

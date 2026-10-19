@@ -101,7 +101,14 @@ def content_type_for(name: str) -> str:
     way -- and shows up only as a player refusing a manifest it was handed
     under a video content type.
     """
-    return PLAYLIST_CONTENT_TYPE if name.endswith(".m3u8") else SEGMENT_CONTENT_TYPE
+    if name.endswith(".m3u8"):
+        return PLAYLIST_CONTENT_TYPE
+    # The AV1 renditions (app.worker.renditions) are fragmented MP4.
+    if name.endswith(".m4s"):
+        return "video/iso.segment"
+    if name.endswith(".mp4"):
+        return "video/mp4"
+    return SEGMENT_CONTENT_TYPE
 
 
 AUDIO_GROUP = "audio"

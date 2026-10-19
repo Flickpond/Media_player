@@ -1536,7 +1536,16 @@ function selectLevel(state, height) {
     hls.currentLevel = -1;
     return;
   }
-  const index = hls.levels.findIndex((level) => level.height === height);
+  // The same height can be on offer twice -- an AV1 or HDR rendition beside
+  // the H.264 ladder (sprint 6). Stay in the codec and range already playing:
+  // picking "1080p" on an SDR screen must not switch it to the HDR one.
+  const playing = hls.levels[hls.currentLevel];
+  const sameFamily = (level) =>
+    !playing ||
+    (level.videoCodec?.slice(0, 4) === playing.videoCodec?.slice(0, 4) &&
+      (level.videoRange ?? "SDR") === (playing.videoRange ?? "SDR"));
+  let index = hls.levels.findIndex((level) => level.height === height && sameFamily(level));
+  if (index < 0) index = hls.levels.findIndex((level) => level.height === height);
   // currentLevel rather than nextLevel: someone who picks 480p wants 480p now,
   // and a switch the quality menu does not reflect is a menu that lies.
   if (index >= 0) hls.currentLevel = index;

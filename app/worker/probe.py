@@ -53,6 +53,9 @@ class SourceProbe:
     # Frames per second, when the stream says. Only labels the ladder's
     # rungs (`hls.label_frame_rates`); the encoders cap the rate themselves.
     frame_rate: float | None = None
+    # The transfer as recorded ("smpte2084" is PQ/HDR10, "arib-std-b67" is
+    # HLG): Keep HDR keeps the one the camera chose (app.worker.renditions).
+    color_transfer: str | None = None
 
 
 def probe_source(
@@ -152,6 +155,7 @@ def probe_source(
         duration_seconds=duration,
         hdr=streams[0].get("color_transfer") in HDR_TRANSFERS,
         frame_rate=_frame_rate(streams[0].get("avg_frame_rate")),
+        color_transfer=streams[0].get("color_transfer"),
     )
 
 
