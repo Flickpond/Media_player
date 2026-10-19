@@ -379,14 +379,16 @@ row is never touched, and a failure costs only the rendition.
 
 | Kind | Switch | What |
 |---|---|---|
-| `hdr` | `WORKER_KEEP_HDR=true` (workers) | An HDR upload (PQ or HLG) also gets AV1 10-bit HDR at 1080p, `VIDEO-RANGE=PQ`/`HLG` |
-| `av1` | `AV1_POPULAR_VIEWS=N` (API; 0 is off) | The N-th play of a video (a player opening its master playlist) queues AV1 at 1080p and 540p |
+| `hdr` | `WORKER_KEEP_HDR=true` (workers) | An HDR upload (PQ or HLG) also gets AV1 10-bit HDR at 1080p, 720p and 360p, `VIDEO-RANGE=PQ`/`HLG` |
+| `av1` | `AV1_POPULAR_VIEWS=N` (API; 0 is off) | The N-th play of a video (a player opening its master playlist) queues AV1 at 1080p, 720p and 360p -- sources up to 1080p only |
 
 Files: `outputs/<job>/hls/{hdr,av1}/<height>/{index.m3u8,init.mp4,segNNNNN.m4s}`
 (fMP4), served by the existing HLS route, whose allowlist names exactly those
-shapes. The master lists the renditions **ahead of** the ladder, HDR first:
-hls.js 1.7 starts in the first family it can play, so an SDR screen skips HDR
-and plays AV1, and a browser without AV1 plays the ladder as before.
+shapes. The master lists the renditions **ahead of** the ladder, HDR first.
+Each rung is capped below the H.264 ceiling at its height (75% HDR, 60% AV1):
+hls.js 1.7 prefers AV1 but skips a family whose cheapest entry costs more than
+its first bandwidth estimate, so the AV1 family must hold the playlist's
+cheapest entry. A browser without AV1 plays the ladder as before.
 
 ## Shared configuration
 
