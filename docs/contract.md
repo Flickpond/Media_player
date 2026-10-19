@@ -371,6 +371,23 @@ through `app/repositories/jobs.py` as always.
 - Audio is encoded once for the whole file; the video pieces are joined
   without re-encoding.
 
+## Sprint 6: Keep HDR and AV1 for popular videos (A; switches off by default)
+
+Extra AV1 renditions added to a ready ladder, each an RQ job
+`app.worker.tasks.build_rendition(job_id, kind)` on the ladder queue; the job
+row is never touched, and a failure costs only the rendition.
+
+| Kind | Switch | What |
+|---|---|---|
+| `hdr` | `WORKER_KEEP_HDR=true` (workers) | An HDR upload (PQ or HLG) also gets AV1 10-bit HDR at 1080p, `VIDEO-RANGE=PQ`/`HLG` |
+| `av1` | `AV1_POPULAR_VIEWS=N` (API; 0 is off) | The N-th play of a video (a player opening its master playlist) queues AV1 at 1080p and 540p |
+
+Files: `outputs/<job>/hls/{hdr,av1}/<height>/{index.m3u8,init.mp4,segNNNNN.m4s}`
+(fMP4), served by the existing HLS route, whose allowlist names exactly those
+shapes. The master lists the renditions **ahead of** the ladder, HDR first:
+hls.js 1.7 starts in the first family it can play, so an SDR screen skips HDR
+and plays AV1, and a browser without AV1 plays the ladder as before.
+
 ## Shared configuration
 
 | Variable | Purpose |

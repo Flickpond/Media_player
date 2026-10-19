@@ -35,12 +35,16 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from fastapi.responses import RedirectResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import CurrentUser
+from app.config import get_settings
 from app.database import get_session
 from app.errors import ApiNotFoundError
+from app.queue import enqueue_rendition, get_redis_connection
 from app.repositories.jobs import get_job
 from app.services.output_urls import OutputUrlSigner, get_output_url_signer
+from app.services.popularity import record_play
 from app.services.storage import StorageService, get_storage_service
 
 router = APIRouter(prefix="/jobs", tags=["hls"])
@@ -56,7 +60,13 @@ PLAYLIST_CONTENT_TYPE = "application/vnd.apple.mpegurl"
 # Anchored and fully matched, so this is an allowlist of shapes rather than
 # a blocklist of tricks -- `..` is not rejected by name, it simply is not a
 # thing this pattern can describe.
-_HLS_PATH = re.compile(r"^(?:v[0-9]{1,2}/)?[A-Za-z0-9_-]+\.(?:m3u8|ts)$")
+# Since sprint 6 also the AV1 renditions beside the ladder: `hdr/` and `av1/`,
+# one folder per height (`hdr/1080/`, `av1/540/`), each an fMP4 `index.m3u8`,
+# `init.mp4` and `segNNNNN.m4s`.
+_HLS_PATH = re.compile(
+    r"^(?:(?:v[0-9]{1,2}/)?[A-Za-z0-9_-]+\.(?:m3u8|ts)"
+    r"|(?:hdr|av1)/[0-9]{3,4}/(?:index\.m3u8|init\.mp4|seg[0-9]{1,6}\.m4s))$"
+)
 
 
 def safe_hls_path(path: str) -> str:
@@ -94,6 +104,15 @@ async def get_hls_part(
         raise ApiNotFoundError("not found")
 
     safe = safe_hls_path(path)
+    if safe == "master.m3u8":
+        # A player opening the video: one play, toward an AV1 rendition.
+        await run_in_threadpool(
+            record_play,
+            get_redis_connection(),
+            job.id,
+            threshold=get_settings().av1_popular_views,
+            enqueue=enqueue_rendition,
+        )
 
     # Derived from the job's own stored key rather than rebuilt from the
     # prefix convention, so the route cannot drift from wherever the worker

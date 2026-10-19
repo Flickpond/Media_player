@@ -103,6 +103,12 @@ class Settings(BaseSettings):
     worker_chunk_helpers: int = 3
     # A helper's piece not done after this long is taken to be lost.
     worker_chunk_stale_seconds: int = 300
+    # Extra AV1 renditions (app/worker/renditions.py), both off by default.
+    # Keep HDR: an HDR upload also gets a 10-bit HDR rendition for HDR screens.
+    worker_keep_hdr: bool = False
+    # A video played this many times gets an AV1 rendition; 0 is off. Counted
+    # by the API as players open the master playlist.
+    av1_popular_views: int = 0
     # The longest source the worker accepts, checked right after the probe
     # and before any encoding. By duration rather than bytes: encode time --
     # and so whether a job finishes inside the timeout above -- follows how
