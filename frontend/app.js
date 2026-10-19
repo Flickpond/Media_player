@@ -1313,13 +1313,16 @@ function pollUploadJob(jobId) {
         return;
       }
 
-      if (attempt >= SLOW_AFTER_POLLS) {
+      // A worker reporting progress is not stuck, however long a 4K encode
+      // takes: say how far it has got rather than that it is slow.
+      const reporting = job.status === "processing" && Number.isInteger(job.progress);
+      if (attempt >= SLOW_AFTER_POLLS && !reporting) {
         setStatus(`Still working on it — this is taking longer than expected. Job ${jobId}`);
-        // Give the form back; a stuck job otherwise never releases it.
-        el.jobActions.hidden = false;
       } else {
         setStatus(progressLabel(job, attempt));
       }
+      // Give the form back either way; a long job otherwise holds it.
+      if (attempt >= SLOW_AFTER_POLLS) el.jobActions.hidden = false;
     },
     onDone(job) {
       showUploadPlayer(job);

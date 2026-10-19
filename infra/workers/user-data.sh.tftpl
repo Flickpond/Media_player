@@ -50,6 +50,8 @@ MINIO_USE_SSL=true
 MINIO_BUCKET=${bucket_name}
 MINIO_REGION=${region}
 STORAGE_USE_INSTANCE_ROLE=true
+WORKER_GROUP_NAME=${group_name}
+WORKER_GROUP_REGION=${region}
 %{ for key, value in worker_settings ~}
 ${key}=${value}
 %{ endfor ~}

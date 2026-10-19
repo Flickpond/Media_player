@@ -490,3 +490,24 @@ def test_the_processor_chunks_a_long_source_and_encodes_a_short_one_whole(redis,
         ).run(job_id=uuid4(), source_key="uploads/a/b.mp4")
 
     assert calls == ["chunked", "whole", "whole"]
+
+
+def test_queueing_helpers_starts_workers_for_them(redis, tmp_path):
+    woken = []
+    chunker = coordinator(
+        FakeStore(), redis, FakeFfmpeg(), enqueue_helper=lambda _j: None, helpers=3,
+        wake=woken.append,
+    )
+
+    encode(chunker, tmp_path)
+
+    assert woken == [4], "the coordinator and its three helpers"
+
+
+def test_no_helpers_means_no_workers_are_asked_for(redis, tmp_path):
+    woken = []
+    chunker = coordinator(FakeStore(), redis, FakeFfmpeg(), helpers=0, wake=woken.append)
+
+    encode(chunker, tmp_path)
+
+    assert woken == []
