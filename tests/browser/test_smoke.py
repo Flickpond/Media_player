@@ -100,6 +100,17 @@ def test_a_person_can_sign_up_upload_watch_and_crop(page):
         "window.__smokePlayer === document.querySelector('#player video')"
     )
 
+    # Fullscreen fills the screen: the 360px cap that keeps tall sources out
+    # of the cards used to hold the video to a strip at the top.
+    page.click("#player [data-plyr='fullscreen']", force=True)
+    page.wait_for_function("document.fullscreenElement !== null", timeout=5_000)
+    filled = page.evaluate(
+        "(() => { const r = document.querySelector('#player video').getBoundingClientRect();"
+        " return r.height / window.innerHeight; })()"
+    )
+    assert filled > 0.95, f"the video fills {filled:.0%} of the screen's height"
+    page.evaluate("document.exitFullscreen()")
+
     # The library lists it, and the editor opens on it.
     page.click("#nav-library")
     page.wait_for_selector("#library-grid .card-edit")
