@@ -29,6 +29,7 @@ cheapest entry is the cheapest in the playlist. The entries are listed first
 as well -- HDR, then AV1, then the ladder.
 """
 
+import contextlib
 import logging
 import re
 import shutil
@@ -264,12 +265,18 @@ class RenditionBuilder:
         ffmpeg_binary: str = "ffmpeg",
         timeout_seconds: int = 1770,
         runner=run_process,
+        master_lock=lambda _hls_key: contextlib.nullcontext(),
     ) -> None:
         self._store = store
         self._prober = prober
         self._ffmpeg = ffmpeg_binary
         self._timeout = timeout_seconds
         self._runner = runner
+        # Held only while the master is re-read, extended and uploaded: the HDR
+        # and AV1 jobs for one video can run at once on two workers, and each
+        # used to upload the master it had read minutes earlier -- on
+        # flickpond.com the AV1 job's upload dropped the HDR entries.
+        self._master_lock = master_lock
 
     def run(self, *, kind: str, source_key: str, hls_key: str, max_fps: int) -> bool:
         """Build `kind` and list it in the master at `hls_key`. False if this
@@ -293,6 +300,7 @@ class RenditionBuilder:
                 return False
             from app.worker.hls import content_type_for
 
+            listed = []
             for rung in rungs_for(kind, probe.height):
                 plan = plan_rendition(kind, probe, max_fps=max_fps, height=rung)
                 out_dir = work / kind / str(rung)
@@ -318,19 +326,28 @@ class RenditionBuilder:
                         source=str(path),
                         content_type=content_type_for(path.name),
                     )
-                master = add_to_master(
-                    master,
-                    plan=plan,
-                    rung=rung,
-                    resolution=f"{even_width(probe.width, probe.height, rung)}x{rung}",
-                    bandwidth=peak_bandwidth(playlist, out_dir),
+                listed.append(
+                    {
+                        "plan": plan,
+                        "rung": rung,
+                        "resolution": f"{even_width(probe.width, probe.height, rung)}x{rung}",
+                        "bandwidth": peak_bandwidth(playlist, out_dir),
+                    }
                 )
-            # mkdtemp's directory and a constant name; `kind` checked above.
-            master_path.write_text(master, encoding="utf-8", newline="\n")  # NOSONAR
             # Last: until now no player could be sent to a half-uploaded rendition.
-            self._store.upload_file(
-                key=hls_key, source=str(master_path), content_type=content_type_for("master.m3u8")
-            )
+            with self._master_lock(hls_key):
+                # Read again: another rendition may have been listed meanwhile.
+                self._store.download_file(key=hls_key, destination=str(master_path))
+                master = master_path.read_text(encoding="utf-8")
+                for entry in listed:
+                    master = add_to_master(master, **entry)
+                # mkdtemp's directory and a constant name; `kind` checked above.
+                master_path.write_text(master, encoding="utf-8", newline="\n")  # NOSONAR
+                self._store.upload_file(
+                    key=hls_key,
+                    source=str(master_path),
+                    content_type=content_type_for("master.m3u8"),
+                )
             return True
         finally:
             shutil.rmtree(work, ignore_errors=True)

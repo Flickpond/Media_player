@@ -399,11 +399,27 @@ def build_rendition(job_id: str, kind: str) -> str:
             ),
             ffmpeg_binary=settings.worker_ffmpeg_binary,
             timeout_seconds=settings.worker_ffmpeg_timeout_seconds,
+            master_lock=master_lock,
         )
         # An upload's rendition from its original; an edit's from the edit.
         source = job.source_key if job.operations is None else job.output_key
         built = builder.run(kind=kind, source_key=source, hls_key=job.hls_key, max_fps=job.max_fps)
     return f"{kind} rendition {'added' if built else 'not needed'}"
+
+
+MASTER_LOCK_KEY = "flickpond:master-lock:{}"
+
+
+def master_lock(hls_key: str, connection=None):
+    """One writer at a time for a video's master playlist, across workers.
+
+    Held for a download, a few lines of text and an upload: a minute before
+    it expires on its own (a worker that dies holding it), five to wait.
+    """
+    from app.queue import get_redis_connection
+
+    redis = connection or get_redis_connection()
+    return redis.lock(MASTER_LOCK_KEY.format(hls_key), timeout=60, blocking_timeout=300)
 
 
 def _previous_interruptions() -> int:

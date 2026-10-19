@@ -1,5 +1,6 @@
 """Extra AV1 renditions: Keep HDR, and encode by popularity."""
 
+import contextlib
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -23,6 +24,7 @@ from app.worker.renditions import (
     rendition_command,
     rungs_for,
 )
+from app.worker.tasks import master_lock
 
 PQ = SourceProbe(3840, 2160, 120.0, hdr=True, color_transfer="smpte2084")
 HLG = SourceProbe(3840, 2160, 120.0, hdr=True, color_transfer="arib-std-b67")
@@ -366,3 +368,61 @@ def test_a_rendition_kind_from_the_queue_must_be_one_this_module_builds():
         builder(Store(), PQ).run(
             kind="../../etc", source_key="k", hls_key="outputs/j/hls/master.m3u8", max_fps=30
         )
+
+
+# --- two renditions at once ------------------------------------------------------
+
+
+def test_a_rendition_listed_while_another_encoded_is_kept():
+    """On flickpond.com the AV1 job uploaded the master it had read before the
+    HDR job finished, and the three HDR entries were gone."""
+    store = Store()
+
+    def hdr_lands_meanwhile(command, **kwargs):
+        if not store.uploads:
+            run(builder(store, PQ))
+        return fake_av1(command, **kwargs)
+
+    assert run(builder(store, HDR_1080, runner=hdr_lands_meanwhile), kind="av1") is True
+
+    master = store.objects["outputs/j/hls/master.m3u8"].decode()
+    for kind in ("hdr", "av1"):
+        for rung in (1080, 720, 360):
+            assert f"{kind}/{rung}/index.m3u8" in master
+
+
+def test_the_master_is_read_and_written_inside_the_lock():
+    store, events = Store(), []
+
+    @contextlib.contextmanager
+    def lock(hls_key):
+        events.append(("lock", hls_key))
+        yield
+        events.append(("unlock", hls_key))
+
+    original = store.upload_file
+
+    def upload(*, key, **kwargs):
+        if key.endswith("master.m3u8"):
+            events.append(("master", key))
+        original(key=key, **kwargs)
+
+    store.upload_file = upload
+    RenditionBuilder(store, prober=lambda _p: PQ, runner=fake_av1, master_lock=lock).run(
+        kind="hdr", source_key="uploads/j/s.mov", hls_key="outputs/j/hls/master.m3u8", max_fps=30
+    )
+
+    key = "outputs/j/hls/master.m3u8"
+    assert events == [("lock", key), ("master", key), ("unlock", key)]
+
+
+def test_the_master_lock_is_one_per_video_and_exclusive():
+    redis = fakeredis.FakeRedis()
+    first = master_lock("outputs/a/hls/master.m3u8", connection=redis)
+    again = master_lock("outputs/a/hls/master.m3u8", connection=redis)
+    other = master_lock("outputs/b/hls/master.m3u8", connection=redis)
+
+    assert first.acquire(blocking=False)
+    assert not again.acquire(blocking=False)
+    assert other.acquire(blocking=False)
+    assert redis.ttl("flickpond:master-lock:outputs/a/hls/master.m3u8") <= 60, "expires alone"
