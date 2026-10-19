@@ -214,6 +214,17 @@ function showSignedOut() {
   // sign-in form would keep streaming a video the user can no longer see.
   unmountPlayersIn(el.app);
   el.player.hidden = true;
+  // What an operator could see goes with the session, not just out of view:
+  // the next person to sign in on this tab may not be one.
+  clearAdminData();
+}
+
+function clearAdminData() {
+  adminJobs = [];
+  adminUsers = [];
+  adminUsersOffset = 0;
+  el.adminTbody.replaceChildren();
+  el.adminUsersTbody.replaceChildren();
 }
 
 async function refreshIdentity() {
@@ -2521,6 +2532,8 @@ async function loadAdminUsers() {
       return;
     }
     if (res.status === 403) {
+      // No longer an operator: drop what was shown while one was.
+      clearAdminData();
       switchView("upload");
       return;
     }

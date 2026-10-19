@@ -1988,6 +1988,21 @@ describe("admin", () => {
     expect(el.auth.hidden).toBe(false);
   });
 
+  it("leaves no account or job rows behind once the session or the role is gone", async () => {
+    const el = await loadApp({ role: "operator" });
+    await openAccounts(el);
+    expect(accountRows()).toHaveLength(3);
+
+    fetchMock.mockResolvedValue(jsonResponse({ error: "expired" }, false, 401));
+    document.getElementById("admin-users-next").disabled = false;
+    document.getElementById("admin-users-next").dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.auth.hidden).toBe(false);
+    expect(accountRows()).toHaveLength(0);
+    expect(el.adminTbody.querySelectorAll("tr")).toHaveLength(0);
+  });
+
   it("pages through accounts a page at a time", async () => {
     const el = await loadApp({ role: "operator" });
     const page = (from) =>
