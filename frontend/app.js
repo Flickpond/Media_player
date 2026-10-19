@@ -131,7 +131,9 @@ const el = {
   adminPageLabel: document.getElementById("admin-page-label"),
   adminUsersStatus: document.getElementById("admin-users-status"),
   adminUsersTbody: document.getElementById("admin-users-tbody"),
-  adminUsersMore: document.getElementById("admin-users-more"),
+  adminUsersPrev: document.getElementById("admin-users-prev"),
+  adminUsersNext: document.getElementById("admin-users-next"),
+  adminUsersPageLabel: document.getElementById("admin-users-page-label"),
 
   viewEdit: document.getElementById("view-edit"),
   editBack: document.getElementById("edit-back"),
@@ -212,6 +214,17 @@ function showSignedOut() {
   // sign-in form would keep streaming a video the user can no longer see.
   unmountPlayersIn(el.app);
   el.player.hidden = true;
+  // What an operator could see goes with the session, not just out of view:
+  // the next person to sign in on this tab may not be one.
+  clearAdminData();
+}
+
+function clearAdminData() {
+  adminJobs = [];
+  adminUsers = [];
+  adminUsersOffset = 0;
+  el.adminTbody.replaceChildren();
+  el.adminUsersTbody.replaceChildren();
 }
 
 async function refreshIdentity() {
@@ -2469,9 +2482,10 @@ el.adminNext.addEventListener("click", () => {
 // §2.4). An operator's own row has no Delete -- the API refuses it with 409.
 // ---------------------------------------------------------------------------
 
-/** One page is every account a course project will have; past it, say so
- *  rather than paging a list nobody needs paged yet. */
-const ADMIN_USERS_LIMIT = 200;
+/** Accounts per page. Like the jobs table, there is no total count: "Next"
+ *  is offered when a full page came back, never a fabricated "of N". */
+const ADMIN_USERS_PAGE = 25;
+let adminUsersOffset = 0;
 let adminUsers = [];
 
 function setAdminUsersStatus(message) {
@@ -2503,20 +2517,44 @@ function renderAdminUsers() {
     row.append(email, role, count, actions);
     el.adminUsersTbody.appendChild(row);
   }
-  el.adminUsersMore.hidden = adminUsers.length < ADMIN_USERS_LIMIT;
-  el.adminUsersMore.textContent = `Showing the first ${ADMIN_USERS_LIMIT} accounts.`;
+  el.adminUsersPrev.disabled = adminUsersOffset === 0;
+  el.adminUsersNext.disabled = adminUsers.length < ADMIN_USERS_PAGE;
+  el.adminUsersPageLabel.textContent = `Page ${Math.floor(adminUsersOffset / ADMIN_USERS_PAGE) + 1}`;
 }
 
 async function loadAdminUsers() {
   try {
-    const res = await fetch(`${API}/admin/users?limit=${ADMIN_USERS_LIMIT}`);
-    // 401 and 403 are the jobs table's to act on; it asks at the same moment.
+    const res = await fetch(
+      `${API}/admin/users?limit=${ADMIN_USERS_PAGE}&offset=${adminUsersOffset}`,
+    );
+    // Handled here too, not left to the jobs table: the page buttons ask
+    // for accounts on their own.
+    if (res.status === 401) {
+      showSignedOut();
+      setAuthStatus("Your session expired. Sign in again.");
+      return;
+    }
+    if (res.status === 403) {
+      // No longer an operator: drop what was shown while one was.
+      clearAdminData();
+      switchView("upload");
+      return;
+    }
     adminUsers = res.ok ? await res.json() : [];
   } catch {
     adminUsers = [];
   }
   renderAdminUsers();
 }
+
+el.adminUsersPrev.addEventListener("click", () => {
+  adminUsersOffset = Math.max(0, adminUsersOffset - ADMIN_USERS_PAGE);
+  void loadAdminUsers();
+});
+el.adminUsersNext.addEventListener("click", () => {
+  adminUsersOffset += ADMIN_USERS_PAGE;
+  void loadAdminUsers();
+});
 
 function describeVideos(count) {
   return count === 1 ? "1 video" : `${count} videos`;

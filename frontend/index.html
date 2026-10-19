@@ -400,7 +400,15 @@
             </thead>
             <tbody id="admin-users-tbody"></tbody>
           </table>
-          <p id="admin-users-more" class="hint" hidden></p>
+          <div class="pagination">
+            <button type="button" id="admin-users-prev" class="page-btn" aria-label="Previous page of accounts">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
+            </button>
+            <span id="admin-users-page-label" class="page-label">Page 1</span>
+            <button type="button" id="admin-users-next" class="page-btn" aria-label="Next page of accounts">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+            </button>
+          </div>
         </section>
 
         <!-- One shared editing view, opened from a finished job on the upload
