@@ -200,6 +200,36 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The whole stack in Docker Compose, driven by a real Chromium: sign up,
+  # upload, play, edit (tests/browser). Three sprint 5 bugs passed every jsdom
+  # test and showed only in a browser. Not a required check until it has
+  # proven stable; its logs say what broke when it fails.
+  browser-smoke:
+    name: Browser smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Start the stack
+        run: |
+          cp .env.example .env
+          echo "JWT_SECRET=$(openssl rand -base64 48)" >> .env
+          docker compose up -d --build --scale worker=1 --wait
+      - name: Install Playwright and Chromium
+        run: |
+          python -m pip install "playwright>=1.47,<2" "pytest>=8"
+          python -m playwright install --with-deps chromium
+      - name: Drive a real browser
+        env:
+          RUN_BROWSER_TESTS: "1"
+        run: python -m pytest -q -p no:cacheprovider tests/browser
+      - name: Stack logs
+        if: failure()
+        run: docker compose logs --tail=150
+
   build:
     name: Build container image
     runs-on: ubuntu-latest
