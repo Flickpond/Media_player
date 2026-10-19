@@ -103,6 +103,15 @@ class Settings(BaseSettings):
     worker_chunk_helpers: int = 3
     # A helper's piece not done after this long is taken to be lost.
     worker_chunk_stale_seconds: int = 300
+    # The seek-bar preview (app/worker/preview.py, sprint 6 plan 2.2). Off
+    # until it has been seen working on staging; with it off nothing is made,
+    # and the player only offers a preview that exists.
+    worker_preview_sprite: bool = False
+    worker_preview_interval_seconds: int = 5
+    worker_preview_tile_width: int = 160
+    # Its own budget, far under the ladder job's: it runs inside that job, so
+    # a slow sheet must give up before RQ's timeout kills the job around it.
+    worker_preview_timeout_seconds: int = 180
     # The longest source the worker accepts, checked right after the probe
     # and before any encoding. By duration rather than bytes: encode time --
     # and so whether a job finishes inside the timeout above -- follows how

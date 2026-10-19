@@ -34,7 +34,7 @@ from app.repositories.jobs import (
     mark_ladder_unavailable,
     mark_processing,
 )
-from app.worker import after_ladder
+from app.worker import after_ladder, preview  # noqa: F401  (preview registers its hook)
 from app.worker.db import get_worker_session_factory
 from app.worker.interruption import stop_on_sigterm, stop_requested
 from app.worker.probe import SourceProbe
