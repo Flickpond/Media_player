@@ -1,0 +1,80 @@
+name: Deploy core
+
+# Deploys origin/main to the AWS core (flickpond.com) -- by hand only. There is
+# no push trigger: someone presses "Run workflow", and the `production`
+# environment then waits for its required reviewer to approve.
+#
+# No SSH key anywhere. GitHub signs a token for this environment; AWS trusts it
+# (infra/registry/deploy-role.tf) to run one fixed SSM document on one
+# instance, and the document holds the deploy steps itself. Workers are not
+# deployed here: they boot the image pinned in infra/workers.
+#
+# Off until infra/registry is applied with core_instance_id and its output is
+# set as the repository variable AWS_DEPLOY_ROLE_ARN, with CORE_INSTANCE_ID.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-core
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy origin/main to the core
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 35
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      CORE: ${{ vars.CORE_INSTANCE_ID }}
+      REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - name: Check the deploy is configured
+        run: |
+          if [ -z "$ROLE_ARN" ] || [ -z "$CORE" ] || [ -z "$REGION" ]; then
+            echo "::error::Set AWS_DEPLOY_ROLE_ARN, CORE_INSTANCE_ID and AWS_REGION (infra/registry outputs)."
+            exit 1
+          fi
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Deploys run from main only."
+            exit 1
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Run the deploy document on the core
+        run: |
+          id=$(aws ssm send-command --document-name flickpond-deploy-core \
+            --instance-ids "$CORE" --comment "deploy $GITHUB_SHA by $GITHUB_ACTOR" \
+            --query Command.CommandId --output text)
+          echo "SSM command $id"
+          # `aws ssm wait` gives up after 100 s; a build takes several minutes.
+          for _ in $(seq 1 180); do
+            status=$(aws ssm get-command-invocation --command-id "$id" --instance-id "$CORE" \
+              --query Status --output text 2>/dev/null || echo Pending)
+            case "$status" in
+              Success|Failed|Cancelled|TimedOut) break ;;
+            esac
+            sleep 10
+          done
+          aws ssm get-command-invocation --command-id "$id" --instance-id "$CORE" \
+            --query StandardOutputContent --output text | tail -20
+          echo "Status: $status"
+          [ "$status" = "Success" ] || {
+            aws ssm get-command-invocation --command-id "$id" --instance-id "$CORE" \
+              --query StandardErrorContent --output text | tail -20
+            exit 1
+          }
+
+      - name: The site answers
+        run: curl -fsS --retry 5 --retry-delay 5 https://flickpond.com/api/health
