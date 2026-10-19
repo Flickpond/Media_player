@@ -320,3 +320,10 @@ def test_the_keep_hdr_hook_queues_the_hdr_rendition(monkeypatch):
     queue_keep_hdr("job-1", "outputs/job-1/x.mp4")
 
     assert queued == [("job-1", "hdr")]
+
+
+def test_a_rendition_kind_from_the_queue_must_be_one_this_module_builds():
+    with pytest.raises(ValueError, match="unknown rendition"):
+        builder(Store(), PQ).run(
+            kind="../../etc", source_key="k", hls_key="outputs/j/hls/master.m3u8", max_fps=30
+        )

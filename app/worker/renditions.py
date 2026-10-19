@@ -234,7 +234,11 @@ class RenditionBuilder:
         """Build `kind` and list it in the master at `hls_key`. False if this
         source does not get one (an SDR source asked for HDR) or already has it."""
         prefix = hls_key.rsplit("/", 1)[0]
-        work = Path(tempfile.mkdtemp(prefix=f"flickpond-{kind}-"))
+        # `kind` arrives as a queue argument and names directories below: only
+        # the two this module builds.
+        if kind not in KINDS:
+            raise ValueError(f"unknown rendition {kind!r}")
+        work = Path(tempfile.mkdtemp(prefix="flickpond-rendition-"))
         try:
             master_path = work / "master.m3u8"
             self._store.download_file(key=hls_key, destination=str(master_path))
@@ -280,7 +284,8 @@ class RenditionBuilder:
                     resolution=f"{even_width(probe.width, probe.height, rung)}x{rung}",
                     bandwidth=peak_bandwidth(playlist, out_dir),
                 )
-            master_path.write_text(master, encoding="utf-8", newline="\n")
+            # mkdtemp's directory and a constant name; `kind` checked above.
+            master_path.write_text(master, encoding="utf-8", newline="\n")  # NOSONAR
             # Last: until now no player could be sent to a half-uploaded rendition.
             self._store.upload_file(
                 key=hls_key, source=str(master_path), content_type=content_type_for("master.m3u8")
