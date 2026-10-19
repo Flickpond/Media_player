@@ -42,3 +42,11 @@ variable "images_to_keep" {
     error_message = "Keep at least a few images to roll back to."
   }
 }
+
+variable "core_instance_id" {
+  description = "The core host the manual deploy workflow may deploy (infra/terraform output core_instance_id). Null: no deploy role."
+  type        = string
+  # The production core since 19 Oct 2026. A default rather than a -var, so an
+  # apply that forgets it cannot quietly delete the deploy role. Not a secret.
+  default = "i-099e279face0521dc"
+}
