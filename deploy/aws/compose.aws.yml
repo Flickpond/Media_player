@@ -44,10 +44,6 @@ services:
       # Woken from zero as a job is queued (app/services/worker_wake.py).
       WORKER_GROUP_NAME: ${WORKER_GROUP_NAME:-}
       WORKER_GROUP_REGION: ${AWS_REGION:-}
-      # Plays before a video gets its AV1 rendition (app/services/popularity.py);
-      # 0 is off. The API counts the plays, so the switch is set here, not on
-      # the workers.
-      AV1_POPULAR_VIEWS: ${AV1_POPULAR_VIEWS:-0}
 
   worker:
     # A stopped worker gives its job back (app.worker.interruption) in a few
