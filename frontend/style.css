@@ -784,6 +784,20 @@ video {
   border-radius: 0;
 }
 
+/* Except in fullscreen, where the screen is the box: with the cap the video
+   stayed 360px tall at the top of a black screen. Separate rules, because a
+   browser that does not know one selector in a list drops the whole list --
+   and Plyr's fallback (an iPhone) uses a class instead of :fullscreen. */
+.plyr:fullscreen video {
+  max-height: none;
+}
+.plyr:-webkit-full-screen video {
+  max-height: none;
+}
+.plyr--fullscreen-fallback video {
+  max-height: none;
+}
+
 /* Plyr is themed through custom properties. Pointing them at the tokens above
    keeps the player in the app's palette instead of Plyr's default blue, and
    means restyling it later happens here rather than in a patched copy of
