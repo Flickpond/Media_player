@@ -27,6 +27,7 @@ from app.worker.renditions import (
 PQ = SourceProbe(3840, 2160, 120.0, hdr=True, color_transfer="smpte2084")
 HLG = SourceProbe(3840, 2160, 120.0, hdr=True, color_transfer="arib-std-b67")
 SDR = SourceProbe(1920, 1080, 120.0)
+HDR_1080 = SourceProbe(1920, 1080, 120.0, hdr=True, color_transfer="smpte2084")
 
 LADDER_MASTER = (
     "#EXTM3U\n#EXT-X-VERSION:3\n"
@@ -59,7 +60,7 @@ def test_an_sdr_source_gets_no_hdr_rendition():
 
 def test_the_popular_rendition_is_8_bit_standard_range_tone_mapped_from_hdr():
     from_hdr, from_sdr = (
-        plan_rendition("av1", PQ, max_fps=60),
+        plan_rendition("av1", HDR_1080, max_fps=60),
         plan_rendition("av1", SDR, max_fps=30),
     )
 
@@ -68,6 +69,33 @@ def test_the_popular_rendition_is_8_bit_standard_range_tone_mapped_from_hdr():
     assert any("tonemap" in f for f in from_hdr.filters)
     assert not any("tonemap" in f for f in from_sdr.filters)
     assert "min(60" in from_hdr.filters[0]
+
+
+def test_a_source_above_1080p_gets_no_popular_rendition():
+    """Its H.264 ladder goes to 1440p or 2160p; AV1 here stops at 1080p, and
+    hls.js would hold a 4K screen there to save bytes."""
+    assert plan_rendition("av1", PQ, max_fps=30) is None
+    assert plan_rendition("hdr", PQ, max_fps=30) is not None, "HDR is worth the trade"
+
+
+def test_every_rung_is_capped_under_the_h264_ceiling_at_its_height():
+    """hls.js skips a codec family whose cheapest entry costs more than its
+    first estimate -- about the cheapest entry in the playlist."""
+    for kind, probe in (("av1", SDR), ("hdr", PQ)):
+        for height, h264 in ((1080, 5_000_000), (720, 2_800_000), (360, 800_000)):
+            plan = plan_rendition(kind, probe, max_fps=30, height=height)
+            assert 0 < plan.maxrate < h264, (kind, height)
+
+
+def test_the_bottom_rung_fits_hls_js_first_estimate_whatever_the_footage():
+    """hls.js 1.7 starts in a family only if its cheapest entry fits
+    max(cheapest anywhere, 500 kbps). Simple footage can bring H.264 360p far
+    under 500 kbps, so the bottom rung must fit 500 kbps on its own: worst
+    measured peak 1.25x the cap, plus the 128 kbps add_to_master adds for audio."""
+    for kind, probe in (("av1", SDR), ("hdr", PQ)):
+        for height in (360, 240):
+            plan = plan_rendition(kind, probe, max_fps=30, height=height)
+            assert plan.maxrate * 1.25 + 128_000 <= 500_000, (kind, height)
 
 
 def test_unknown_kinds_are_refused():
@@ -87,6 +115,8 @@ def test_the_command_is_av1_fmp4_hls_capped_at_1080p(tmp_path):
     assert command[command.index("-c:v") + 1] == "libsvtav1"
     assert command[command.index("-hls_segment_type") + 1] == "fmp4"
     assert command[command.index("-hls_fmp4_init_filename") + 1] == "init.mp4"
+    assert command[command.index("-maxrate") + 1] == "3750k"
+    assert command[command.index("-bufsize") + 1] == "3750k"
     assert "-an" in command, "the ladder's audio group is shared"
     assert "min(1080" in command[command.index("-vf") + 1]
     assert command[-1].endswith("index.m3u8")
@@ -122,26 +152,27 @@ def test_renditions_go_ahead_of_the_ladder_hdr_first_whatever_the_order_built():
     master = add_to_master(
         LADDER_MASTER, plan=av1, rung=1080, resolution="1920x1080", bandwidth=(1, 1)
     )
-    master = add_to_master(master, plan=av1, rung=540, resolution="960x540", bandwidth=(1, 1))
+    master = add_to_master(master, plan=av1, rung=360, resolution="640x360", bandwidth=(1, 1))
     master = add_to_master(master, plan=hdr, rung=1080, resolution="1920x1080", bandwidth=(1, 1))
 
     uris = [line for line in master.splitlines() if line and not line.startswith("#")]
     assert uris == [
         "hdr/1080/index.m3u8",
         "av1/1080/index.m3u8",
-        "av1/540/index.m3u8",
+        "av1/360/index.m3u8",
         "v0/index.m3u8",
     ]
     assert master.splitlines()[:3] == LADDER_MASTER.splitlines()[:3], "the head is kept"
 
 
 def test_each_av1_size_declares_its_own_level():
-    assert plan_rendition("av1", SDR, max_fps=30, height=540).codecs == "av01.0.04M.08"
+    assert plan_rendition("av1", SDR, max_fps=30, height=360).codecs == "av01.0.04M.08"
+    assert plan_rendition("av1", SDR, max_fps=30, height=720).codecs == "av01.0.05M.08"
     assert plan_rendition("av1", SDR, max_fps=30, height=1080).codecs == "av01.0.08M.08"
-    assert rungs_for("av1", 2160) == [1080, 540]
-    assert rungs_for("av1", 720) == [540]
-    assert rungs_for("av1", 360) == [360]
-    assert rungs_for("hdr", 2160) == [1080]
+    assert rungs_for("av1", 1080) == [1080, 720, 360]
+    assert rungs_for("av1", 480) == [360]
+    assert rungs_for("av1", 240) == [240]
+    assert rungs_for("hdr", 2160) == [1080, 720, 360]
 
 
 def test_listing_a_rendition_twice_changes_nothing():
@@ -216,21 +247,29 @@ def test_the_master_is_uploaded_last_so_no_player_meets_a_half_rendition():
 
     assert store.uploads[-1] == "outputs/j/hls/master.m3u8"
     assert set(store.uploads[:-1]) == {
-        "outputs/j/hls/hdr/1080/init.mp4",
-        "outputs/j/hls/hdr/1080/seg00001.m4s",
-        "outputs/j/hls/hdr/1080/index.m3u8",
+        f"outputs/j/hls/hdr/{rung}/{name}"
+        for rung in (1080, 720, 360)
+        for name in ("init.mp4", "seg00001.m4s", "index.m3u8")
     }
     assert b"VIDEO-RANGE=PQ" in store.objects["outputs/j/hls/master.m3u8"]
 
 
-def test_the_popular_rendition_is_built_at_two_sizes_listed_once():
+def test_the_popular_rendition_is_built_at_three_sizes_listed_once():
     store = Store()
 
-    assert run(builder(store, PQ), kind="av1") is True
+    assert run(builder(store, HDR_1080), kind="av1") is True
 
     master = store.objects["outputs/j/hls/master.m3u8"].decode()
-    assert "av1/1080/index.m3u8" in master and "av1/540/index.m3u8" in master
+    for rung in (1080, 720, 360):
+        assert f"av1/{rung}/index.m3u8" in master
     assert store.uploads.count("outputs/j/hls/master.m3u8") == 1
+
+
+def test_a_4k_source_asked_for_av1_is_left_alone():
+    store = Store()
+
+    assert run(builder(store, PQ, runner=lambda *a, **k: pytest.fail("encoded")), "av1") is False
+    assert store.uploads == []
 
 
 def test_an_sdr_source_asked_for_hdr_is_left_alone():

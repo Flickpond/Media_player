@@ -1,8 +1,8 @@
 """Extra AV1 renditions added to a finished ladder: Keep HDR, and popular videos.
 
 The ladder every video gets is H.264, standard range: it plays everywhere.
-Two kinds of video earn one more rendition on top of it, encoded in AV1 at up
-to 1080p and listed in the same master playlist:
+Two kinds of video earn a small AV1 ladder on top of it (1080p, 720p, 360p),
+listed in the same master playlist:
 
 * **hdr** -- an HDR upload, kept HDR (10-bit, PQ or HLG as recorded) when
   `WORKER_KEEP_HDR` is on. The playlist marks it `VIDEO-RANGE=PQ`/`HLG`, and
@@ -10,18 +10,23 @@ to 1080p and listed in the same master playlist:
   every other screen keeps playing the tone-mapped ladder.
 * **av1** -- a video enough people have watched (`AV1_POPULAR_VIEWS`): the
   same picture as the ladder for fewer bytes, where the browser decodes AV1.
+  Only for sources up to 1080p: above that the H.264 ladder goes higher than
+  AV1 does here, and a 4K screen would be moved down to 1080p to save bytes.
 
 Each is its own job on the ladder queue, after the ladder is ready, so it can
 neither delay nor break the video: if it fails, the video simply has no extra
 rendition. The master playlist is uploaded last, so a player never sees a
 rendition whose segments are not there yet.
 
-**Order in the master is what makes a player use them** (checked in Chromium
-with hls.js 1.7): hls.js starts in the codec family of the first entry it can
-play and stays there. So the entries go first -- HDR, then AV1, then the
-ladder. An SDR screen skips the HDR entries by itself and starts in AV1; a
-browser without AV1 skips both and plays the ladder as before. AV1 gets two
-sizes so a slow connection can step down without leaving it.
+**What makes a player use them** (hls.js 1.7, `getStartCodecTier`): it picks
+one codec family to start in and stays there. It prefers AV1 to H.264, but
+skips any family whose *cheapest* entry costs more than its first bandwidth
+estimate -- roughly the cheapest entry in the whole playlist. On flickpond.com
+an uncapped AV1 540p peaked at 5.8 Mbps against H.264 360p's 1 Mbps, and no
+browser ever started in AV1. Hence the 360p rung, and the caps: each rung is
+held below the H.264 ceiling at its height (CAP_SHARE), so the AV1 family's
+cheapest entry is the cheapest in the playlist. The entries are listed first
+as well -- HDR, then AV1, then the ladder.
 """
 
 import logging
@@ -46,7 +51,23 @@ logger = logging.getLogger("app.worker.renditions")
 
 KINDS = ("hdr", "av1")
 # Heights per kind, largest first; a source shorter than one keeps its own.
-RUNGS = {"hdr": (1080,), "av1": (1080, 540)}
+# The same heights as the H.264 ladder, so each rung has a ceiling to sit under.
+RUNGS = {"hdr": (1080, 720, 360), "av1": (1080, 720, 360)}
+# The popular rendition is for sources the H.264 ladder does not take above it.
+AV1_MAX_SOURCE_HEIGHT = 1080
+# Each rung's ceiling, as a share of the H.264 ceiling at the same height. On
+# the 4K HDR demo clip, AV1 at CRF 30 capped at 0.6 matched the H.264 ladder's
+# PSNR at 1080p and 720p on 75-85% of its bytes; HDR's 10 bits get more.
+CAP_SHARE = {"hdr": 0.75, "av1": 0.6}
+# The bottom rung's ceiling, whatever the share says. hls.js starts in a family
+# only if its cheapest entry fits max(cheapest entry anywhere, 500 kbps -- its
+# default first estimate), and simple footage can bring H.264 360p well under
+# 500 kbps. So the bottom rung is held under 500 kbps itself, audio included:
+# the measured peak can reach 1.25x the cap (a one-second buffer averaged into
+# four-second segments), and add_to_master adds 128 kbps for the audio.
+START_RUNG_HEIGHT = 360
+START_CEILING = 296_000
+CRF = 30
 SEGMENT_SECONDS = 4
 # Position in the master, ahead of the ladder (see the module docstring).
 ORDER = {"hdr": 0, "av1": 1}
@@ -66,6 +87,8 @@ class RenditionPlan:
     filters: list[str]
     color_args: list[str]
     crf: int
+    # Bits per second, and the size of the buffer it is averaged over.
+    maxrate: int
 
 
 def rungs_for(kind: str, source_height: int) -> list[int]:
@@ -73,11 +96,21 @@ def rungs_for(kind: str, source_height: int) -> list[int]:
     return heights or [source_height]
 
 
+def ceiling(kind: str, height: int) -> int:
+    """The most a rung of `kind` may spend, in bits per second."""
+    from app.worker.hls import BITRATES, FALLBACK_BITRATE
+
+    h264 = int(BITRATES.get(height, FALLBACK_BITRATE).removesuffix("k")) * 1000
+    shared = int(h264 * CAP_SHARE[kind])
+    return min(shared, START_CEILING) if height <= START_RUNG_HEIGHT else shared
+
+
 def plan_rendition(
     kind: str, probe: SourceProbe, *, max_fps: int, height: int = 1080
 ) -> RenditionPlan | None:
     """What to encode, or None if this source should not get this kind."""
     scale = [fps_cap_filter(max_fps), f"scale=-2:min({height}\\,ih)"]
+    maxrate = ceiling(kind, height) if kind in CAP_SHARE else 0
     if kind == "hdr":
         transfer = probe.color_transfer
         if not probe.hdr or transfer not in TRANSFER_CODE:
@@ -90,16 +123,20 @@ def plan_rendition(
             color_args=[
                 "-color_primaries", "bt2020", "-color_trc", transfer, "-colorspace", "bt2020nc",
             ],
-            crf=30,
+            crf=CRF,
+            maxrate=maxrate,
         )
     if kind == "av1":
+        if probe.height > AV1_MAX_SOURCE_HEIGHT:
+            return None
         return RenditionPlan(
             kind="av1",
             codecs=f"av01.0.{_level(height)}M.08",
             video_range="SDR",
             filters=[*scale, *sdr_filters(probe.hdr)],
             color_args=list(BT709_TAGS) if probe.hdr else [],
-            crf=34,
+            crf=CRF,
+            maxrate=maxrate,
         )
     raise ValueError(f"unknown rendition {kind!r}")
 
@@ -119,6 +156,10 @@ def rendition_command(
         "-vf", ",".join(plan.filters),
         *plan.color_args,
         "-c:v", "libsvtav1", "-preset", "8", "-crf", str(plan.crf),
+        # Capped CRF (SVT-AV1 reports it as such): quality, but never past the
+        # ceiling over a one-second buffer -- which is what keeps the measured
+        # peak, the BANDWIDTH a player chooses by, under the H.264 rung's.
+        "-maxrate", f"{plan.maxrate // 1000}k", "-bufsize", f"{plan.maxrate // 1000}k",
         # Two-second groups, so four-second segments cut on keyframes.
         "-g", str(2 * max_fps),
         "-f", "hls", "-hls_time", str(SEGMENT_SECONDS), "-hls_playlist_type", "vod",
