@@ -25,3 +25,8 @@ output "repository_arn" {
   description = "What the worker role's pull permissions are scoped to."
   value       = aws_ecr_repository.worker.arn
 }
+
+output "ci_deploy_role_arn" {
+  description = "GitHub repository variable AWS_DEPLOY_ROLE_ARN (manual core deploys). Null unless core_instance_id is set."
+  value       = one(aws_iam_role.ci_deploy[*].arn)
+}

@@ -16,8 +16,18 @@ the coordinator encodes that piece itself. The job keeps its own RQ entry,
 heartbeat and give-back exactly as before, so the reaper needs no new rule.
 
 Why the pieces join cleanly -- checked frame by frame against a single
-encode, at 30 fps and at 29.97 fps with a remainder piece, each giving the
-same frame count and duration to the microsecond:
+encode on 20 Oct 2026: 24, 25, 29.97, 50, 60 and 59.94 fps, portrait, and a
+4K HDR 59.94 fps clip, each the same frame count and duration and every
+frame the same picture (nothing under 37 dB against the single encode):
+
+* **Every frame keeps its own timestamp through the rate filter.** Seeking
+  starts a piece's clock at zero, and lowering 60 fps to 30 rounds each
+  frame to an output frame by that clock -- so a piece that started on the
+  wrong one of a pair came out 1/60 s off throughout; at a scene cut, a
+  frame of the next shot early. Pieces put each frame's timestamp back, in
+  whole time base units, before the rate filter, start on a frame that
+  begins an output frame, and stop after a counted number of frames
+  (`frame_starts`, `piece_command`).
 
 * **Pieces start on real source frames.** The coordinator reads the source's
   frame times (packets only, no decoding) and starts each piece at the first
@@ -32,12 +42,13 @@ same frame count and duration to the microsecond:
 
 import json
 import logging
+import math
 import shutil
 import subprocess
 import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from fractions import Fraction
 from pathlib import Path
 from uuid import UUID
@@ -75,6 +86,19 @@ class PiecePlan:
     max_height: int
     preset: str
     crf: int
+    # The rate the encode writes, exactly ("30/1", "24000/1001"): the
+    # source's, or max_fps if lower. With it, each start's own timestamp in
+    # the stream's time base. Empty in a plan written before they existed,
+    # whose pieces then encode as they were planned.
+    output_rate: str = ""
+    start_ticks: list[int] = field(default_factory=list)
+    # How many output frames each piece writes; the last runs to the end (0).
+    frames: list[int] = field(default_factory=list)
+
+    @property
+    def exact(self) -> bool:
+        """Planned with exact timestamps: pieces round as one encode does."""
+        return bool(self.output_rate and self.start_ticks and self.frames)
 
     @property
     def count(self) -> int:
@@ -103,8 +127,25 @@ class PiecePlan:
         return cls(**json.loads(raw))
 
 
-def frame_starts(frame_times: list[float], chunk_seconds: int) -> list[float]:
-    """Each piece's start: the first frame at or after every `chunk_seconds`.
+def output_tick(seconds, rate) -> int:
+    """The output frame the rate filter rounds a source frame to: nearest,
+    a half up (FFmpeg's AV_ROUND_NEAR_INF). Exact given Fractions -- which
+    matters: frame 1000 of a 59.94 fps video is exactly 500.5 frames in at 30.
+    """
+    return math.floor(seconds * rate + Fraction(1, 2))
+
+
+def frame_starts(frame_times: list, chunk_seconds: int, rate=None) -> list:
+    """Each piece's start: the first suitable frame at or after every `chunk_seconds`.
+
+    With `rate` -- the output's, when the encode lowers the frame rate -- a
+    frame is suitable only if it begins its output frame: the one before it
+    rounds to an earlier one. A 60 fps source at 30 has two source frames per
+    output frame and one encode keeps the later; a piece starting on the
+    later one has lost the earlier, and one starting on the earlier has the
+    pair. Starting elsewhere, every frame of the piece came out 1/60 s off --
+    at a scene cut, a whole frame of the next shot early (20 Oct 2026, a
+    4:55 4K upload on flickpond.com).
 
     A remainder under half a piece joins the last piece rather than being
     a sliver of its own; anything longer is a piece.
@@ -112,48 +153,102 @@ def frame_starts(frame_times: list[float], chunk_seconds: int) -> list[float]:
     times = sorted(frame_times)
     starts: list[float] = []
     mark, index = 0.0, 0
+
+    def suitable(i: int) -> bool:
+        if rate is None or i == 0:
+            return True
+        return output_tick(times[i - 1], rate) < output_tick(times[i], rate)
+
     while times and mark <= times[-1]:
-        while index < len(times) and times[index] < mark - 1e-6:
+        while index < len(times) and (times[index] < mark - 1e-6 or not suitable(index)):
             index += 1
         if index == len(times):
             break
         if not starts or times[index] > starts[-1]:
             starts.append(times[index])
         mark += chunk_seconds
+        while mark <= starts[-1]:
+            mark += chunk_seconds
     if len(starts) > 1 and times[-1] - starts[-1] < chunk_seconds / 2:
         starts.pop()
     return starts
 
 
-def read_frame_times(
+def read_frame_ticks(
     source_path: Path, *, ffprobe_binary: str, runner, timeout: int
-) -> list[float]:
-    """Every video frame's presentation time, from the packets alone."""
+) -> tuple[list[int], Fraction]:
+    """Every video frame's timestamp, from the packets alone, exactly: in
+    the stream's own time base units, and that time base.
+
+    Measured from the file's start time: where FFmpeg puts zero for one
+    encode, and what `-ss` counts from. Integers rather than seconds because
+    seconds are rounded to six places, and a frame exactly halfway between
+    two output frames goes one way or the other on less than that.
+    ([], 1) if they cannot be read.
+    """
     command = [
         ffprobe_binary, "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "packet=pts_time", "-of", "csv=p=0", str(source_path),
+        "-show_entries", "packet=pts:stream=time_base:format=start_time",
+        "-of", "json", str(source_path),
     ]
     result = runner(command, capture_output=True, text=True, timeout=timeout, check=False)
     if result.returncode != 0:
-        return []
-    times = []
-    for line in (result.stdout or "").splitlines():
-        value = line.strip().rstrip(",")
-        if value and value != "N/A":
-            times.append(float(value))
-    return times
+        return [], Fraction(1)
+    try:
+        data = json.loads(result.stdout or "{}")
+        time_base = Fraction(data["streams"][0]["time_base"])
+        start = data.get("format", {}).get("start_time") or "0"
+        origin = round(Fraction(start) / time_base)
+        ticks = sorted(
+            int(packet["pts"]) - origin
+            for packet in data.get("packets", [])
+            if str(packet.get("pts", "N/A")).lstrip("-").isdigit()
+        )
+    except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError):
+        return [], Fraction(1)
+    return ticks, time_base
+
+
+def read_frame_rate(
+    source_path: Path, *, ffprobe_binary: str, runner, timeout: int
+) -> Fraction | None:
+    """The source's frame rate as FFmpeg's rate filter sees it, exactly.
+
+    FFmpeg's guess (`av_guess_frame_rate`): the stream's base rate, unless
+    that is implausibly high (over 210) and the average is not (under 70) --
+    then the average.
+    """
+    command = [
+        ffprobe_binary, "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=r_frame_rate,avg_frame_rate", "-of", "json", str(source_path),
+    ]
+    result = runner(command, capture_output=True, text=True, timeout=timeout, check=False)
+    if result.returncode != 0:
+        return None
+    try:
+        stream = json.loads(result.stdout or "{}")["streams"][0]
+        base = Fraction(stream["r_frame_rate"])
+        average = Fraction(stream.get("avg_frame_rate") or "0/1")
+    except (ValueError, KeyError, IndexError, ZeroDivisionError, TypeError):
+        return None
+    if 0 < average < 70 and base > 210:
+        return average
+    return base if base > 0 else None
 
 
 class PieceBoard:
     """The pieces of one job in Redis: to do, in progress (with when), done."""
 
-    def __init__(self, connection: Redis, job_id: UUID | str) -> None:
+    def __init__(self, connection: Redis, job_id: UUID | str, *, plan_type=None) -> None:
         self._redis = connection
+        # The MP4's plan by default; the ladder's (app.worker.ladder_pieces)
+        # is on a board of its own, keyed "<job>:ladder".
+        self._plan_type = plan_type or PiecePlan
         prefix = f"flickpond:pieces:{job_id}"
         self._plan, self._todo = f"{prefix}:plan", f"{prefix}:todo"
         self._inflight, self._done = f"{prefix}:inflight", f"{prefix}:done"
 
-    def open(self, plan: PiecePlan) -> None:
+    def open(self, plan) -> None:
         keys = (self._plan, self._todo, self._inflight, self._done)
         with self._redis.pipeline() as pipe:
             pipe.delete(*keys)
@@ -162,9 +257,9 @@ class PieceBoard:
             pipe.expire(self._todo, BOARD_TTL_SECONDS)
             pipe.execute()
 
-    def plan(self) -> PiecePlan | None:
+    def plan(self):
         raw = self._redis.get(self._plan)
-        return PiecePlan.from_json(raw) if raw is not None else None
+        return self._plan_type.from_json(raw) if raw is not None else None
 
     def take(self, *, now: float | None = None) -> int | None:
         raw = self._redis.lpop(self._todo)
@@ -237,8 +332,31 @@ def piece_command(
         ffmpeg_binary, "-hide_banner", "-loglevel", "error",
         "-ss", f"{start:.6f}", "-i", str(source_path),
     ]
-    if length is not None:
+    if plan.exact:
+        # Ended by count, not by time: a time limit becomes the rate
+        # filter's end point, which it rounds too -- and a piece ending
+        # exactly between two output frames lost its last one. The source
+        # is read on past the piece only as far as that frame needs.
+        if plan.frames[index]:
+            command.extend(["-frames:v", str(plan.frames[index])])
+    elif length is not None:
         command.extend(["-t", f"{length:.6f}"])
+    filters = mp4_video_filters(plan.max_fps, plan.max_height, plan.hdr)
+    if plan.exact:
+        # The seek undone first: `-ss` starts the piece's clock at zero, and
+        # the rate filter rounds frames to output frames by that clock. On
+        # the video's own clock it rounds exactly as one encode does -- so
+        # every frame gets back its own timestamp, in whole time base units:
+        # the first frame's, plus how far after it each one is. (Adding the
+        # seek in seconds instead tipped a frame exactly halfway between two
+        # output frames the other way.) The shift also loses the source's
+        # rate -- `source_fps` then reads as unknown and a 24 fps video came
+        # out at 30 -- so the rate filter is given the output rate as a number.
+        filters = [
+            f"setpts=PTS-STARTPTS+{plan.start_ticks[index]}",
+            f"fps=fps={plan.output_rate}",
+            *filters[1:],
+        ]
     command.extend([
         "-an",
         # The piece's first frame at exactly zero. A boundary between two
@@ -247,9 +365,7 @@ def piece_command(
         # puts it one frame out from that join on. Last, not first: before
         # the rate cap it would hide the source's rate from `source_fps`.
         # With starts on real frames this is belt and braces.
-        "-vf", ",".join(
-            [*mp4_video_filters(plan.max_fps, plan.max_height, plan.hdr), "setpts=PTS-STARTPTS"]
-        ),
+        "-vf", ",".join([*filters, "setpts=PTS-STARTPTS"]),
         *(BT709_TAGS if plan.hdr else []),
         "-c:v", "libx264", "-preset", plan.preset, "-crf", str(plan.crf),
         "-y", str(output_path),
@@ -336,22 +452,38 @@ class ChunkedMp4:
         """Encode `output_path` in pieces. False if this source cannot be cut
         on its own frames -- the caller then encodes it in one run, which is
         always correct, instead of risking a join a frame out."""
-        times = read_frame_times(
+        ticks, time_base = read_frame_ticks(
             source_path, ffprobe_binary=self._ffprobe, runner=self._runner, timeout=self._timeout
         )
-        starts = frame_starts(times, self._chunk_seconds)
+        times = [tick * time_base for tick in ticks]
+        source_rate = read_frame_rate(
+            source_path, ffprobe_binary=self._ffprobe, runner=self._runner, timeout=self._timeout
+        )
+        if source_rate is None:
+            logger.info("job %s: no frame rate to cut by; one encode instead", job_id)
+            return False
+        # The rate the encode writes: the source's, or max_fps if lower.
+        rate = min(Fraction(max_fps), source_rate)
+        starts = frame_starts(times, self._chunk_seconds, rate)
         if len(starts) < 2:
             logger.info("job %s: no frame times to cut on; one encode instead", job_id)
             return False
         plan = PiecePlan(
             job_id=str(job_id),
             source_key=source_key,
-            starts=starts,
+            starts=[float(start) for start in starts],
             max_fps=max_fps,
             hdr=probe.hdr,
             max_height=self._max_height,
             preset=self._preset,
             crf=self._crf,
+            output_rate=f"{rate.numerator}/{rate.denominator}",
+            start_ticks=[int(start / time_base) for start in starts],
+            frames=[
+                output_tick(after, rate) - output_tick(start, rate)
+                for start, after in zip(starts, starts[1:], strict=False)
+            ]
+            + [0],
         )
         board = PieceBoard(self._redis, job_id)
         prefix = pieces_prefix(self._output_prefix, job_id)

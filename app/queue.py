@@ -20,6 +20,8 @@ from app.services.worker_wake import wake_workers
 PROCESS_JOB_TASK = "app.worker.tasks.process_job"
 BUILD_LADDER_TASK = "app.worker.tasks.build_ladder"
 HELP_ENCODE_TASK = "app.worker.tasks.help_encode"
+HELP_LADDER_TASK = "app.worker.tasks.help_ladder"
+BUILD_RENDITION_TASK = "app.worker.tasks.build_rendition"
 
 # Ladders get a queue of their own, named after the main one, so a worker can
 # list the two in priority order: an uploader waiting for their MP4 is never
@@ -51,7 +53,7 @@ def get_ladder_queue(connection: Redis | None = None) -> Queue:
     return Queue(
         settings.redis_queue + LADDER_QUEUE_SUFFIX,
         connection=connection or get_redis_connection(),
-        default_timeout=settings.worker_job_timeout_seconds,
+        default_timeout=settings.worker_ladder_timeout_seconds,
     )
 
 
@@ -68,6 +70,24 @@ def enqueue_helper(job_id: UUID, *, queue: Queue | None = None) -> str:
     """Ask one more worker to help encode `job_id`'s pieces."""
     target = queue or get_chunk_queue()
     return target.enqueue(HELP_ENCODE_TASK, str(job_id)).id
+
+
+def enqueue_ladder_helper(job_id: UUID, *, queue: Queue | None = None) -> str:
+    """Ask one more worker to help encode `job_id`'s ladder pieces. On the
+    pieces queue, so it comes before ladders; given the ladder's own limit,
+    since a helper may take several 4K pieces."""
+    target = queue or get_chunk_queue()
+    timeout = get_settings().worker_ladder_timeout_seconds
+    return target.enqueue(HELP_LADDER_TASK, str(job_id), job_timeout=timeout).id
+
+
+def enqueue_rendition(job_id: UUID | str, kind: str, *, queue: Queue | None = None) -> str:
+    """Queue an extra AV1 rendition (`hdr` or `av1`) for a job whose ladder
+    is ready. On the ladder queue: it is optional, so it waits behind MP4s."""
+    target = queue or get_ladder_queue()
+    return target.enqueue(
+        BUILD_RENDITION_TASK, str(job_id), kind, job_id=f"{job_id}-{kind}"
+    ).id
 
 
 def ladder_rq_job_id(job_id: UUID) -> str:

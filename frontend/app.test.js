@@ -2594,6 +2594,41 @@ describe("player", () => {
     expect(hls.currentLevel).toBe(-1);
   });
 
+  it("picks a height within the codec and range already playing", async () => {
+    const levels = FakeHls.levels;
+    // Ordered as the master lists them since sprint 6: HDR, AV1, then H.264.
+    FakeHls.levels = [
+      { height: 1080, videoCodec: "av01.0.08M.10.0.110.09.16.09.0", videoRange: "PQ" },
+      { height: 1080, videoCodec: "av01.0.08M.08", videoRange: "SDR" },
+      { height: 540, videoCodec: "av01.0.04M.08", videoRange: "SDR" },
+      { height: 1080, videoCodec: "avc1.640028" },
+      { height: 360, videoCodec: "avc1.64001e" },
+    ];
+    try {
+      const el = await loadAppWithLibraries();
+      await openLibrary(el, [ADAPTIVE]);
+      play(cardFor(el, "holiday.mp4"));
+      const hls = FakeHls.instances[0];
+      hls.emit(HLS_EVENTS.MANIFEST_PARSED);
+      const { onChange, options } = FakePlyr.created[0].config.quality;
+      expect(options).toEqual([0, 1080, 540, 360]);
+
+      hls.currentLevel = 2; // playing AV1 540p on an SDR screen
+      onChange(1080);
+      // AV1 SDR 1080p, not the HDR one listed first.
+      expect(hls.currentLevel).toBe(1);
+
+      hls.currentLevel = 4; // playing H.264
+      onChange(1080);
+      expect(hls.currentLevel).toBe(3);
+
+      onChange(540); // only AV1 has it: switch families rather than refuse
+      expect(hls.currentLevel).toBe(2);
+    } finally {
+      FakeHls.levels = levels;
+    }
+  });
+
   it("destroys both libraries when the card is closed again", async () => {
     const el = await loadAppWithLibraries();
     await openLibrary(el, [ADAPTIVE]);

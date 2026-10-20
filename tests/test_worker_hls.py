@@ -237,6 +237,21 @@ def test_build_uploads_every_part_and_returns_the_master_key():
     assert f"outputs/{job_id}/hls/v2/seg00001.ts" in uploaded
 
 
+def test_the_master_is_uploaded_last_so_no_player_meets_a_missing_segment():
+    """Sorted by name it went first: on flickpond.com a ladder's master was
+    readable while its audio segments were still uploading."""
+    store = FakeStore()
+    builder = HlsLadderBuilder(
+        store, output_prefix="outputs", runner=ladder_writing_runner(variant_count=3)
+    )
+
+    builder.build(job_id=uuid4(), source_path=SOURCE, probe=probe())
+
+    keys = [key for key, _ in store.uploads]
+    assert keys[-1].endswith("/master.m3u8")
+    assert sum(key.endswith("/master.m3u8") for key in keys) == 1
+
+
 def test_every_uploaded_part_carries_the_right_content_type():
     store = FakeStore()
     builder = HlsLadderBuilder(

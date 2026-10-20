@@ -595,8 +595,9 @@ def get_ladder_step():
 
     from app.worker.probe import probe_source
 
+    store = MinioObjectStore(internal_client(), bucket=bucket())
     return HlsLadderBuilder(
-        MinioObjectStore(internal_client(), bucket=bucket()),
+        store,
         prober=partial(
             probe_source,
             ffprobe_binary=settings.worker_ffprobe_binary,
@@ -605,8 +606,29 @@ def get_ladder_step():
         output_prefix=settings.worker_output_prefix,
         ffmpeg_binary=settings.worker_ffmpeg_binary,
         preset=settings.worker_ffmpeg_preset,
-        timeout_seconds=settings.worker_ffmpeg_timeout_seconds,
+        timeout_seconds=settings.worker_ladder_timeout_seconds - 30,
         max_height=settings.worker_hls_max_height,
+        pieces=_ladder_pieces(store, settings) if settings.worker_chunked_ladder else None,
+    )
+
+
+def _ladder_pieces(store: "ObjectStore", settings):
+    from app.queue import enqueue_ladder_helper, get_redis_connection
+    from app.worker.ladder_pieces import LadderPieces
+
+    return LadderPieces(
+        store,
+        get_redis_connection(),
+        enqueue_helper=enqueue_ladder_helper,
+        output_prefix=settings.worker_output_prefix,
+        ffmpeg_binary=settings.worker_ffmpeg_binary,
+        ffprobe_binary=settings.worker_ffprobe_binary,
+        preset=settings.worker_ffmpeg_preset,
+        piece_seconds=settings.worker_ladder_piece_seconds,
+        min_duration_seconds=settings.worker_chunk_min_duration_seconds,
+        helpers=settings.worker_chunk_helpers,
+        timeout_seconds=settings.worker_ladder_timeout_seconds - 30,
+        wake=_helper_waker(),
     )
 
 

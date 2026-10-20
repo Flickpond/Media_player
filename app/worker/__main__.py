@@ -70,6 +70,16 @@ def build_worker(*, burst_safe: bool = False):
     return worker_class([queue, chunk_queue, ladder_queue], connection=connection)
 
 
+def register_hooks(settings) -> None:
+    """Work that follows a finished ladder, per this worker's switches.
+    Registered before RQ forks, so every job's process has them."""
+    if settings.worker_keep_hdr:
+        from app.worker import after_ladder
+        from app.worker.renditions import queue_keep_hdr
+
+        after_ladder.register(queue_keep_hdr)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Flickpond job worker")
     parser.add_argument(
@@ -88,6 +98,7 @@ def main() -> None:
         settings.redis_host,
         settings.redis_port,
     )
+    register_hooks(settings)
 
     worker = build_worker(burst_safe=args.burst)
     worker.work(burst=args.burst)

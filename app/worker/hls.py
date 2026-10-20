@@ -101,13 +101,22 @@ def content_type_for(name: str) -> str:
     way -- and shows up only as a player refusing a manifest it was handed
     under a video content type.
     """
-    return PLAYLIST_CONTENT_TYPE if name.endswith(".m3u8") else SEGMENT_CONTENT_TYPE
+    if name.endswith(".m3u8"):
+        return PLAYLIST_CONTENT_TYPE
+    # The AV1 renditions (app.worker.renditions) are fragmented MP4.
+    if name.endswith(".m4s"):
+        return "video/iso.segment"
+    if name.endswith(".mp4"):
+        return "video/mp4"
+    return SEGMENT_CONTENT_TYPE
 
 
 AUDIO_GROUP = "audio"
 
 
-def _ladder_filter(heights: tuple[int, ...], max_fps: int, hdr: bool = False) -> str:
+def _ladder_filter(
+    heights: tuple[int, ...], max_fps: int, hdr: bool = False, rate_filter: str | None = None
+) -> str:
     """The filter graph: cap the frame rate (see `fps_cap_filter`), then
     scale every rung.
 
@@ -117,7 +126,9 @@ def _ladder_filter(heights: tuple[int, ...], max_fps: int, hdr: bool = False) ->
     because that is the order the maps and `-var_stream_map` use.
     """
     # Tone-mapped once, before the split, so every rung shares the work.
-    fps = ",".join([fps_cap_filter(max_fps), *sdr_filters(hdr)])
+    # `rate_filter` replaces the rate cap for a piece of a ladder encoded in
+    # pieces (app.worker.ladder_pieces), which must round on the video's clock.
+    fps = ",".join([rate_filter or fps_cap_filter(max_fps), *sdr_filters(hdr)])
     index = {height: i for i, height in enumerate(heights)}
     anchor = CASCADE_FROM if CASCADE_FROM in index else None
     from_source = [h for h in heights if anchor is None or h >= anchor]
@@ -272,8 +283,11 @@ class HlsLadderBuilder:
         max_height: int = 2160,
         runner=run_process,
         prober=None,
+        pieces=None,
     ) -> None:
         self._store = store
+        # A `LadderPieces`, when the ladder is encoded in pieces across workers.
+        self._pieces = pieces
         self._output_prefix = output_prefix.strip("/")
         self._ffmpeg_binary = ffmpeg_binary
         self._preset = preset
@@ -300,7 +314,8 @@ class HlsLadderBuilder:
             self._store.download_file(key=source_key, destination=str(source_path))
             probe = self._with_file_facts(job_id, source_path, probe)
             return self.build(
-                job_id=job_id, source_path=source_path, probe=probe, max_fps=max_fps
+                job_id=job_id, source_path=source_path, probe=probe, max_fps=max_fps,
+                source_key=source_key,
             )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -332,6 +347,7 @@ class HlsLadderBuilder:
         source_path: Path,
         probe: SourceProbe,
         max_fps: int = DEFAULT_MAX_FPS,
+        source_key: str | None = None,
     ) -> str:
         """Build and upload the ladder, returning the master playlist's key."""
         heights = variants_for(probe.height, max_height=self._max_height)
@@ -351,35 +367,9 @@ class HlsLadderBuilder:
             for index in range(len(heights) + 1):
                 (work_dir / f"v{index}").mkdir(parents=True, exist_ok=True)
 
-            command = build_ladder_command(
-                source_path,
-                work_dir,
-                heights=heights,
-                ffmpeg_binary=self._ffmpeg_binary,
-                preset=self._preset,
-                max_fps=max_fps,
-                hdr=probe.hdr,
-            )
-            try:
-                result = self._runner(
-                    command,
-                    capture_output=True,
-                    text=True,
-                    timeout=self._timeout_seconds,
-                    check=False,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise ObjectStoreError(
-                    f"HLS ladder timed out after {self._timeout_seconds}s",
-                    user_message=UNPROCESSABLE_VIDEO,
-                ) from exc
-
-            if result.returncode != 0:
-                detail = "\n".join((result.stderr or "").strip().splitlines()[-5:])[:1000]
-                raise ObjectStoreError(
-                    f"FFmpeg failed building the HLS ladder: {detail}",
-                    user_message=UNPROCESSABLE_VIDEO,
-                )
+            if not self._encode_in_pieces(job_id, source_key, source_path, probe, max_fps,
+                                          heights, work_dir):
+                self._encode_in_one_run(source_path, probe, max_fps, heights, work_dir)
 
             master = work_dir / MASTER_PLAYLIST_NAME
             if not master.is_file():
@@ -397,9 +387,13 @@ class HlsLadderBuilder:
                 )
 
             prefix = self.prefix_for(job_id)
-            for path in sorted(work_dir.rglob("*")):
-                if not path.is_file():
-                    continue
+            # The master last: until it is there, no player is sent to a rung
+            # whose segments are still on their way. Sorted by name it went
+            # first -- on flickpond.com a 4:55 4K ladder's master was readable
+            # while its audio was still uploading (20 Oct 2026).
+            files = sorted(path for path in work_dir.rglob("*") if path.is_file())
+            files.sort(key=lambda path: path == master)
+            for path in files:
                 relative = PurePosixPath(path.relative_to(work_dir).as_posix())
                 self._store.upload_file(
                     key=f"{prefix}/{relative}",
@@ -410,3 +404,43 @@ class HlsLadderBuilder:
             return f"{prefix}/{MASTER_PLAYLIST_NAME}"
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
+
+    def _encode_in_pieces(self, job_id, source_key, source_path, probe, max_fps, heights,
+                          work_dir) -> bool:
+        if self._pieces is None or source_key is None or not self._pieces.wants(probe):
+            return False
+        return self._pieces.encode(
+            job_id=job_id, source_key=source_key, source_path=source_path, probe=probe,
+            max_fps=max_fps, heights=heights, work_dir=work_dir,
+        )
+
+    def _encode_in_one_run(self, source_path, probe, max_fps, heights, work_dir) -> None:
+        command = build_ladder_command(
+            source_path,
+            work_dir,
+            heights=heights,
+            ffmpeg_binary=self._ffmpeg_binary,
+            preset=self._preset,
+            max_fps=max_fps,
+            hdr=probe.hdr,
+        )
+        try:
+            result = self._runner(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=self._timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ObjectStoreError(
+                f"HLS ladder timed out after {self._timeout_seconds}s",
+                user_message=UNPROCESSABLE_VIDEO,
+            ) from exc
+
+        if result.returncode != 0:
+            detail = "\n".join((result.stderr or "").strip().splitlines()[-5:])[:1000]
+            raise ObjectStoreError(
+                f"FFmpeg failed building the HLS ladder: {detail}",
+                user_message=UNPROCESSABLE_VIDEO,
+            )

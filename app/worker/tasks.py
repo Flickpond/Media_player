@@ -366,6 +366,92 @@ def help_encode(job_id: str) -> str:
     return f"encoded {encoded} pieces"
 
 
+def build_rendition(job_id: str, kind: str) -> str:
+    """RQ entrypoint for an extra AV1 rendition (app.worker.renditions).
+
+    Never touches the job's row: the video was finished long before, and a
+    failure here costs only the rendition, logged like any other job's.
+    """
+    from functools import partial
+
+    from app.config import get_settings
+    from app.services.minio_client import bucket, internal_client
+    from app.worker.probe import probe_source
+    from app.worker.renditions import RenditionBuilder
+    from app.worker.storage import MinioObjectStore
+
+    settings = get_settings()
+
+    async def load():
+        async with get_worker_session_factory()() as session:
+            return await get_job(session, UUID(job_id))
+
+    with stop_on_sigterm():
+        job = asyncio.run(load())
+        if job is None or job.hls_key is None:
+            return "skipped: no ladder"
+        builder = RenditionBuilder(
+            MinioObjectStore(internal_client(), bucket=bucket()),
+            prober=partial(
+                probe_source,
+                ffprobe_binary=settings.worker_ffprobe_binary,
+                timeout_seconds=settings.worker_ffprobe_timeout_seconds,
+            ),
+            ffmpeg_binary=settings.worker_ffmpeg_binary,
+            timeout_seconds=settings.worker_ladder_timeout_seconds - 30,
+            master_lock=master_lock,
+        )
+        # An upload's rendition from its original; an edit's from the edit.
+        source = job.source_key if job.operations is None else job.output_key
+        built = builder.run(kind=kind, source_key=source, hls_key=job.hls_key, max_fps=job.max_fps)
+    return f"{kind} rendition {'added' if built else 'not needed'}"
+
+
+def help_ladder(job_id: str) -> str:
+    """RQ entrypoint for the pieces queue: help encode another job's ladder.
+
+    As `help_encode`: a stop gives the piece in hand back and ends quietly.
+    """
+    from app.config import get_settings
+    from app.queue import get_redis_connection
+    from app.services.minio_client import bucket, internal_client
+    from app.worker.interruption import Interrupted
+    from app.worker.ladder_pieces import help_ladder as encode_ladder_pieces
+    from app.worker.storage import MinioObjectStore
+
+    settings = get_settings()
+    with stop_on_sigterm():
+        try:
+            encoded = encode_ladder_pieces(
+                UUID(job_id),
+                store=MinioObjectStore(internal_client(), bucket=bucket()),
+                connection=get_redis_connection(),
+                output_prefix=settings.worker_output_prefix,
+                ffmpeg_binary=settings.worker_ffmpeg_binary,
+                timeout_seconds=settings.worker_ladder_timeout_seconds - 30,
+            )
+        except (Interrupted, ObjectStoreError):
+            if stop_requested():
+                return "stopped; piece given back"
+            raise
+    return f"encoded {encoded} ladder pieces"
+
+
+MASTER_LOCK_KEY = "flickpond:master-lock:{}"
+
+
+def master_lock(hls_key: str, connection=None):
+    """One writer at a time for a video's master playlist, across workers.
+
+    Held for a download, a few lines of text and an upload: a minute before
+    it expires on its own (a worker that dies holding it), five to wait.
+    """
+    from app.queue import get_redis_connection
+
+    redis = connection or get_redis_connection()
+    return redis.lock(MASTER_LOCK_KEY.format(hls_key), timeout=60, blocking_timeout=300)
+
+
 def _previous_interruptions() -> int:
     """How many times RQ has already re-run this queue entry.
 
