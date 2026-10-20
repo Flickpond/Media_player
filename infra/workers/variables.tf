@@ -170,7 +170,7 @@ variable "metrics_namespace" {
 }
 
 variable "alarm_topic_arn" {
-  description = "Optional SNS topic told when queue-depth data stops arriving. Null: the alarm still shows in the console."
+  description = "SNS topic told when queue-depth data stops arriving, and again when it is back: infra/alerts' alerts_topic_arn. Null: the alarm still shows in the console, and tells nobody."
   type        = string
   default     = null
 }

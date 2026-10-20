@@ -27,7 +27,7 @@ ElastiCache 6379  ◀─┴── worker Auto Scaling Group  ◀── step scal
 | File | What |
 |---|---|
 | `compute.tf` | Launch template (AL2023 arm64, ECS-optimized so Docker is preinstalled; IMDSv2, encrypted gp3, the workers' own instance profile) and the group: 100% spot, `price-capacity-optimized`, five 4 vCPU instance types, capacity rebalance, a termination lifecycle hook for the drain. Two schedules: one warm worker 08:00–24:00 Asia/Shanghai, none overnight |
-| `scaling.tf` | Out: jobs still queued at two consecutive one-minute samples → +1/+2/+4 by backlog. In: nothing queued or running for 15 minutes → back to the scheduled minimum. An alarm for when queue-depth data stops |
+| `scaling.tf` | Out: jobs still queued at two consecutive one-minute samples → +1/+2/+4 by backlog. In: nothing queued or running for 15 minutes → back to the scheduled minimum. An alarm for when queue-depth data stops, sent to [`../alerts`](../alerts)' topic through `alarm_topic_arn` |
 | `network.tf` | Worker security group: no inbound; out 443, and Postgres and Valkey to their own security groups. The matching ingress on those groups, behind `open_datastores_to_workers` (off) |
 | `iam.tf` | **A worker role of its own:** the videos bucket, pull from the worker repository, read exactly `postgres_dsn`, `redis_host` and `redis_password`, complete this group's lifecycle actions. **On the core's role,** one inline policy: PutMetricData (namespace `Flickpond` only) and waking this group from zero (`SetDesiredCapacity`) |
 | `user-data.sh.tftpl` | Boot: Docker, the datastore settings from Parameter Store, ECR login, `python -m app.worker`, and the `flickpond-drain` service (contract 2.3) |

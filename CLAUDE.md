@@ -95,7 +95,7 @@ production, so its AWS resources keep `staging` in their names.
 | Datastores | RDS PostgreSQL and ElastiCache Valkey, private, TLS-only. Secrets in SSM `/flickpond/staging/*` |
 | Video | S3 `flickpond-staging-videos-919e62dc`; HLS segments through CloudFront |
 | Workers | Spot group `flickpond-staging-workers`, 0–4, booting `flickpond/worker:<sha>` from ECR. One by day (08–24 Asia/Shanghai), none overnight; the API wakes it when a job is queued |
-| Infra | `infra/terraform` (base), `infra/registry`, `infra/workers`; state in S3 |
+| Infra | `infra/terraform` (base), `infra/registry`, `infra/workers`, `infra/alerts` (email on site down, queue metrics missing, budget); state in S3 |
 
 TLS via Let's Encrypt on the core, renewed by the `certbot` service; 80
 redirects to 443; `www` redirects to the bare domain (T-24).
