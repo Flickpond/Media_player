@@ -407,6 +407,36 @@ def build_rendition(job_id: str, kind: str) -> str:
     return f"{kind} rendition {'added' if built else 'not needed'}"
 
 
+def help_ladder(job_id: str) -> str:
+    """RQ entrypoint for the pieces queue: help encode another job's ladder.
+
+    As `help_encode`: a stop gives the piece in hand back and ends quietly.
+    """
+    from app.config import get_settings
+    from app.queue import get_redis_connection
+    from app.services.minio_client import bucket, internal_client
+    from app.worker.interruption import Interrupted
+    from app.worker.ladder_pieces import help_ladder as encode_ladder_pieces
+    from app.worker.storage import MinioObjectStore
+
+    settings = get_settings()
+    with stop_on_sigterm():
+        try:
+            encoded = encode_ladder_pieces(
+                UUID(job_id),
+                store=MinioObjectStore(internal_client(), bucket=bucket()),
+                connection=get_redis_connection(),
+                output_prefix=settings.worker_output_prefix,
+                ffmpeg_binary=settings.worker_ffmpeg_binary,
+                timeout_seconds=settings.worker_ladder_timeout_seconds - 30,
+            )
+        except (Interrupted, ObjectStoreError):
+            if stop_requested():
+                return "stopped; piece given back"
+            raise
+    return f"encoded {encoded} ladder pieces"
+
+
 MASTER_LOCK_KEY = "flickpond:master-lock:{}"
 
 

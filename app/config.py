@@ -102,6 +102,10 @@ class Settings(BaseSettings):
     # too and must give them the same limit. FFmpeg stops 30 s sooner, so a
     # timed-out encode is reported, not killed mid-write.
     worker_ladder_timeout_seconds: int = 3600
+    # The HD ladder in pieces across workers (app/worker/ladder_pieces.py).
+    # Off until proven on flickpond.com; helpers come from worker_chunk_helpers.
+    worker_chunked_ladder: bool = False
+    worker_ladder_piece_seconds: int = 30
     # Chunked MP4 (app/worker/chunked.py, sprint 6 plan 2.3). Off until a
     # 10-minute video has been timed and its joins checked on spot workers.
     worker_chunked_mp4: bool = False

@@ -20,6 +20,7 @@ from app.services.worker_wake import wake_workers
 PROCESS_JOB_TASK = "app.worker.tasks.process_job"
 BUILD_LADDER_TASK = "app.worker.tasks.build_ladder"
 HELP_ENCODE_TASK = "app.worker.tasks.help_encode"
+HELP_LADDER_TASK = "app.worker.tasks.help_ladder"
 BUILD_RENDITION_TASK = "app.worker.tasks.build_rendition"
 
 # Ladders get a queue of their own, named after the main one, so a worker can
@@ -69,6 +70,15 @@ def enqueue_helper(job_id: UUID, *, queue: Queue | None = None) -> str:
     """Ask one more worker to help encode `job_id`'s pieces."""
     target = queue or get_chunk_queue()
     return target.enqueue(HELP_ENCODE_TASK, str(job_id)).id
+
+
+def enqueue_ladder_helper(job_id: UUID, *, queue: Queue | None = None) -> str:
+    """Ask one more worker to help encode `job_id`'s ladder pieces. On the
+    pieces queue, so it comes before ladders; given the ladder's own limit,
+    since a helper may take several 4K pieces."""
+    target = queue or get_chunk_queue()
+    timeout = get_settings().worker_ladder_timeout_seconds
+    return target.enqueue(HELP_LADDER_TASK, str(job_id), job_timeout=timeout).id
 
 
 def enqueue_rendition(job_id: UUID | str, kind: str, *, queue: Queue | None = None) -> str:

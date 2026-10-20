@@ -239,13 +239,16 @@ def read_frame_rate(
 class PieceBoard:
     """The pieces of one job in Redis: to do, in progress (with when), done."""
 
-    def __init__(self, connection: Redis, job_id: UUID | str) -> None:
+    def __init__(self, connection: Redis, job_id: UUID | str, *, plan_type=None) -> None:
         self._redis = connection
+        # The MP4's plan by default; the ladder's (app.worker.ladder_pieces)
+        # is on a board of its own, keyed "<job>:ladder".
+        self._plan_type = plan_type or PiecePlan
         prefix = f"flickpond:pieces:{job_id}"
         self._plan, self._todo = f"{prefix}:plan", f"{prefix}:todo"
         self._inflight, self._done = f"{prefix}:inflight", f"{prefix}:done"
 
-    def open(self, plan: PiecePlan) -> None:
+    def open(self, plan) -> None:
         keys = (self._plan, self._todo, self._inflight, self._done)
         with self._redis.pipeline() as pipe:
             pipe.delete(*keys)
@@ -254,9 +257,9 @@ class PieceBoard:
             pipe.expire(self._todo, BOARD_TTL_SECONDS)
             pipe.execute()
 
-    def plan(self) -> PiecePlan | None:
+    def plan(self):
         raw = self._redis.get(self._plan)
-        return PiecePlan.from_json(raw) if raw is not None else None
+        return self._plan_type.from_json(raw) if raw is not None else None
 
     def take(self, *, now: float | None = None) -> int | None:
         raw = self._redis.lpop(self._todo)

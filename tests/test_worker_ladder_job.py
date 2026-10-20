@@ -444,8 +444,10 @@ def test_the_builder_downloads_its_input_and_cleans_its_temp_dir(monkeypatch):
     builder = HlsLadderBuilder(store, output_prefix="outputs")
     seen: dict = {}
 
-    def fake_build(*, job_id, source_path, probe, max_fps=30):
+    def fake_build(*, job_id, source_path, probe, max_fps=30, source_key=None):
         seen["path"] = source_path
+        # Passed on, so helpers on other workers can fetch it for ladder pieces.
+        seen["key"] = source_key
         assert source_path.read_bytes() == b"src"
         return "outputs/x/hls/master.m3u8"
 
@@ -455,6 +457,7 @@ def test_the_builder_downloads_its_input_and_cleans_its_temp_dir(monkeypatch):
 
     assert key == "outputs/x/hls/master.m3u8"
     assert store.downloads == ["uploads/a/demo.mov"]
+    assert seen["key"] == "uploads/a/demo.mov"
     assert not seen["path"].parent.exists()
 
 
