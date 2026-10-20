@@ -6,6 +6,8 @@ and what the commands say. The joins themselves were checked frame by frame
 with real FFmpeg (see app/worker/chunked.py).
 """
 
+import json
+from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -21,8 +23,10 @@ from app.worker.chunked import (
     PiecePlan,
     frame_starts,
     help_encode,
+    output_tick,
     piece_command,
-    read_frame_times,
+    read_frame_rate,
+    read_frame_ticks,
 )
 from app.worker.interruption import Interrupted
 from app.worker.probe import SourceProbe
@@ -90,11 +94,19 @@ class FakeFfmpeg:
         return SimpleNamespace(returncode=0, stderr="")
 
     def _probe(self, command):
-        if "packet=pts_time" in command:
+        if "packet=pts:stream=time_base:format=start_time" in command:
             if not self.frame_times:
                 return SimpleNamespace(returncode=1, stdout="", stderr="no packets")
-            times = "\n".join(f"{t:.6f}" for t in frames(self.duration))
-            return SimpleNamespace(returncode=0, stdout=times + "\nN/A\n", stderr="")
+            # 30 fps in a 1/30 time base: frame k at pts k.
+            packets = [{"pts": k} for k in range(len(frames(self.duration)))]
+            stdout = json.dumps(
+                {
+                    "packets": [*packets, {"pts": "N/A"}],
+                    "streams": [{"time_base": "1/30"}],
+                    "format": {},
+                }
+            )
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
         # A piece being measured for the join: 10 s at 30 fps.
         stream = '{"streams": [{"nb_read_packets": "300", "r_frame_rate": "30/1"}]}'
         return SimpleNamespace(returncode=0, stdout=stream, stderr="")
@@ -166,15 +178,76 @@ def test_each_piece_seeks_just_before_its_first_frame_and_stops_short_of_the_nex
     assert split.bounds(split.count - 1)[1] is None
 
 
-def test_frame_times_are_read_from_packets_and_unreadable_ones_are_skipped():
-    def ffprobe(command, **_kwargs):
-        assert "packet=pts_time" in command and "-select_streams" in command
-        return SimpleNamespace(returncode=0, stdout="0.000000\nN/A\n0.033333,\n", stderr="")
+def test_frame_timestamps_are_read_exactly_from_the_files_start_and_unreadable_ones_skipped():
+    """Whole time base units, not seconds rounded to six places; zero where
+    FFmpeg puts it for one encode and for -ss, the file's start time."""
 
-    assert read_frame_times(SOURCE, ffprobe_binary="ffprobe", runner=ffprobe, timeout=5) == [
-        0.0,
-        0.033333,
-    ]
+    def ffprobe(command, **_kwargs):
+        assert "packet=pts:stream=time_base:format=start_time" in command
+        packets = [{"pts": 2002}, {"pts": "N/A"}, {"pts": 1001}, {"pts": 3003}]
+        stdout = json.dumps(
+            {
+                "packets": packets,
+                "streams": [{"time_base": "1/60000"}],
+                "format": {"start_time": "0.016683"},
+            }
+        )
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    ticks, time_base = read_frame_ticks(SOURCE, ffprobe_binary="ffprobe", runner=ffprobe, timeout=5)
+    assert (ticks, time_base) == ([0, 1001, 2002], Fraction(1, 60000))
+
+
+def test_unreadable_frame_timestamps_mean_no_pieces():
+    def ffprobe(command, **_kwargs):
+        return SimpleNamespace(returncode=0, stdout="not json", stderr="")
+
+    assert read_frame_ticks(SOURCE, ffprobe_binary="ffprobe", runner=ffprobe, timeout=5)[0] == []
+
+
+def test_the_frame_rate_is_ffmpegs_guess():
+    def answering(base, average):
+        def ffprobe(command, **_kwargs):
+            stream = {"r_frame_rate": base, "avg_frame_rate": average}
+            stdout = json.dumps({"streams": [stream]})
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+        return read_frame_rate(SOURCE, ffprobe_binary="ffprobe", runner=ffprobe, timeout=5)
+
+    assert answering("24000/1001", "24000/1001") == Fraction(24000, 1001)
+    # A phone's variable-rate file: a base rate nobody filmed at.
+    assert answering("90000/1", "2997/100") == Fraction(2997, 100)
+    assert answering("0/0", "0/0") is None
+
+
+def test_at_60_to_30_fps_pieces_start_on_the_frame_that_begins_an_output_frame():
+    """One encode keeps the later of each pair of 59.94 fps frames. A piece
+    starting on the second of a pair came out 1/60 s off from there on: on
+    flickpond.com, a scene cut one frame early (20 Oct 2026)."""
+    fps = 60000 / 1001
+    times = frames(64.3, fps)
+    starts = frame_starts(times, 10, rate=30.0)
+
+    assert len(starts) == 6
+    for number, start in enumerate(starts[1:], start=1):
+        before = times[times.index(start) - 1]
+        assert output_tick(before, 30.0) < output_tick(start, 30.0)
+        assert 10 * number - 1e-6 <= start < 10 * number + 1
+
+
+def test_a_frame_exactly_halfway_rounds_up_as_ffmpeg_does():
+    """Frame 1000 of 59.94 fps is exactly 500.5 frames in at 30. FFmpeg
+    rounds it up (AV_ROUND_NEAR_INF); in seconds rounded to six places it
+    went the other way inside a piece, on a portrait clip."""
+    frame = Fraction(1000 * 1001, 60000)
+
+    assert output_tick(frame, Fraction(30)) == 501
+    assert output_tick(Fraction(999 * 1001, 60000), Fraction(30)) == 500
+
+
+def test_at_the_sources_own_rate_any_frame_may_start_a_piece():
+    fps = 30000 / 1001
+    assert frame_starts(frames(64.3, fps), 10, rate=fps) == frame_starts(frames(64.3, fps), 10)
 
 
 def test_a_plan_survives_the_trip_through_redis():
@@ -198,6 +271,49 @@ def test_a_piece_is_the_single_encodes_picture_video_only_from_its_exact_start()
         plan(), 8, source_path=SOURCE, output_path=Path("/o.mp4"), ffmpeg_binary="ffmpeg"
     )
     assert "-t" not in last
+
+
+def test_an_exact_piece_runs_on_its_own_timestamps_and_stops_by_count():
+    """Every frame back on its own timestamp, so the rate filter rounds as
+    one encode does; the rate given as a number, because the shift loses the
+    source's (a 24 fps video came out at 30); and ended by frame count,
+    because a time limit is rounded too (a 60 fps piece lost its last frame)."""
+    exact = plan(output_rate="30/1", start_ticks=[0, 300, 600], frames=[300, 300, 0])
+    command = piece_command(
+        exact, 1, source_path=SOURCE, output_path=Path("/o.mp4"), ffmpeg_binary="ffmpeg"
+    )
+
+    chain = command[command.index("-vf") + 1].split(",")
+    assert chain[:2] == ["setpts=PTS-STARTPTS+300", "fps=fps=30/1"]
+    assert chain[-1] == "setpts=PTS-STARTPTS"
+    assert command[command.index("-frames:v") + 1] == "300"
+    assert "-t" not in command
+    last = piece_command(
+        exact, 2, source_path=SOURCE, output_path=Path("/o.mp4"), ffmpeg_binary="ffmpeg"
+    )
+    assert "-frames:v" not in last and "-t" not in last
+
+
+def test_a_plan_written_before_exact_timestamps_still_loads_and_encodes_as_it_was():
+    old = json.loads(plan().to_json())
+    for key in ("output_rate", "start_ticks", "frames"):
+        old.pop(key)
+
+    loaded = PiecePlan.from_json(json.dumps(old))
+    assert not loaded.exact
+    command = piece_command(
+        loaded, 0, source_path=SOURCE, output_path=Path("/o.mp4"), ffmpeg_binary="ffmpeg"
+    )
+    assert "-t" in command and "-frames:v" not in command
+
+
+def test_the_coordinator_plans_exact_pieces(redis, tmp_path):
+    runner = FakeFfmpeg()
+    encode(coordinator(FakeStore(), redis, runner), tmp_path)
+
+    first, second = runner.pieces()[:2]
+    assert second[second.index("-vf") + 1].startswith("setpts=PTS-STARTPTS+300,fps=fps=30/1,")
+    assert first[first.index("-frames:v") + 1] == "300"
 
 
 # --- the board ---------------------------------------------------------------

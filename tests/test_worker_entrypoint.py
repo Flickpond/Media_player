@@ -226,3 +226,23 @@ def test_process_job_rejects_a_malformed_job_id(monkeypatch: pytest.MonkeyPatch)
 
     with pytest.raises(ValueError):
         tasks.process_job("not-a-uuid")
+
+
+def test_the_ladder_queue_has_an_hour_whoever_queues_on_it():
+    """A 4:55 4K 60 fps upload lost its whole ladder at the MP4's 30 minutes
+    on flickpond.com. The API queues AV1 jobs on it too, without the workers'
+    environment, so the limit is the code's own."""
+    connection = fakeredis.FakeStrictRedis()
+
+    assert queue_module.get_ladder_queue(connection)._default_timeout == 3600
+    assert queue_module.get_chunk_queue(connection)._default_timeout == 900
+
+
+def test_ffmpeg_on_the_ladder_queue_stops_before_the_queue_does():
+    from app.worker import storage
+
+    getattr(storage.get_ladder_step, "cache_clear", lambda: None)()
+    try:
+        assert storage.get_ladder_step()._timeout_seconds == 3600 - 30
+    finally:
+        getattr(storage.get_ladder_step, "cache_clear", lambda: None)()

@@ -52,7 +52,7 @@ def get_ladder_queue(connection: Redis | None = None) -> Queue:
     return Queue(
         settings.redis_queue + LADDER_QUEUE_SUFFIX,
         connection=connection or get_redis_connection(),
-        default_timeout=settings.worker_job_timeout_seconds,
+        default_timeout=settings.worker_ladder_timeout_seconds,
     )
 
 

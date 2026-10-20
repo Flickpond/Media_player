@@ -398,7 +398,7 @@ def build_rendition(job_id: str, kind: str) -> str:
                 timeout_seconds=settings.worker_ffprobe_timeout_seconds,
             ),
             ffmpeg_binary=settings.worker_ffmpeg_binary,
-            timeout_seconds=settings.worker_ffmpeg_timeout_seconds,
+            timeout_seconds=settings.worker_ladder_timeout_seconds - 30,
             master_lock=master_lock,
         )
         # An upload's rendition from its original; an edit's from the edit.

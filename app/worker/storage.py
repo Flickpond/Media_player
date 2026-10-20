@@ -605,7 +605,7 @@ def get_ladder_step():
         output_prefix=settings.worker_output_prefix,
         ffmpeg_binary=settings.worker_ffmpeg_binary,
         preset=settings.worker_ffmpeg_preset,
-        timeout_seconds=settings.worker_ffmpeg_timeout_seconds,
+        timeout_seconds=settings.worker_ladder_timeout_seconds - 30,
         max_height=settings.worker_hls_max_height,
     )
 
