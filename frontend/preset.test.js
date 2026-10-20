@@ -19,6 +19,8 @@ let cleanup;
 let gl;
 let frames;
 let nextFrame;
+let images;
+let loadImages;
 
 /** A WebGL context with only the calls preset.js makes. */
 function fakeGl({ compile = true, link = true, textureThrows = false, shader = true } = {}) {
@@ -35,6 +37,7 @@ function fakeGl({ compile = true, link = true, textureThrows = false, shader = t
     RGBA: 10,
     UNSIGNED_BYTE: 11,
     TEXTURE0: 12,
+    TEXTURE1: 20,
     LINEAR: 13,
     CLAMP_TO_EDGE: 14,
     TEXTURE_MIN_FILTER: 15,
@@ -133,7 +136,7 @@ beforeEach(() => {
   host.dataset.operation = "preset";
   host.dataset.mount = "mountPresetPanel";
   host.innerHTML =
-    '<summary><input type="checkbox" /></summary><div class="edit-mount"></div>';
+    '<summary><input type="checkbox" checked /></summary><div class="edit-mount"></div>';
   document.body.append(host);
 
   video = fakeVideo();
@@ -143,6 +146,17 @@ beforeEach(() => {
   gl = fakeGl();
   frames = new Map();
   nextFrame = 0;
+  images = [];
+  loadImages = true;
+  vi.stubGlobal("Image", class {
+    naturalWidth = 1024;
+    naturalHeight = 160;
+    constructor() { images.push(this); }
+    set src(value) {
+      this.url = value;
+      if (loadImages) this.onload?.();
+    }
+  });
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation((type) =>
     type === "webgl" ? gl : null,
   );
@@ -186,7 +200,7 @@ describe("preset panel", () => {
     expect(tile("warm").classList.contains("is-selected")).toBe(true);
     expect(clear().disabled).toBe(false);
     expect(preview().hidden).toBe(false);
-    expect(gl.texImage2D).toHaveBeenCalledOnce();
+    expect(gl.texImage2D).toHaveBeenCalledTimes(2); // colour table and video frame
     expect(gl.drawArrays).toHaveBeenCalledWith(gl.TRIANGLE_STRIP, 0, 4);
     expect(gl.uniform1i.mock.calls.at(-1)[1]).toBe(1);
   });
@@ -316,6 +330,105 @@ describe("preset panel", () => {
     expect(preview()).toBeNull();
     expect(video.style.filter).toContain("hue-rotate(8deg)");
     expect(lastReport()).toEqual({ name: "cool" });
+    expect(host.querySelector(".preset-note").textContent).toContain("Approximate preview");
+  });
+
+  it("does not bring an unticked preview back on playback, seek or a new frame", () => {
+    mount();
+    tile("warm").click();
+    flushFrames();
+    checkbox().checked = false;
+    checkbox().dispatchEvent(new Event("change"));
+    gl.drawArrays.mockClear();
+    for (const type of ["play", "seeked", "loadeddata", "pause"]) {
+      video.dispatchEvent(new Event(type));
+      flushFrames();
+    }
+    expect(preview().hidden).toBe(true);
+    expect(gl.drawArrays).not.toHaveBeenCalled();
+    expect(video.style.filter).toBe("");
+  });
+
+  it("keeps a selection made while unticked hidden until it is enabled", () => {
+    checkbox().checked = false;
+    mount();
+    tile("warm").click();
+    flushFrames();
+    expect(lastReport()).toEqual({ name: "warm" });
+    expect(preview()).toBeNull();
+    checkbox().checked = true;
+    checkbox().dispatchEvent(new Event("change"));
+    flushFrames();
+    expect(preview().hidden).toBe(false);
+    expect(gl.uniform1i.mock.calls.at(-1)[1]).toBe(1);
+  });
+
+  it("uses the new selection when a previously active preview is enabled again", () => {
+    mount();
+    tile("warm").click();
+    flushFrames();
+    checkbox().checked = false;
+    checkbox().dispatchEvent(new Event("change"));
+    tile("cool").click();
+    checkbox().checked = true;
+    checkbox().dispatchEvent(new Event("change"));
+    flushFrames();
+    expect(lastReport()).toEqual({ name: "cool" });
+    expect(gl.uniform1i.mock.calls.at(-1)[1]).toBe(2);
+  });
+
+  it("keeps the chosen look visible if the GPU context is lost", () => {
+    mount();
+    tile("warm").click();
+    flushFrames();
+    preview().dispatchEvent(new Event("webglcontextlost"));
+    flushFrames();
+    expect(preview()).toBeNull();
+    expect(video.style.filter).toContain("sepia");
+    expect(lastReport()).toEqual({ name: "warm" });
+  });
+
+  it("draws a paused frame when the colour tables finish loading", () => {
+    loadImages = false;
+    mount();
+    tile("cool").click();
+    flushFrames();
+    expect(preview().hidden).toBe(true);
+    images[0].onload();
+    flushFrames();
+    expect(preview().hidden).toBe(false);
+    expect(images[0].url).toContain("preset-luts.png");
+  });
+
+  it.each(["error", "size"])("uses the approximate preview on a colour-table %s", (failure) => {
+    loadImages = false;
+    mount();
+    tile("warm").click();
+    if (failure === "error") images[0].onerror();
+    else {
+      images[0].naturalWidth = 1;
+      images[0].onload();
+    }
+    flushFrames();
+    expect(preview()).toBeNull();
+    expect(video.style.filter).toContain("sepia");
+    expect(host.querySelector(".preset-note").textContent).toContain("Approximate preview");
+  });
+
+  it("cannot resurrect a closed editor when a colour-table request finishes", () => {
+    loadImages = false;
+    mount();
+    tile("warm").click();
+    const loaded = images[0].onload;
+    const failed = images[0].onerror;
+    cleanup();
+    cleanup = null;
+    gl.texImage2D.mockClear();
+    loaded();
+    failed();
+    flushFrames();
+    expect(preview()).toBeNull();
+    expect(gl.texImage2D).not.toHaveBeenCalled();
   });
 
   it("falls back when the shader cannot be created", () => {

@@ -5,6 +5,8 @@ filter module is the worker's half. The browser panel has its own tests in
 frontend/preset.test.js; these are the server-side promises it relies on.
 """
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -18,10 +20,24 @@ from app.services.media_rules import (
     check_edit_operations,
 )
 from app.worker.edit_ops import FILTERS, filter_chain
-from app.worker.edit_ops.preset import PRESET_FILTERS
+from app.worker.edit_ops.preset import PRESET_FILTERS, build
 from app.worker.operations import build_edit_command
 
 PRESET_NAMES = ("bw", "warm", "cool", "vintage", "vivid")
+
+
+def test_the_shipped_preview_tables_match_the_worker_filters():
+    frontend = Path(__file__).resolve().parents[1] / "frontend"
+    manifest = json.loads((frontend / "preset-luts.json").read_text(encoding="utf-8"))
+    assert manifest["size"] == 32
+    assert manifest["order"] == list(PRESET_NAMES)
+    assert manifest["filters"] == {
+        name: list(build({"name": name}, Frame(None, None)).video) for name in PRESET_NAMES
+    }
+    assert (
+        manifest["sha256"]
+        == hashlib.sha256((frontend / "preset-luts.png").read_bytes()).hexdigest()
+    )
 
 
 def request_with(name: str) -> EditRequest:
@@ -80,9 +96,11 @@ def test_the_five_presets_have_exact_filter_chains():
 
 
 def test_every_preset_is_registered_with_the_worker():
-    assert FILTERS["preset"]({"name": "vivid"}, Frame(None, None)).video == PRESET_FILTERS[
-        "vivid"
-    ]
+    filters = FILTERS["preset"]({"name": "vivid"}, Frame(None, None)).video
+    assert filters[1] == "format=yuv444p"
+    assert "out_color_matrix=bt709" in filters[0]
+    assert filters[3:5] == PRESET_FILTERS["vivid"]
+    assert filters[-2:] == ("format=yuv420p", "setparams=colorspace=bt709:range=limited")
 
 
 def test_a_preset_runs_after_geometry_and_before_speed_in_the_fixed_order():
@@ -95,7 +113,8 @@ def test_a_preset_runs_after_geometry_and_before_speed_in_the_fixed_order():
     )
 
     assert chain.before_tone_map == ("crop=640:360:0:0",)
-    assert chain.after_tone_map == PRESET_FILTERS["warm"]
+    assert chain.after_tone_map[3:5] == PRESET_FILTERS["warm"]
+    assert chain.after_tone_map[-2] == "format=yuv420p"
 
 
 def test_the_worker_command_carries_the_preset_filter_chain():
@@ -119,3 +138,20 @@ def test_a_preset_cannot_be_combined_with_mp3_conversion():
             [("preset", {"name": "bw"}), ("convert", {"format": "mp3"})],
             input_height=1080,
         )
+
+
+@pytest.mark.parametrize("name", PRESET_NAMES)
+def test_a_preset_runs_after_hdr_is_tone_mapped_and_keeps_browser_safe_pixels(name):
+    command = build_edit_command(
+        request_with(name),
+        ffmpeg_binary="ffmpeg",
+        source_path=Path("/source"),
+        output_path=Path("/output.mp4"),
+        preset="veryfast",
+        crf=23,
+        hdr=True,
+    )
+    filters = command[command.index("-vf") + 1]
+    assert filters.index("tonemap=") < filters.index("out_color_matrix=bt709")
+    assert filters.index("out_color_matrix=bt709") < filters.index("eq=")
+    assert filters.endswith("format=yuv420p,setparams=colorspace=bt709:range=limited")

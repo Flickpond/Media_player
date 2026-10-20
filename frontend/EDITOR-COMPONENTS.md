@@ -85,3 +85,16 @@ for each one:
 The third argument is the original's size and length (`edit_source`), so a
 preview can be drawn to scale before the element has metadata. Step by step,
 with the server side: [`docs/adding-an-edit-operation.md`](../docs/adding-an-edit-operation.md).
+
+## Filter preset preview
+
+`preset.js` samples `preset-luts.png`, generated from the worker's actual
+filter chains by `scripts/generate-preset-luts.py`. Regenerate the PNG and
+JSON manifest when the worker's preset filters change; the manifest test
+rejects stale tables. Presets run in BT.709 after the HDR tone map and end
+in browser-playable 4:2:0 pixels. WebGL/download/CORS failures retain an
+explicitly labelled approximate CSS preview.
+
+Local pixel comparisons, complete browser processing checks, regeneration
+commands and release steps are in
+[`docs/e-sprint6-presets.md`](../docs/e-sprint6-presets.md).
