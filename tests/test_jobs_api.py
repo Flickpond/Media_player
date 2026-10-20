@@ -320,7 +320,7 @@ async def test_deleting_a_job_with_a_ladder_removes_every_segment_too(
     response = await client.delete(f"/jobs/{job.id}")
 
     assert response.status_code == 204
-    assert storage.listed_prefixes == ["outputs/abc/hls/", "outputs/abc/preview/"]
+    assert storage.listed_prefixes == ["outputs/abc/hls/"]
     for segment in segments:
         assert segment in storage.deleted
     # Another job's ladder lives under a different prefix and must survive.
@@ -339,6 +339,7 @@ async def test_deleting_a_job_removes_its_seek_bar_preview_too(
 
     job = make_job(status=JobStatus.DONE, output_key="outputs/abc/demo.mp4")
     job.hls_key = "outputs/abc/hls/master.m3u8"
+    job.preview_key = "outputs/abc/preview/sprite.vtt"
 
     async def fake_delete_job(_session, _job_id, *, owner_id):
         return job
@@ -347,6 +348,7 @@ async def test_deleting_a_job_removes_its_seek_bar_preview_too(
     response = await client.delete(f"/jobs/{job.id}")
 
     assert response.status_code == 204
+    assert storage.listed_prefixes == ["outputs/abc/hls/", "outputs/abc/preview/"]
     for key in preview:
         assert key in storage.deleted
     assert "outputs/other/preview/sprite.jpg" not in storage.deleted

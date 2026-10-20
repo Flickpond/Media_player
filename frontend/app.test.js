@@ -2711,6 +2711,53 @@ describe("player", () => {
     expect(hls.destroyed).toBe(true);
   });
 
+  describe("the seek-bar preview (sprint 6)", () => {
+    const PREVIEW = { ...ADAPTIVE, preview_vtt_url: "/api/jobs/1/preview.vtt" };
+
+    it("turns on Plyr's preview with the index the API names", async () => {
+      const el = await loadAppWithLibraries();
+      await openLibrary(el, [PREVIEW]);
+      play(cardFor(el, "holiday.mp4"));
+      FakeHls.instances[0].emit(HLS_EVENTS.MANIFEST_PARSED);
+
+      expect(FakePlyr.created[0].config.previewThumbnails).toEqual({
+        enabled: true,
+        src: "/api/jobs/1/preview.vtt",
+      });
+    });
+
+    it("asks for no preview when the API offers none", async () => {
+      const el = await loadAppWithLibraries();
+      await openLibrary(el, [ADAPTIVE]);
+      play(cardFor(el, "holiday.mp4"));
+      FakeHls.instances[0].emit(HLS_EVENTS.MANIFEST_PARSED);
+
+      expect(FakePlyr.created[0].config.previewThumbnails).toBeUndefined();
+    });
+
+    it("previews an MP4 without a ladder too", async () => {
+      const el = await loadAppWithLibraries();
+      await openLibrary(el, [{ ...DONE, preview_vtt_url: "/api/jobs/1/preview.vtt" }]);
+      play(cardFor(el, "holiday.mp4"));
+
+      expect(FakePlyr.created[0].config.previewThumbnails.src).toBe("/api/jobs/1/preview.vtt");
+    });
+
+    it("keeps the preview when a failed ladder drops back to the MP4", async () => {
+      const el = await loadAppWithLibraries();
+      await openLibrary(el, [PREVIEW]);
+      play(cardFor(el, "holiday.mp4"));
+      const hls = FakeHls.instances[0];
+      hls.emit(HLS_EVENTS.MANIFEST_PARSED);
+
+      hls.emit(HLS_EVENTS.ERROR, { fatal: true });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(FakePlyr.created[1].media.getAttribute("src")).toBe(DONE.output_url);
+      expect(FakePlyr.created[1].config.previewThumbnails.src).toBe("/api/jobs/1/preview.vtt");
+    });
+  });
+
   it("does not build a player into a card collapsed while the manifest loaded", async () => {
     const el = await loadAppWithLibraries();
     await openLibrary(el, [ADAPTIVE]);

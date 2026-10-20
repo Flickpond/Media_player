@@ -55,6 +55,7 @@ code that split is `ObjectStoreError`: `str(exc)` is the operator's half,
 | `duration_seconds` | Float, nullable | The real duration, on the same rule as `width` and `height`. Positive when set |
 | `max_fps` | SmallInteger, NOT NULL, default `30` | `30` or `60` (`ck_jobs_max_fps`). The frame-rate ceiling for every encode of this job — MP4, ladder and any edit made from it. `60` only when the uploader ticked *Keep 60 fps*; an edit inherits its source's value. Also on `upload_sessions`, carried to the job on completion. Always returned by `GET /jobs/{id}` |
 | `thumbnail_key` | Text, nullable | Object key of the poster frame (`outputs/<id>/thumbnail.jpg`), once extracted. Set by `mark_done` with the MP4 and cleared by every other transition. Best-effort: a done job may have none. The API returns it as a signed `thumbnail_url` |
+| `preview_key` | Text, nullable | Object key of the seek-bar preview's WebVTT index (`outputs/<id>/preview/sprite.vtt`, its sheet `sprite.jpg` beside it), once the worker has stored both (sprint 6, D). Written by `mark_preview_ready`, only on a `done` job whose ladder is `ready`; **only with a ladder** (`ck_jobs_preview_needs_ladder`). Best-effort: a done job may have none. The API returns it as `preview_vtt_url` |
 | `error` | Text, nullable | Present only for `failed` jobs. **User-facing** — see the rule above |
 | `created_at` | Timestamp with time zone | Set when the API creates the job |
 | `updated_at` | Timestamp with time zone | Updated on every worker transition |
@@ -97,8 +98,13 @@ POST /upload                    // multipart: file, optional max_fps=30|60 (defa
 GET /jobs/{id}
   200 { "id", "filename", "status", "hls_status",
         "output_url"?, "hls_url"?, "width"?, "height"?, "duration_seconds"?,
-        "thumbnail_url"?, "max_fps", "edit_source"?, "edit_options"?, "progress"?, "error"? }
+        "thumbnail_url"?, "preview_vtt_url"?, "max_fps", "edit_source"?, "edit_options"?,
+        "progress"?, "error"? }
   404 { "error": "not found" }
+
+  preview_vtt_url: "/api/jobs/{id}/preview.vtt", only on a done job whose
+                // seek-bar preview exists (sprint 6); the player turns on
+                // Plyr's previewThumbnails when it is there
 
   progress:     0-99, only while processing and once the worker has reported
                 // how far the MP4 has got (sprint 6); best-effort, may be absent
@@ -155,6 +161,13 @@ GET /jobs/{id}/hls/{path}
   307 -> a freshly presigned, time-limited object URL (Location header)
   404 { "error": "not found" } // unknown id, not this caller's job, no ladder
                                 // built, or a `path` outside a ladder's shape
+
+GET /jobs/{id}/preview.vtt      // sprint 6, D
+  200 text/vtt, Cache-Control: private, no-store
+      // the stored index, each `sprite.jpg#xywh=x,y,w,h` cue with the sheet's
+      // name swapped for a freshly signed URL (CloudFront where segments go)
+  404 { "error": "not found" } // unknown id, not this caller's job, not done,
+                                // no preview recorded, or its index missing
 ```
 
 **The HLS route.** A ladder is hundreds of objects, so they cannot all be
@@ -203,6 +216,7 @@ mark_failed(session, job_id, *, error)
 mark_interrupted(session, job_id)                # processing -> queued; worker only
 mark_ladder_ready(session, job_id, *, hls_key)   # -> Job, or None if not waiting
 mark_ladder_unavailable(session, job_id)         # -> Job, or None if not waiting
+mark_preview_ready(session, job_id, *, preview_key)  # -> Job, or None unless done + ladder ready
 list_stale_ladders(session, *, before)           # reaper
 prepare_retry(session, job_id, *, owner_id)  # API: enqueue, then commit; rollback on failure
 ```
@@ -348,7 +362,25 @@ edited; see `frontend/EDITOR-COMPONENTS.md`.
 
 **After the ladder (2.2).** `app.worker.after_ladder.register(hook)`;
 `hook(job_id, output_key)` runs in the ladder job after `hls_status` is
-`ready`. What it raises is logged and never changes the job.
+`ready`. What it raises is logged and never changes the job. Hooks are
+registered by `app/worker/__main__.py`'s `register_hooks`, each behind its
+switch, in run order: Keep HDR, then the seek-bar preview.
+
+## Sprint 6: the seek-bar preview (D; off unless `WORKER_PREVIEW_SPRITE=true`)
+
+A worker setting: with it off nothing is made, and no job ever gets a
+`preview_vtt_url`, so the player is exactly as before.
+
+- After the ladder, from the job's MP4: one frame every
+  `WORKER_PREVIEW_INTERVAL_SECONDS` (5), `WORKER_PREVIEW_TILE_WIDTH` (160) px
+  wide, ten to a row, in one JPEG `outputs/<job>/preview/sprite.jpg`, and a
+  WebVTT index `sprite.vtt` beside it. Past 200 frames the interval widens,
+  so one sheet stays a few hundred kilobytes. Its own FFmpeg timeout,
+  `WORKER_PREVIEW_TIMEOUT_SECONDS` (180), inside the ladder job's.
+- Stored sheet first, index second, then `preview_key` recorded through
+  `app/repositories/jobs.py`. A video deleted meanwhile, or any failure,
+  removes what was stored: nothing is left that the row does not point at.
+- Deleting a job removes the `preview/` folder with it, by `preview_key`.
 
 ## Sprint 6: chunked MP4, phase 1 (A; nobody depends on it)
 
@@ -427,6 +459,7 @@ cheapest entry. A browser without AV1 plays the ladder as before.
 | `WORKER_HLS_MAX_HEIGHT` | Tallest ladder rung, default `1080`; `2160` on a host that can encode 4K inside the job timeout. Never above the source |
 | `MEDIA_MAX_DURATION_SECONDS` | Longest source the worker accepts, checked after the probe (default 300; 0 = off) |
 | `THUMBNAIL_MAX_WIDTH`, `THUMBNAIL_MAX_HEIGHT` | The poster frame's bounding box (default 640x360) |
+| `WORKER_PREVIEW_SPRITE` | Workers: make the seek-bar preview after each ladder (default `false`) |
 
 ## Sprint 4: direct uploads (B/E)
 

@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from app.worker import after_ladder, preview
+from app.worker.__main__ import register_hooks
 from app.worker.preview import (
     PreviewError,
     PreviewSprite,
@@ -149,16 +150,32 @@ def _runner(*, returncode=0, write=True, raises=None):
     return runner
 
 
-def _sprite(store, runner, probe=None):
+def _sprite(store, runner, probe=None, record=None):
     probe = probe or SourceProbe(width=1920, height=1080, duration_seconds=12.5)
-    return PreviewSprite(store, prober=lambda _path: probe, runner=runner, timeout_seconds=42)
+    recorded = []
+
+    def remember(job_id, key):
+        recorded.append((job_id, key))
+        return True
+
+    sprite = PreviewSprite(
+        store,
+        prober=lambda _path: probe,
+        record=record or remember,
+        runner=runner,
+        timeout_seconds=42,
+    )
+    sprite.recorded = recorded
+    return sprite
 
 
-def test_the_sheet_and_then_its_index_are_stored_beside_the_mp4():
+def test_the_sheet_and_then_its_index_are_stored_beside_the_mp4_and_recorded():
     store = FakeStore()
     runner = _runner()
+    job_id = uuid4()
+    sprite = _sprite(store, runner)
 
-    key = _sprite(store, runner).run(uuid4(), "outputs/abc/demo.mp4")
+    key = sprite.run(job_id, "outputs/abc/demo.mp4")
 
     assert key == "outputs/abc/preview/sprite.vtt"
     assert store.downloaded == ["outputs/abc/demo.mp4"]
@@ -167,6 +184,8 @@ def test_the_sheet_and_then_its_index_are_stored_beside_the_mp4():
         ("outputs/abc/preview/sprite.vtt", "text/vtt"),
     ]
     assert store.uploaded[1][2].startswith(b"WEBVTT\n\n00:00:00.000 --> 00:00:05.000")
+    assert sprite.recorded == [(job_id, "outputs/abc/preview/sprite.vtt")]
+    assert store.deleted_prefixes == []
     assert runner.kwargs["timeout"] == 42
 
 
@@ -178,47 +197,113 @@ def test_the_sheet_and_then_its_index_are_stored_beside_the_mp4():
         (_runner(raises=subprocess.TimeoutExpired("ffmpeg", 42)), "timed out after 42s"),
     ],
 )
-def test_a_sheet_ffmpeg_could_not_make_stores_nothing(runner, message):
+def test_a_sheet_ffmpeg_could_not_make_stores_and_records_nothing(runner, message):
     store = FakeStore()
+    sprite = _sprite(store, runner)
 
     with pytest.raises(PreviewError, match=message):
-        _sprite(store, runner).run(uuid4(), "outputs/abc/demo.mp4")
+        sprite.run(uuid4(), "outputs/abc/demo.mp4")
 
-    assert store.uploaded == []
+    assert store.uploaded == [] and sprite.recorded == []
 
 
 def test_an_index_that_could_not_be_stored_takes_its_sheet_with_it():
     store = FakeStore(fail_upload_of="sprite.vtt")
+    sprite = _sprite(store, _runner())
 
     with pytest.raises(RuntimeError, match="bucket unreachable"):
-        _sprite(store, _runner()).run(uuid4(), "outputs/abc/demo.mp4")
+        sprite.run(uuid4(), "outputs/abc/demo.mp4")
 
     assert store.deleted_prefixes == ["outputs/abc/preview/"]
+    assert sprite.recorded == []
+
+
+def test_a_video_deleted_while_its_preview_was_made_leaves_nothing_behind():
+    """The delete saw no `preview_key`, so it removed no preview: only this
+    can, once the row turns out to be gone."""
+    store = FakeStore()
+
+    key = _sprite(store, _runner(), record=lambda *_: False).run(uuid4(), "outputs/abc/demo.mp4")
+
+    assert key is None
+    assert store.deleted_prefixes == ["outputs/abc/preview/"]
+
+
+def test_a_preview_the_database_would_not_take_is_removed_and_the_error_raised():
+    store = FakeStore()
+
+    def unreachable(*_):
+        raise ConnectionError("database unreachable")
+
+    with pytest.raises(ConnectionError):
+        _sprite(store, _runner(), record=unreachable).run(uuid4(), "outputs/abc/demo.mp4")
+
+    assert store.deleted_prefixes == ["outputs/abc/preview/"]
+
+
+def test_recording_writes_through_the_repository_on_a_loop_of_its_own(monkeypatch):
+    """The hook runs in the ladder job's worker thread, not on its loop."""
+    seen = []
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+    async def fake_mark(session, job_id, *, preview_key):
+        seen.append((job_id, preview_key))
+        return None if preview_key.endswith("gone.vtt") else "row"
+
+    monkeypatch.setattr(preview, "get_worker_session_factory", lambda: Session)
+    monkeypatch.setattr(preview, "mark_preview_ready", fake_mark)
+    job_id = uuid4()
+
+    assert preview.record_preview(job_id, "outputs/abc/preview/sprite.vtt") is True
+    assert preview.record_preview(job_id, "outputs/abc/preview/gone.vtt") is False
+    assert seen[0] == (job_id, "outputs/abc/preview/sprite.vtt")
 
 
 # --- the switch ---------------------------------------------------------------
 
 
-def test_the_preview_is_registered_to_run_after_the_ladder():
-    assert preview.make_preview in after_ladder.HOOKS
+@pytest.fixture
+def hooks(monkeypatch):
+    registered: list = []
+    monkeypatch.setattr(after_ladder, "HOOKS", registered)
+    return registered
 
 
-def test_with_the_switch_off_nothing_is_made(monkeypatch):
-    monkeypatch.setattr(
-        preview, "get_settings", lambda: SimpleNamespace(worker_preview_sprite=False)
+def _settings(**switches):
+    return SimpleNamespace(
+        worker_keep_hdr=switches.get("keep_hdr", False),
+        worker_preview_sprite=switches.get("preview", False),
     )
-    monkeypatch.setattr(
-        preview, "get_preview_sprite", lambda: pytest.fail("made a preview while switched off")
-    )
-
-    preview.make_preview(uuid4(), "outputs/abc/demo.mp4")
 
 
-def test_with_the_switch_on_the_jobs_mp4_is_previewed(monkeypatch):
+def test_with_the_switch_off_no_preview_is_made_after_the_ladder(hooks):
+    register_hooks(_settings())
+
+    assert hooks == []
+
+
+def test_with_the_switch_on_every_ladder_is_followed_by_a_preview(hooks):
+    register_hooks(_settings(preview=True))
+
+    assert hooks == [preview.make_preview]
+
+
+def test_the_preview_runs_after_keep_hdr_has_queued_its_rendition(hooks):
+    from app.worker.renditions import queue_keep_hdr
+
+    register_hooks(_settings(keep_hdr=True, preview=True))
+
+    assert hooks == [queue_keep_hdr, preview.make_preview]
+
+
+def test_the_hook_previews_the_jobs_mp4(monkeypatch):
     made = []
-    monkeypatch.setattr(
-        preview, "get_settings", lambda: SimpleNamespace(worker_preview_sprite=True)
-    )
     monkeypatch.setattr(
         preview,
         "get_preview_sprite",

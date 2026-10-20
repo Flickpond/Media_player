@@ -11,7 +11,8 @@ MP4, under `<output dir>/preview/`:
 
 The cues name the sheet relatively, not by URL: objects are private, and a
 signed URL written into a stored file would expire with its signature. The
-API serves the index with the name swapped for a freshly signed one.
+API serves the index with the name swapped for a freshly signed one
+(app/api/preview.py), and only once the job's row records it (`preview_key`).
 
 Taken from the finished MP4 rather than the original: it is already standard
 range and the right way up, and at most 1080p, so a 4K HDR upload costs no
@@ -20,6 +21,7 @@ only ever add to a video: see that module for why a failure here is logged
 and nothing more.
 """
 
+import asyncio
 import logging
 import math
 import subprocess
@@ -29,7 +31,8 @@ from pathlib import Path, PurePosixPath
 from uuid import UUID
 
 from app.config import get_settings
-from app.worker import after_ladder
+from app.repositories.jobs import mark_preview_ready
+from app.worker.db import get_worker_session_factory
 from app.worker.interruption import run as run_process
 
 logger = logging.getLogger("app.worker.preview")
@@ -155,13 +158,15 @@ def build_vtt(
 
 
 class PreviewSprite:
-    """Makes and stores one video's sheet and index. Raises on any failure."""
+    """Makes, stores and records one video's sheet and index. Raises on any
+    failure, leaving nothing behind that the row does not point at."""
 
     def __init__(
         self,
         store,
         *,
         prober,
+        record,
         ffmpeg_binary: str = "ffmpeg",
         interval_seconds: int = 5,
         tile_width: int = 160,
@@ -170,15 +175,20 @@ class PreviewSprite:
     ) -> None:
         self._store = store
         self._prober = prober
+        # `record(job_id, preview_key) -> bool`: False when the job no longer
+        # has a ladder to preview (record_preview below).
+        self._record = record
         self._ffmpeg_binary = ffmpeg_binary
         self._interval_seconds = interval_seconds
         self._tile_width = tile_width
         self._timeout_seconds = timeout_seconds
         self._runner = runner
 
-    def run(self, job_id: UUID, output_key: str) -> str:
-        """Store the sheet and its index; returns the index's key."""
+    def run(self, job_id: UUID, output_key: str) -> str | None:
+        """Store and record the sheet and its index; returns the index's key,
+        or None if the video was deleted while they were being made."""
         prefix = preview_prefix_for(output_key)
+        vtt_key = prefix + VTT_FILENAME
         with tempfile.TemporaryDirectory(prefix=f"preview-{job_id}-") as temp:
             temp_dir = Path(temp)
             source = temp_dir / "source.mp4"
@@ -196,29 +206,38 @@ class PreviewSprite:
             self._render(source, sprite, layout)
             vtt.write_bytes(build_vtt(layout, probe.duration_seconds).encode("utf-8"))
 
-            # The index last: once it exists, the sheet it points into does.
+            # The index after the sheet, and the row after both: once the API
+            # can see a preview, everything it points at is there.
             try:
                 self._store.upload_file(
                     key=prefix + SPRITE_FILENAME,
                     source=str(sprite),
                     content_type=SPRITE_CONTENT_TYPE,
                 )
-                self._store.upload_file(
-                    key=prefix + VTT_FILENAME, source=str(vtt), content_type=VTT_CONTENT_TYPE
-                )
+                self._store.upload_file(key=vtt_key, source=str(vtt), content_type=VTT_CONTENT_TYPE)
+                recorded = self._record(job_id, vtt_key)
             except Exception:
-                try:
-                    self._store.delete_prefix(prefix)
-                except Exception:
-                    logger.warning("job %s: could not remove a half-stored preview", job_id)
+                self._discard(job_id, prefix)
                 raise
+        if not recorded:
+            # Deleted while this ran: the delete found no preview on the row,
+            # so nobody else will ever remove these.
+            logger.info("job %s: video gone before its preview was recorded; discarding", job_id)
+            self._discard(job_id, prefix)
+            return None
         logger.info(
-            "job %s: seek-bar preview stored (%d frames, every %ds)",
+            "job %s: seek-bar preview ready (%d frames, every %ds)",
             job_id,
             layout.frames,
             layout.interval_seconds,
         )
-        return prefix + VTT_FILENAME
+        return vtt_key
+
+    def _discard(self, job_id: UUID, prefix: str) -> None:
+        try:
+            self._store.delete_prefix(prefix)
+        except Exception:
+            logger.warning("job %s: could not remove an unrecorded preview", job_id)
 
     def _render(self, source: Path, sprite: Path, layout: SpriteLayout) -> None:
         command = build_sprite_command(
@@ -244,6 +263,18 @@ class PreviewSprite:
             raise PreviewError("FFmpeg produced no preview sheet")
 
 
+def record_preview(job_id: UUID, preview_key: str) -> bool:
+    """Write `preview_key` to the job's row. Called from the ladder job's
+    worker thread, which has no event loop of its own; the worker's engine
+    opens a fresh connection per use (app/worker/db.py), so a loop here is safe."""
+
+    async def record() -> bool:
+        async with get_worker_session_factory()() as session:
+            return await mark_preview_ready(session, job_id, preview_key=preview_key) is not None
+
+    return asyncio.run(record())
+
+
 def get_preview_sprite() -> PreviewSprite:
     from functools import partial
 
@@ -259,6 +290,7 @@ def get_preview_sprite() -> PreviewSprite:
             ffprobe_binary=settings.worker_ffprobe_binary,
             timeout_seconds=settings.worker_ffprobe_timeout_seconds,
         ),
+        record=record_preview,
         ffmpeg_binary=settings.worker_ffmpeg_binary,
         interval_seconds=settings.worker_preview_interval_seconds,
         tile_width=settings.worker_preview_tile_width,
@@ -266,8 +298,7 @@ def get_preview_sprite() -> PreviewSprite:
     )
 
 
-@after_ladder.register
 def make_preview(job_id: UUID, output_key: str) -> None:
-    if not get_settings().worker_preview_sprite:
-        return
+    """The after-ladder hook, registered by the worker when
+    `WORKER_PREVIEW_SPRITE` is on (app/worker/__main__.py)."""
     get_preview_sprite().run(job_id, output_key)

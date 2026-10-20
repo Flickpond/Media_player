@@ -13,10 +13,12 @@ async def delete_job_storage(storage, job, *, best_effort=False):
     prefixes = []
     if job.hls_key:
         prefixes.append(job.hls_key.rsplit("/", 1)[0] + "/")
-        # The seek-bar preview beside the MP4 (app.worker.preview). Only ever
-        # made after the ladder, so a video without one has none either.
-        if job.output_key:
-            prefixes.append(job.output_key.rsplit("/", 1)[0] + "/preview/")
+    # The seek-bar preview's folder (app.worker.preview). A preview stored
+    # but not yet recorded when the row went is removed by the worker, which
+    # finds the row gone when it tries to record it.
+    preview_key = getattr(job, "preview_key", None)
+    if preview_key:
+        prefixes.append(preview_key.rsplit("/", 1)[0] + "/")
     for prefix in prefixes:
         try:
             keys.extend(name for name, _ in await storage.list_objects(prefix))

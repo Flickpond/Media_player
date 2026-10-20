@@ -51,6 +51,11 @@ class JobResponse(BaseModel):
     # A signed URL for the poster frame. Omitted until the job is done, and on
     # any job whose frame could not be taken -- show a placeholder then.
     thumbnail_url: str | None = None
+    # The seek-bar preview's WebVTT index, for Plyr's `previewThumbnails`.
+    # An API route, like `hls_url`, which signs the sheet it names. Omitted
+    # until the worker has made one, which follows the ladder; the player
+    # then has no preview, as on every video from before sprint 6.
+    preview_vtt_url: str | None = None
     # The frame-rate ceiling chosen at upload: 30, or 60 when the uploader
     # kept it. Always present.
     max_fps: int = 30

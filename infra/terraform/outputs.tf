@@ -89,6 +89,26 @@ output "cache_secret_parameter" {
 }
 
 output "cdn_domain" {
-  description = "Where HLS segments are served from, behind signed URLs."
+  description = "The distribution's own *.cloudfront.net name: the target of cdn_alias's CNAME at Spaceship."
   value       = aws_cloudfront_distribution.videos.domain_name
+}
+
+# --- sprint 6: the CDN on our own name (cdn.tf, `cdn_alias`) -----------------
+
+output "cdn_certificate_validation" {
+  description = "The CNAME to add at Spaceship so ACM issues cdn_alias's certificate. Empty while cdn_alias is null."
+  value = flatten([
+    for certificate in aws_acm_certificate.cdn : [
+      for option in certificate.domain_validation_options : {
+        name  = option.resource_record_name
+        type  = option.resource_record_type
+        value = option.resource_record_value
+      }
+    ]
+  ])
+}
+
+output "cdn_signed_domain" {
+  description = "The name the API signs segment URLs for (SSM cloudfront_domain)."
+  value       = local.cdn_signed_domain
 }

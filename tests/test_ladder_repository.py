@@ -17,6 +17,7 @@ from app.repositories.jobs import (
     list_stale_ladders,
     mark_ladder_ready,
     mark_ladder_unavailable,
+    mark_preview_ready,
 )
 
 
@@ -77,6 +78,33 @@ async def test_an_empty_ladder_key_is_refused_before_any_sql():
 
     with pytest.raises(ValueError):
         await mark_ladder_ready(session, uuid4(), hls_key=" ")
+    assert session.statements == []
+
+
+async def test_a_preview_is_recorded_only_on_a_done_job_whose_ladder_is_ready():
+    session = RecordingSession(row="job")
+
+    await mark_preview_ready(session, uuid4(), preview_key="outputs/j/preview/sprite.vtt")
+
+    sql, params = session.statements[0], session.params[0]
+    assert "jobs.status = " in sql and "jobs.hls_status = " in sql
+    assert "done" in params.values() and HlsStatus.READY.value in params.values()
+    assert "outputs/j/preview/sprite.vtt" in params.values()
+    assert session.committed
+
+
+async def test_a_preview_for_a_video_that_is_gone_is_reported_as_none():
+    session = RecordingSession(row=None)
+
+    assert await mark_preview_ready(session, uuid4(), preview_key="k/sprite.vtt") is None
+    assert session.rolled_back and not session.committed
+
+
+async def test_an_empty_preview_key_is_refused_before_any_sql():
+    session = RecordingSession()
+
+    with pytest.raises(ValueError):
+        await mark_preview_ready(session, uuid4(), preview_key=" ")
     assert session.statements == []
 
 

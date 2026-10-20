@@ -66,12 +66,28 @@ ElastiCache 6379  ◀─┴── worker Auto Scaling Group  ◀── step scal
 - **Workers share the base's instance profile**, as agreed: they need its
   bucket access, and this root adds the rest to `app_role_name`.
 
+## Switching a feature on (final week)
+
+Every new worker feature this week is behind an environment switch, off by
+default. Put it in `worker_switches` in `workers.tfvars`, never in
+`worker_settings`: setting that map replaces its four defaults, and a worker
+booted without `WORKER_HLS_MAX_HEIGHT=2160` silently caps the ladder at 1080p.
+
+```hcl
+worker_switches = { WORKER_PREVIEW_SPRITE = "true" }   # the seek-bar preview (D)
+```
+
+Plan with the tfvars the group was last applied with: the only change should
+be the launch template's user data (a new version). Running workers keep the
+old one; new ones -- the next scale-out, or an instance refresh -- get it.
+Switching off is the same with the entry removed.
+
 ## Run the tests (no AWS needed)
 
 ```bash
 cd infra/workers
 terraform init -backend=false
-terraform test          # 13 runs, Terraform 1.10+
+terraform test          # 16 runs, Terraform 1.10+
 ```
 
 Without Terraform installed, prefix each command with

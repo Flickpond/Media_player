@@ -38,3 +38,18 @@ provider "aws" {
     }
   }
 }
+
+# CloudFront takes certificates from us-east-1 only, wherever the rest runs:
+# the certificate for `cdn_alias` (cdn.tf) is requested there.
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      Project     = "flickpond"
+      Environment = var.environment
+      ManagedBy   = "terraform"
+    }
+  }
+}

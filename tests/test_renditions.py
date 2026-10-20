@@ -348,9 +348,9 @@ def test_keep_hdr_registers_its_hook_only_when_switched_on(monkeypatch):
     hooks: list = []
     monkeypatch.setattr(after_ladder, "HOOKS", hooks)
 
-    entrypoint.register_hooks(SimpleNamespace(worker_keep_hdr=False))
+    entrypoint.register_hooks(SimpleNamespace(worker_keep_hdr=False, worker_preview_sprite=False))
     assert hooks == []
-    entrypoint.register_hooks(SimpleNamespace(worker_keep_hdr=True))
+    entrypoint.register_hooks(SimpleNamespace(worker_keep_hdr=True, worker_preview_sprite=False))
     assert hooks == [queue_keep_hdr]
 
 

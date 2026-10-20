@@ -179,6 +179,11 @@ run "user_data_carries_the_image_and_no_secret" {
   }
 
   assert {
+    condition     = !strcontains(base64decode(aws_launch_template.worker.user_data), "WORKER_PREVIEW_SPRITE")
+    error_message = "No switch should reach the workers unless it is set."
+  }
+
+  assert {
     condition     = !strcontains(base64decode(aws_launch_template.worker.user_data), "\r")
     error_message = "CRLF in user data breaks bash (T-15)."
   }
@@ -420,4 +425,38 @@ run "workers_have_a_role_of_their_own_and_boot_fast" {
     condition     = strcontains(base64decode(aws_launch_template.worker.user_data), "WORKER_GROUP_NAME=flickpond-staging-workers")
     error_message = "Workers need their group's name to start workers for their helpers."
   }
+}
+
+run "a_switch_reaches_the_workers_without_costing_their_settings" {
+  command = plan
+
+  # Datastores closed by default: the check warns, as it should.
+  expect_failures = [check.workers_can_reach_the_datastores]
+
+  variables {
+    worker_switches = { WORKER_PREVIEW_SPRITE = "true" }
+  }
+
+  assert {
+    condition     = strcontains(base64decode(aws_launch_template.worker.user_data), "WORKER_PREVIEW_SPRITE=true")
+    error_message = "The switch should be in the workers' environment."
+  }
+
+  assert {
+    condition = alltrue([
+      for setting in ["WORKER_HLS_MAX_HEIGHT=2160", "WORKER_FFMPEG_TIMEOUT_SECONDS=1770", "WORKER_JOB_TIMEOUT_SECONDS=1800"] :
+      strcontains(base64decode(aws_launch_template.worker.user_data), setting)
+    ])
+    error_message = "A switch is added to the settings, never instead of them."
+  }
+}
+
+run "a_switch_bash_would_run_at_boot_is_refused" {
+  command = plan
+
+  variables {
+    worker_switches = { WORKER_PREVIEW_SPRITE = "$(reboot)" }
+  }
+
+  expect_failures = [var.worker_switches, check.workers_can_reach_the_datastores]
 }

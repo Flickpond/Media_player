@@ -14,7 +14,7 @@
 //   DELETE /uploads/{id}             -> 204
 //   GET  /limits         -> 200 { max_duration_seconds, max_edit_height }
 //   GET  /jobs/{id}      -> { id, filename, status, output_url?, hls_url?,
-//                             hls_status, thumbnail_url?, error? }
+//                             hls_status, thumbnail_url?, preview_vtt_url?, error? }
 //   GET  /jobs?limit&offset       -> [ ...job shape... ]   (caller's own jobs)
 //   GET  /admin/jobs?limit&offset -> [ ...job shape... ]   (operator only)
 //
@@ -26,6 +26,12 @@
 // `output_url` is. It is absent until the frame is extracted and on every job
 // from before sprint 4, so the Library draws its gradient placeholder either
 // way and swaps in the frame when the API hands one back.
+//
+// `preview_vtt_url` is sprint 6's seek-bar preview (Track D): a WebVTT index of
+// small frames, which Plyr's own `previewThumbnails` shows above the seek bar.
+// An API route like `hls_url`, so the request carries the session cookie and
+// the sheet it names comes back freshly signed. Absent until the worker has
+// made one, a minute or so after the ladder; the player has no preview then.
 //
 // The `/uploads` routes are sprint 4's direct multipart upload (Track B, see
 // docs/b-direct-uploads.md): the browser asks for a presigned URL per 16 MiB
@@ -1464,7 +1470,13 @@ function mountPlayer(host, job, { autoplay = false } = {}) {
   host.replaceChildren(video);
   host.hidden = false;
 
-  const state = { host, video, plyr: null, hls: null };
+  const state = {
+    host,
+    video,
+    plyr: null,
+    hls: null,
+    previewVtt: job.preview_vtt_url ?? null,
+  };
   players.set(host, state);
 
   // Only hand the ladder to something that can actually play it: hls.js
@@ -1516,7 +1528,8 @@ function attachHls(state, source) {
     // card may have been collapsed while the failure was in flight.
     setTimeout(() => {
       if (players.get(state.host) !== state) return;
-      mountPlayer(state.host, { output_url: source.fallback });
+      // The MP4 has the ladder's timeline, so the same preview fits it.
+      mountPlayer(state.host, { output_url: source.fallback, preview_vtt_url: state.previewVtt });
     }, 0);
   });
 
@@ -1588,6 +1601,12 @@ function plyrConfig(levels, state) {
       options: levels,
       onChange: (height) => selectLevel(state, height),
     };
+  }
+
+  // Only when the API says one exists: Plyr fetches the index as it is built,
+  // and a missing one would cost a request and a console error on every open.
+  if (state?.previewVtt) {
+    config.previewThumbnails = { enabled: true, src: state.previewVtt };
   }
 
   return config;

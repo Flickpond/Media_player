@@ -73,11 +73,18 @@ def build_worker(*, burst_safe: bool = False):
 def register_hooks(settings) -> None:
     """Work that follows a finished ladder, per this worker's switches.
     Registered before RQ forks, so every job's process has them."""
+    from app.worker import after_ladder
+
     if settings.worker_keep_hdr:
-        from app.worker import after_ladder
         from app.worker.renditions import queue_keep_hdr
 
         after_ladder.register(queue_keep_hdr)
+    # After Keep HDR, which only queues a job: the sheet takes a minute and
+    # would hold that back.
+    if settings.worker_preview_sprite:
+        from app.worker.preview import make_preview
+
+        after_ladder.register(make_preview)
 
 
 def main() -> None:
