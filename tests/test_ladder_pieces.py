@@ -236,6 +236,24 @@ def test_with_no_helper_the_coordinator_encodes_every_piece_and_joins_each_rung(
     assert not [k for k in store.objects if "ladder-pieces" in k]
 
 
+def test_only_playlists_and_segments_are_uploaded_with_the_ladder():
+    """The piece archives went up beside the ladder on flickpond.com: the
+    whole ladder a second time, in tars nobody can play."""
+    store, tools, redis = Store(), FakeTools(), fakeredis.FakeRedis()
+    helped = []
+
+    def helper(job_id):
+        helped.append(help_ladder(job_id, store=store, connection=redis,
+                                  output_prefix="outputs", runner=tools))
+
+    job_id, _ = build(
+        coordinator(store, redis, tools, enqueue_helper=helper, helpers=1), store, tools
+    )
+
+    ladder = [key for key in store.objects if key.startswith(f"outputs/{job_id}/hls/")]
+    assert ladder and all(key.endswith((".m3u8", ".ts")) for key in ladder), ladder
+
+
 def test_a_helper_encodes_pieces_the_coordinator_then_joins():
     store, tools, redis = Store(), FakeTools(), fakeredis.FakeRedis()
     helped = []
