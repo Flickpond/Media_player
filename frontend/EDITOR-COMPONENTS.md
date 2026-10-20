@@ -1,17 +1,18 @@
 # The components the editor mounts
 
-`app.js` owns the editing panel: the five operation sections, the request body,
-and the polling. Two of those sections are not its own work — the crop box
-(Track B) and the clip scrubber (Track C) — so it mounts them through the
+`app.js` owns the editing panel: the core operation sections, the request body,
+and the polling. Other sections are not its own work — the crop box, the clip
+scrubber, and the sprint 6 filter presets — so it mounts them through the
 contract below instead of implementing them.
 
 ```js
 // Each is a global the panel looks up when the editor opens.
 window.mountCropBox(video, onChange, { width, height }); // crop-box.js
 window.mountClipScrubber(video, onChange);                // clip-scrubber.js, Track C
+window.mountPresetPanel(video, onChange, { width, height, duration }); // preset.js
 ```
 
-**Both take the `<video>` element the selection is drawn against and a
+**Each takes the `<video>` element the selection is drawn against and a
 callback, and call the callback whenever the user changes the selection.
 Nothing else crosses the seam.** The panel owns the request body and the
 Process button; the component owns its own DOM, its own drag maths, and its own
@@ -22,6 +23,7 @@ crop box drawn over a paused frame needs.
 |---|---|
 | Crop box | `{ x, y, w, h }` in the **source video's** pixels, not the element's |
 | Clip scrubber | `{ start, end }` in seconds, `start < end` |
+| Preset panel | `{ name }`, one of `bw`, `warm`, `cool`, `vintage`, `vivid`; `null` for the original |
 
 Returning a cleanup function is optional but supported — it is called when the
 editor closes or opens another job, so a component that adds listeners to

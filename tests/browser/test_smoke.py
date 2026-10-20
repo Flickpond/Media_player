@@ -28,6 +28,10 @@ PROCESSING_TIMEOUT_MS = 240_000
 # Expected noise: the page asks who is signed in before anyone is, and a
 # player handed over to hls.js releases its first source.
 EXPECTED_CONSOLE = ("401", "ERR_FILE_NOT_FOUND")
+# A storage origin that does not allow reading the frame into a WebGL texture
+# is handled by the CSS fallback, but the browser may still log the refused
+# texture upload. That is the expected path, not a failure of the page.
+EXPECTED_PRESET_CONSOLE = ("SecurityError", "texImage2D", "CORS", "cross-origin")
 
 
 @pytest.fixture
@@ -135,5 +139,55 @@ def test_a_person_can_sign_up_upload_watch_and_crop(page):
 
     unexpected = [
         text for text in page.console_errors if not any(e in text for e in EXPECTED_CONSOLE)
+    ]
+    assert unexpected == []
+
+
+def test_a_person_can_preview_a_filter_preset(page):
+    """The preset panel's half of the editor, in the browser that ships it.
+
+    The preview is WebGL when the browser can read the frame into a texture,
+    and an approximate CSS filter when it cannot -- a storage origin without
+    CORS is exactly the case that must not leave the control dead. Either way
+    the chosen look must be reflected on the page, and Process must become
+    available with the operation the worker understands.
+    """
+    sign_up(page)
+
+    page.set_input_files("#file-input", str(VIDEO))
+    page.wait_for_function(
+        "document.getElementById('status').textContent === 'Processing complete.'",
+        timeout=PROCESSING_TIMEOUT_MS,
+    )
+
+    page.click("#nav-library")
+    page.wait_for_selector("#library-grid .card-edit")
+    page.click("#library-grid .card-edit")
+    page.wait_for_selector("#view-edit:not([hidden])")
+
+    page.click('details[data-operation="preset"] summary')
+    page.check("#edit-preset")
+    page.wait_for_selector(".preset-panel")
+    assert page.locator("#edit-process").is_disabled()
+
+    page.click('.preset-tile[data-preset="warm"]')
+    assert (
+        page.locator('.preset-tile[data-preset="warm"]').get_attribute("aria-checked")
+        == "true"
+    )
+    page.wait_for_function(
+        """() => {
+            const canvas = document.querySelector('.preset-preview');
+            const video = document.querySelector('#edit-player video');
+            return (canvas && !canvas.hidden) || (video && video.style.filter.includes('sepia'));
+        }""",
+        timeout=30_000,
+    )
+    assert page.locator("#edit-process").is_enabled()
+
+    unexpected = [
+        text
+        for text in page.console_errors
+        if not any(e in text for e in EXPECTED_CONSOLE + EXPECTED_PRESET_CONSOLE)
     ]
     assert unexpected == []
