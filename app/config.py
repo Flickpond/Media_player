@@ -93,6 +93,19 @@ class Settings(BaseSettings):
     # can encode 4K in time sets 2160. Never above the source either way.
     worker_hls_max_height: int = 1080
     worker_ffmpeg_timeout_seconds: int = 870
+    # The ladder queue's own limit: the HD ladder, and the HDR and AV1
+    # renditions after it. Longer than the MP4's, because the video already
+    # plays by then and nobody waits on a slow ladder -- while one cut off at
+    # the MP4's 30 minutes is never there at all: on flickpond.com a 4:55 4K
+    # 60 fps upload lost its whole ladder at exactly 30 minutes (20 Oct
+    # 2026). Set in code, not per service, because the API queues AV1 jobs
+    # too and must give them the same limit. FFmpeg stops 30 s sooner, so a
+    # timed-out encode is reported, not killed mid-write.
+    worker_ladder_timeout_seconds: int = 3600
+    # The HD ladder in pieces across workers (app/worker/ladder_pieces.py).
+    # Off until proven on flickpond.com; helpers come from worker_chunk_helpers.
+    worker_chunked_ladder: bool = False
+    worker_ladder_piece_seconds: int = 30
     # Chunked MP4 (app/worker/chunked.py, sprint 6 plan 2.3). Off until a
     # 10-minute video has been timed and its joins checked on spot workers.
     worker_chunked_mp4: bool = False

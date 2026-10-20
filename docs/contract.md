@@ -370,6 +370,26 @@ through `app/repositories/jobs.py` as always.
   than `WORKER_CHUNK_STALE_SECONDS` (300) is encoded by the coordinator.
 - Audio is encoded once for the whole file; the video pieces are joined
   without re-encoding.
+- Pieces round frames exactly as one encode does (20 Oct 2026): each frame
+  keeps its own timestamp through the rate filter, a piece starts on a frame
+  that begins an output frame and stops after a counted number of frames.
+
+## Sprint 6: the HD ladder in pieces, phase 2 (A; nobody depends on it)
+
+Off unless `WORKER_CHUNKED_LADDER=true`. Nothing in the job row changes; the
+ladder job coordinates, as the MP4 job does above, and `hls_status` is set as
+before.
+
+- A source of `WORKER_CHUNK_MIN_DURATION_SECONDS` or longer is cut into
+  pieces of about `WORKER_LADDER_PIECE_SECONDS` (30), each a whole number of
+  6 s segments. Each piece encodes every rung; the join is playlists only.
+- Helpers: `app.worker.tasks.help_ladder` on `<REDIS_QUEUE>-chunks`, up to
+  `WORKER_CHUNK_HELPERS`. Redis `flickpond:pieces:<job>:ladder:{...}`; S3
+  `outputs/<job>/ladder-pieces/NNNN.tar`, both deleted when the ladder ends.
+- The ladder's timestamps start at 10 s (audio and video alike); players
+  start at the first one. The master playlist keeps FFmpeg's layout.
+- The ladder queue's jobs (ladder, HDR, AV1) and ladder helpers have
+  `WORKER_LADDER_TIMEOUT_SECONDS` (3600), set in code for every service.
 
 ## Sprint 6: Keep HDR and AV1 for popular videos (A; switches off by default)
 
