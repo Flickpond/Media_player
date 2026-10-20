@@ -48,6 +48,12 @@ services:
       # 0 is off. The API counts the plays, so the switch is set here, not on
       # the workers.
       AV1_POPULAR_VIEWS: ${AV1_POPULAR_VIEWS:-0}
+      # The longest upload the browser lets through: the API reports it
+      # (app/api/limits.py). Must not exceed the workers' own setting in
+      # infra/workers, or a video passes here and is refused after uploading.
+      # Ten minutes on AWS, where the MP4 and the ladder are encoded in
+      # pieces: 4:55 of 4K took 4 and 7.5 minutes (20 Oct 2026).
+      MEDIA_MAX_DURATION_SECONDS: ${MEDIA_MAX_DURATION_SECONDS:-600}
 
   worker:
     # A stopped worker gives its job back (app.worker.interruption) in a few
