@@ -450,6 +450,10 @@ class LadderPieces:
             for index in range(plan.count):
                 archive = mine.get(index) or self._fetch(job_id, index, work_dir)
                 _unpack(archive, pieces_dir / f"{index:04d}")
+                # `work_dir` is what the builder uploads, every file in it:
+                # left here, each archive went up beside the ladder -- the
+                # whole ladder a second time (20 Oct 2026, flickpond.com).
+                archive.unlink(missing_ok=True)
             self._join(plan, pieces_dir, work_dir, audio_dir)
             logger.info(
                 "job %s: ladder joined, %d of %d pieces here", job_id, len(mine), plan.count
