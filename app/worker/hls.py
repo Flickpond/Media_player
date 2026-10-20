@@ -387,9 +387,13 @@ class HlsLadderBuilder:
                 )
 
             prefix = self.prefix_for(job_id)
-            for path in sorted(work_dir.rglob("*")):
-                if not path.is_file():
-                    continue
+            # The master last: until it is there, no player is sent to a rung
+            # whose segments are still on their way. Sorted by name it went
+            # first -- on flickpond.com a 4:55 4K ladder's master was readable
+            # while its audio was still uploading (20 Oct 2026).
+            files = sorted(path for path in work_dir.rglob("*") if path.is_file())
+            files.sort(key=lambda path: path == master)
+            for path in files:
                 relative = PurePosixPath(path.relative_to(work_dir).as_posix())
                 self._store.upload_file(
                     key=f"{prefix}/{relative}",
