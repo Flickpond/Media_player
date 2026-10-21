@@ -4,7 +4,7 @@ Importing this package registers every operation's filters; a new module is
 added to the import line below.
 """
 
-from app.worker.edit_ops import crop, scale  # noqa: F401  (registers the filters)
+from app.worker.edit_ops import crop, flip, rotate, scale  # noqa: F401 (registers the filters)
 from app.worker.edit_ops.registry import (
     FILTERS,
     FilterChain,

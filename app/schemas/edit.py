@@ -42,6 +42,24 @@ class ConvertParams(_StrictModel):
     format: Literal["mkv", "mp3"]
 
 
+class RotateParams(_StrictModel):
+    degrees: Annotated[StrictInt, Field(ge=90, le=270, multiple_of=90)]
+
+
+class FlipParams(_StrictModel):
+    axis: Literal["horizontal", "vertical"]
+
+
+class RotateOperation(_StrictModel):
+    operation: Literal["rotate"]
+    params: RotateParams
+
+
+class FlipOperation(_StrictModel):
+    operation: Literal["flip"]
+    params: FlipParams
+
+
 class ClipOperation(_StrictModel):
     operation: Literal["clip"]
     params: ClipParams
@@ -72,6 +90,8 @@ EditOperation = Annotated[
     | CropOperation
     | DownscaleOperation
     | UpscaleOperation
+    | RotateOperation
+    | FlipOperation
     | ConvertOperation,
     Field(discriminator="operation"),
 ]
