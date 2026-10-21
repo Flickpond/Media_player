@@ -283,6 +283,7 @@ def _rotate_rule(params: dict, frame: Frame) -> Frame:
 
 register_rule("rotate", OperationRule(label="rotate", check=_rotate_rule))
 register_rule("flip", OperationRule(label="flip", check=_unchanged))
+register_rule("speed", OperationRule(label="speed", check=_unchanged, changes_picture=False))
 register_rule("clip", OperationRule(label="clip", check=_unchanged, changes_picture=False))
 register_rule("crop", OperationRule(label="crop", check=_crop_rule))
 register_rule("downscale", OperationRule(label="scale", check=_scale_rule("downscale")))

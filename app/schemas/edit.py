@@ -50,6 +50,16 @@ class FlipParams(_StrictModel):
     axis: Literal["horizontal", "vertical"]
 
 
+class SpeedParams(_StrictModel):
+    factor: Annotated[float, Field(strict=True, ge=0.5, le=2, multiple_of=0.25,
+                                  allow_inf_nan=False)]
+
+
+class SpeedOperation(_StrictModel):
+    operation: Literal["speed"]
+    params: SpeedParams
+
+
 class RotateOperation(_StrictModel):
     operation: Literal["rotate"]
     params: RotateParams
@@ -92,6 +102,7 @@ EditOperation = Annotated[
     | UpscaleOperation
     | RotateOperation
     | FlipOperation
+    | SpeedOperation
     | ConvertOperation,
     Field(discriminator="operation"),
 ]
