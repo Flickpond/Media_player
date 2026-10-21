@@ -183,6 +183,7 @@ describe("the page's player wiring", () => {
       "vendor/plyr.min.js",
       "clip-scrubber.js",
       "crop-box.js",
+      "motion.js",
       "app.js",
     ]);
     for (const src of scripts) {

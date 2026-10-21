@@ -16,6 +16,7 @@
     <link rel="stylesheet" href="style.css" />
     <link rel="stylesheet" href="clip-scrubber.css" />
     <link rel="stylesheet" href="crop-box.css" />
+    <link rel="stylesheet" href="motion.css" />
   </head>
   <body>
     <!-- Shown until /auth/me says who we are. The session cookie is HttpOnly,
@@ -470,6 +471,33 @@
                 </div>
               </details>
 
+              <details class="edit-op" data-operation="rotate" data-mount="mountRotatePanel">
+                <summary>
+                  <input type="checkbox" id="edit-rotate" />
+                  <span class="edit-op-name">Rotate</span>
+                  <span class="edit-op-hint">90°, 180° or 270° clockwise</span>
+                </summary>
+                <div class="edit-op-body"><div class="edit-mount"></div></div>
+              </details>
+
+              <details class="edit-op" data-operation="flip" data-mount="mountFlipPanel">
+                <summary>
+                  <input type="checkbox" id="edit-flip" />
+                  <span class="edit-op-name">Mirror</span>
+                  <span class="edit-op-hint">horizontal or vertical</span>
+                </summary>
+                <div class="edit-op-body"><div class="edit-mount"></div></div>
+              </details>
+
+              <details class="edit-op" data-operation="speed" data-mount="mountSpeedPanel">
+                <summary>
+                  <input type="checkbox" id="edit-speed" />
+                  <span class="edit-op-name">Speed</span>
+                  <span class="edit-op-hint">0.5×–2×, keeps audio pitch</span>
+                </summary>
+                <div class="edit-op-body"><div class="edit-mount"></div></div>
+              </details>
+
               <details class="edit-op" id="edit-downscale-section">
                 <summary>
                   <input type="checkbox" id="edit-downscale" />
@@ -543,6 +571,7 @@
     <script src="vendor/plyr.min.js" defer></script>
     <script src="clip-scrubber.js" defer></script>
     <script src="crop-box.js" defer></script>
+    <script src="motion.js" defer></script>
     <script src="app.js" defer></script>
   </body>
 </html>
