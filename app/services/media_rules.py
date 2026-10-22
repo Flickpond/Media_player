@@ -279,4 +279,5 @@ register_rule("clip", OperationRule(label="clip", check=_unchanged, changes_pict
 register_rule("crop", OperationRule(label="crop", check=_crop_rule))
 register_rule("downscale", OperationRule(label="scale", check=_scale_rule("downscale")))
 register_rule("upscale", OperationRule(label="scale", check=_scale_rule("upscale")))
+register_rule("adjust", OperationRule(label="colour", check=_unchanged))
 register_rule("convert", OperationRule(label="convert", check=_unchanged, changes_picture=False))

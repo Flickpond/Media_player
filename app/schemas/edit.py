@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_serializer, model_validator
 
 from app.services.media_rules import OPERATION_ORDER
 
@@ -42,6 +42,47 @@ class ConvertParams(_StrictModel):
     format: Literal["mkv", "mp3"]
 
 
+# The colour sliders' ranges (sprint 6 plan, 2.1), as (low, high) per field.
+# FFmpeg's eq would take wider ones; these are the ones the editor offers and
+# the ones its preview was matched against.
+ADJUST_RANGES: dict[str, tuple[float, float]] = {
+    "brightness": (-0.3, 0.3),
+    "contrast": (0.5, 2.0),
+    "saturation": (0.0, 3.0),
+    "gamma": (0.5, 2.0),
+}
+
+
+class AdjustParams(_StrictModel):
+    """Colour adjustments. Every field is optional: one left out stays as it
+    is. At least one has to be there -- an empty adjust is a request with
+    nothing in it, and the panel never sends one."""
+
+    brightness: FiniteNumber | None = None
+    contrast: FiniteNumber | None = None
+    saturation: FiniteNumber | None = None
+    gamma: FiniteNumber | None = None
+
+    @model_validator(mode="after")
+    def values_are_in_range(self):
+        given = {name: getattr(self, name) for name in ADJUST_RANGES}
+        if all(value is None for value in given.values()):
+            raise ValueError(
+                "adjust needs at least one of brightness, contrast, saturation or gamma"
+            )
+        for name, value in given.items():
+            low, high = ADJUST_RANGES[name]
+            if value is not None and not low <= value <= high:
+                raise ValueError(f"{name} must be between {low:g} and {high:g}")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _leave_out_what_was_left_out(self, handler):
+        # Stored and handed to the worker as sent: a field the request left
+        # out is absent, not null.
+        return {name: value for name, value in handler(self).items() if value is not None}
+
+
 class ClipOperation(_StrictModel):
     operation: Literal["clip"]
     params: ClipParams
@@ -67,12 +108,18 @@ class ConvertOperation(_StrictModel):
     params: ConvertParams
 
 
+class AdjustOperation(_StrictModel):
+    operation: Literal["adjust"]
+    params: AdjustParams
+
+
 EditOperation = Annotated[
     ClipOperation
     | CropOperation
     | DownscaleOperation
     | UpscaleOperation
-    | ConvertOperation,
+    | ConvertOperation
+    | AdjustOperation,
     Field(discriminator="operation"),
 ]
 
