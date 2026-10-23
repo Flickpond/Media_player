@@ -21,9 +21,13 @@ THUMBNAIL_CONTENT_TYPE = "image/jpeg"
 THUMBNAIL_FILENAME = "thumbnail.jpg"
 
 # How far in to take the frame. The first frame is the worst choice -- fades
-# from black and phone camera start-up are both there -- and a second in
-# clears both for nearly every clip.
-PREFERRED_OFFSET_SECONDS = 1.0
+# from black and phone camera start-up are both there. A fixed second in
+# cleared those but not a title card or an opening held on black: the LG demo
+# clip is black for its first ~5 s and every one of its previews was black
+# (23 Oct 2026). So a tenth of the way in, within these bounds.
+PREFERRED_OFFSET_FRACTION = 0.1
+MIN_OFFSET_SECONDS = 1.0
+MAX_OFFSET_SECONDS = 30.0
 
 
 class ThumbnailError(RuntimeError):
@@ -31,10 +35,14 @@ class ThumbnailError(RuntimeError):
 
 
 def thumbnail_offset(duration_seconds: float) -> float:
-    """A second in, or the middle of a clip too short to have one."""
+    """A tenth of the way in -- at least a second, at most half a minute --
+    or the middle of a clip too short for that."""
     if duration_seconds <= 0:
         return 0.0
-    return min(PREFERRED_OFFSET_SECONDS, duration_seconds / 2)
+    preferred = min(
+        max(duration_seconds * PREFERRED_OFFSET_FRACTION, MIN_OFFSET_SECONDS), MAX_OFFSET_SECONDS
+    )
+    return min(preferred, duration_seconds / 2)
 
 
 def build_thumbnail_command(
