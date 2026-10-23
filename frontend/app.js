@@ -2045,7 +2045,8 @@ el.editKeepBoth.addEventListener("click", () => {
 el.editDeleteOriginal.addEventListener("click", async () => {
   const original = editingJob;
   if (!original) return;
-  if (!window.confirm(`Delete "${original.filename}"? This cannot be undone.`)) return;
+  // The same question as every delete: a move to the trash when there is one.
+  if (!window.confirm(deletePrompt(original.filename))) return;
   el.editKeepBoth.disabled = true;
   el.editDeleteOriginal.disabled = true;
   try {
@@ -2079,7 +2080,11 @@ el.editDeleteOriginal.addEventListener("click", async () => {
     updateProcessButton();
   }
   libraryJobs = libraryJobs.filter((job) => job.id !== original.id);
-  settleKeep(`Deleted "${original.filename}". The edited video is in your library.`);
+  settleKeep(
+    trashDays() > 0
+      ? `Moved "${original.filename}" to the trash. The edited video is in your library.`
+      : `Deleted "${original.filename}". The edited video is in your library.`,
+  );
   void loadLibrary();
 });
 

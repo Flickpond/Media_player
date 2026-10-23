@@ -3518,7 +3518,8 @@ describe("editor", () => {
     el.editDeleteOriginal.dispatchEvent(new Event("click"));
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(window.confirm).toHaveBeenCalledWith('Delete "holiday.mp4"? This cannot be undone.');
+    // No /limits in this test: the prompt promises neither a trash nor a final delete.
+    expect(window.confirm).toHaveBeenCalledWith('Delete "holiday.mp4"?');
     const deletes = fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE");
     expect(deletes.map(([url]) => url)).toEqual(["/api/jobs/1"]);
     expect(el.editKeep.hidden).toBe(true);
@@ -3526,6 +3527,25 @@ describe("editor", () => {
     expect(el.editProcess.disabled).toBe(true);
     // The result stays: it is what the reader chose to keep.
     expect(el.editResult.hidden).toBe(false);
+  });
+
+  it("moves the original to the trash when there is one, and says so", async () => {
+    const el = await loadApp({
+      limits: { max_duration_seconds: 600, max_edit_height: 2160, trash_retention_days: 30 },
+    });
+    await openEditor(el);
+    await finishEdit(el);
+    window.confirm = vi.fn(() => true);
+
+    el.editDeleteOriginal.dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      'Move "holiday.mp4" to the trash? It is deleted for good after 30 days.',
+    );
+    expect(el.editStatus.textContent).toBe(
+      'Moved "holiday.mp4" to the trash. The edited video is in your library.',
+    );
   });
 
   it("does nothing if the deletion is not confirmed", async () => {
