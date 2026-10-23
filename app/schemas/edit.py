@@ -42,6 +42,10 @@ class ConvertParams(_StrictModel):
     format: Literal["mkv", "mp3"]
 
 
+class PresetParams(_StrictModel):
+    name: Literal["bw", "warm", "cool", "vintage", "vivid"]
+
+
 class ClipOperation(_StrictModel):
     operation: Literal["clip"]
     params: ClipParams
@@ -67,12 +71,18 @@ class ConvertOperation(_StrictModel):
     params: ConvertParams
 
 
+class PresetOperation(_StrictModel):
+    operation: Literal["preset"]
+    params: PresetParams
+
+
 EditOperation = Annotated[
     ClipOperation
     | CropOperation
     | DownscaleOperation
     | UpscaleOperation
-    | ConvertOperation,
+    | ConvertOperation
+    | PresetOperation,
     Field(discriminator="operation"),
 ]
 

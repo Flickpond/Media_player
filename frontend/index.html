@@ -16,6 +16,7 @@
     <link rel="stylesheet" href="style.css" />
     <link rel="stylesheet" href="clip-scrubber.css" />
     <link rel="stylesheet" href="crop-box.css" />
+    <link rel="stylesheet" href="preset.css" />
   </head>
   <body>
     <!-- Shown until /auth/me says who we are. The session cookie is HttpOnly,
@@ -506,6 +507,17 @@
                 </div>
               </details>
 
+              <details class="edit-op" data-operation="preset" data-mount="mountPresetPanel">
+                <summary>
+                  <input type="checkbox" id="edit-preset" />
+                  <span class="edit-op-name">Presets</span>
+                  <span class="edit-op-hint">one-click looks</span>
+                </summary>
+                <div class="edit-op-body">
+                  <div id="edit-preset-mount" class="edit-mount"></div>
+                </div>
+              </details>
+
               <details class="edit-op">
                 <summary>
                   <input type="checkbox" id="edit-convert" />
@@ -543,6 +555,7 @@
     <script src="vendor/plyr.min.js" defer></script>
     <script src="clip-scrubber.js" defer></script>
     <script src="crop-box.js" defer></script>
+    <script src="preset.js" defer></script>
     <script src="app.js" defer></script>
   </body>
 </html>
