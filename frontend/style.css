@@ -1122,6 +1122,30 @@ video {
     background 0.15s,
     color 0.15s;
 }
+/* The trash: a card with what it was, when it goes, and two ways out. */
+.video-card.is-trashed .video-thumb {
+  opacity: 0.55;
+}
+.badge-trash {
+  color: var(--text-muted);
+  background: var(--bg-overlay);
+}
+.trash-when {
+  margin: 4px 0 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.trash-actions {
+  display: flex;
+  gap: 8px;
+}
+.btn-danger {
+  color: var(--danger);
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
 .card-delete:hover {
   background: var(--danger-soft);
   color: var(--danger);

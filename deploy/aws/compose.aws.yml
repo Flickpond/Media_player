@@ -54,6 +54,9 @@ services:
       # Ten minutes on AWS, where the MP4 and the ladder are encoded in
       # pieces: 4:55 of 4K took 4 and 7.5 minutes (20 Oct 2026).
       MEDIA_MAX_DURATION_SECONDS: ${MEDIA_MAX_DURATION_SECONDS:-600}
+      # Days a deleted video waits in the trash (0: delete at once). The API
+      # and the reaper must agree: one trashes, the other empties.
+      TRASH_RETENTION_DAYS: ${TRASH_RETENTION_DAYS:-30}
 
   worker:
     # A stopped worker gives its job back (app.worker.interruption) in a few
@@ -81,3 +84,4 @@ services:
       # A job the reaper puts back can wake an empty pool too.
       WORKER_GROUP_NAME: ${WORKER_GROUP_NAME:-}
       WORKER_GROUP_REGION: ${AWS_REGION:-}
+      TRASH_RETENTION_DAYS: ${TRASH_RETENTION_DAYS:-30}

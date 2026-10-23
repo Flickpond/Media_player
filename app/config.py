@@ -129,6 +129,10 @@ class Settings(BaseSettings):
     # 4K. Five minutes until a real 4K clip has been timed on the sprint 4
     # instance; 0 turns the check off.
     media_max_duration_seconds: int = 300
+    # Deleting a video moves it to the library's trash for this many days;
+    # the reaper then deletes it for good. 0 deletes at once, as before the
+    # trash existed (and empties anything already in it).
+    trash_retention_days: int = 30
     # The poster frame's bounding box. Big enough for a Library card on a
     # high-density screen, small enough to stay a few tens of kilobytes.
     thumbnail_max_width: int = 640

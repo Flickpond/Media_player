@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import timedelta
 from pathlib import PurePosixPath
 from typing import Annotated
 from uuid import UUID, uuid4
@@ -24,8 +25,11 @@ from app.repositories.jobs import (
     delete_job,
     get_job,
     list_jobs,
+    list_trash,
     prepare_retry,
     resolve_edit_roots,
+    restore_job,
+    trash_job,
 )
 from app.schemas.edit import EditRequest
 from app.schemas.job import EditOptions, EditSource, ErrorResponse, JobResponse
@@ -125,6 +129,9 @@ async def _to_response(
         hls_url = f"{prefix}/jobs/{job.id}/hls/master.m3u8"
 
     error = job.error if job.status == JobStatus.FAILED.value else None
+    purge_at = None
+    if job.deleted_at is not None:
+        purge_at = job.deleted_at + timedelta(days=max(0, get_settings().trash_retention_days))
     return JobResponse(
         id=job.id,
         filename=job.filename,
@@ -141,6 +148,8 @@ async def _to_response(
         edit_options=_edit_options(job, base),
         progress=progress if job.status == JobStatus.PROCESSING.value else None,
         error=error,
+        deleted_at=job.deleted_at,
+        purge_at=purge_at,
     )
 
 
@@ -167,6 +176,63 @@ async def get_jobs(
             *(_to_response(job, signer, roots[job.id], progress.get(job.id)) for job in jobs)
         )
     )
+
+
+@router.get(
+    "/trash",
+    response_model=list[JobResponse],
+    response_model_exclude_none=True,
+)
+async def get_trash(
+    user: CurrentUser,
+    session: SessionDependency,
+    signer: SignerDependency,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[JobResponse]:
+    """The caller's trash, most recently deleted first. Declared before
+    `/{job_id}`, which would otherwise take "trash" for an id and refuse it."""
+    jobs = await list_trash(session, owner_id=user.id, limit=limit, offset=offset)
+    roots = await resolve_edit_roots(session, jobs)
+    return list(await asyncio.gather(*(_to_response(job, signer, roots[job.id]) for job in jobs)))
+
+
+@router.post(
+    "/{job_id}/restore",
+    response_model=JobResponse,
+    response_model_exclude_none=True,
+    responses={404: {"model": ErrorResponse}},
+)
+async def restore_job_by_id(
+    job_id: UUID,
+    user: CurrentUser,
+    session: SessionDependency,
+    signer: SignerDependency,
+) -> JobResponse:
+    """Put a video from the trash back in the library, as it was."""
+    job = await restore_job(session, job_id, owner_id=user.id)
+    if job is None:
+        raise ApiNotFoundError("not found")
+    roots = await resolve_edit_roots(session, [job])
+    return await _to_response(job, signer, roots[job.id])
+
+
+@router.delete(
+    "/{job_id}/permanently",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={404: {"model": ErrorResponse}},
+)
+async def delete_job_permanently(
+    job_id: UUID,
+    user: CurrentUser,
+    session: SessionDependency,
+    storage: StorageDependency,
+) -> Response:
+    """Delete a video for good now -- from the trash, without the wait."""
+    job = await _delete_job_and_storage(session, storage, job_id, owner_id=user.id)
+    if job is None:
+        raise ApiNotFoundError("not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(
@@ -346,6 +412,12 @@ async def delete_job_by_id(
     `delete_job` for why the worker already tolerates the row disappearing
     underneath it.
     """
+    # To the trash first, when there is one: a month to change one's mind.
+    # The reaper deletes it, and its files, when the month is up.
+    if get_settings().trash_retention_days > 0:
+        if await trash_job(session, job_id, owner_id=user.id) is None:
+            raise ApiNotFoundError("not found")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     job = await _delete_job_and_storage(session, storage, job_id, owner_id=user.id)
     if job is None:
         raise ApiNotFoundError("not found")
