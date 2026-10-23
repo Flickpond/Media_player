@@ -59,7 +59,7 @@ resource "aws_launch_template" "worker" {
     parameter_path  = local.parameter_path
     cache_port      = var.cache_port
     bucket_name     = var.bucket_name
-    worker_settings = var.worker_settings
+    worker_settings = merge(var.worker_settings, var.worker_switches)
     group_name      = local.group_name
     drain_hook_name = local.drain_hook_name
   }))

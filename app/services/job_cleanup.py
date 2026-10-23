@@ -10,14 +10,22 @@ async def delete_job_storage(storage, job, *, best_effort=False):
     # Edits borrow a source; deleting one must not erase another video's output.
     if job.operations is None:
         keys.insert(0, job.source_key)
+    prefixes = []
     if job.hls_key:
-        prefix = job.hls_key.rsplit("/", 1)[0] + "/"
+        prefixes.append(job.hls_key.rsplit("/", 1)[0] + "/")
+    # The seek-bar preview's folder (app.worker.preview). A preview stored
+    # but not yet recorded when the row went is removed by the worker, which
+    # finds the row gone when it tries to record it.
+    preview_key = getattr(job, "preview_key", None)
+    if preview_key:
+        prefixes.append(preview_key.rsplit("/", 1)[0] + "/")
+    for prefix in prefixes:
         try:
             keys.extend(name for name, _ in await storage.list_objects(prefix))
         except Exception:
             if not best_effort:
                 raise
-            logger.warning("job %s: could not list HLS objects under %s", job.id, prefix)
+            logger.warning("job %s: could not list objects under %s", job.id, prefix)
     for key in dict.fromkeys(keys):
         try:
             await storage.delete_object(key)

@@ -60,6 +60,47 @@ data "aws_cloudfront_cache_policy" "optimized" {
   name = "Managed-CachingOptimized"
 }
 
+# --- our own name (sprint 6, D): cdn.flickpond.com -----------------------------
+#
+# Off while `cdn_alias` is null, and then nothing below exists and the
+# distribution is exactly as before. On, the certificate is requested here
+# and validated by a CNAME someone adds at Spaceship (the DNS is not in
+# Route 53); the validation resource waits for it, so the distribution only
+# takes the name once the certificate is issued.
+
+locals {
+  cdn_alias_on = var.cdn_alias != null
+  # The name the API signs URLs for: ours once the distribution answers to it.
+  cdn_signed_domain = local.cdn_alias_on ? var.cdn_alias : aws_cloudfront_distribution.videos.domain_name
+}
+
+resource "aws_acm_certificate" "cdn" {
+  count    = local.cdn_alias_on ? 1 : 0
+  provider = aws.us_east_1
+
+  domain_name       = var.cdn_alias
+  validation_method = "DNS"
+
+  tags = {
+    Name = "${local.name}-cdn"
+  }
+
+  # A changed name gets its new certificate before the old one is let go,
+  # so the distribution is never left holding nothing.
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_acm_certificate_validation" "cdn" {
+  count    = local.cdn_alias_on ? 1 : 0
+  provider = aws.us_east_1
+
+  certificate_arn = aws_acm_certificate.cdn[0].arn
+  # No record FQDNs: they are made by hand at Spaceship, and this waits
+  # (up to its timeout) for ACM to see them and issue.
+}
+
 # Accepted findings, each on purpose:
 #   AVD-AWS-0010 access logging -- a logging bucket for a staging CDN; the
 #     viewer-facing logs that matter are the API's, which issues every URL.
@@ -75,6 +116,7 @@ resource "aws_cloudfront_distribution" "videos" {
   # North America, Europe and Asia -- where the viewers are -- without paying
   # for the most expensive edge locations.
   price_class = "PriceClass_200"
+  aliases     = local.cdn_alias_on ? [var.cdn_alias] : null
 
   origin {
     origin_id                = "videos"
@@ -99,16 +141,15 @@ resource "aws_cloudfront_distribution" "videos" {
     }
   }
 
-  # The *.cloudfront.net certificate: segment URLs are fetched by the player,
-  # never shown, so they need no custom domain or DNS change.
-  # With the default *.cloudfront.net certificate AWS ignores the minimum and
-  # records TLSv1 whatever is asked, so asking for TLSv1.2_2021 here only made
-  # every plan show a change no apply could make. Enforcing TLS 1.2 needs our
-  # own certificate on a custom domain (an ACM certificate in us-east-1 and an
-  # alias such as cdn.flickpond.com) -- see docs/roadmap.md.
+  # Without `cdn_alias`, the *.cloudfront.net certificate: AWS ignores the
+  # minimum there and records TLSv1 whatever is asked, so asking for more only
+  # made every plan show a change no apply could make (#88). With it, our own
+  # certificate, and TLS 1.2 is enforced.
   viewer_certificate {
-    cloudfront_default_certificate = true
-    minimum_protocol_version       = "TLSv1"
+    cloudfront_default_certificate = !local.cdn_alias_on
+    acm_certificate_arn            = local.cdn_alias_on ? aws_acm_certificate_validation.cdn[0].certificate_arn : null
+    ssl_support_method             = local.cdn_alias_on ? "sni-only" : null
+    minimum_protocol_version       = local.cdn_alias_on ? "TLSv1.2_2021" : "TLSv1"
   }
 }
 
@@ -146,7 +187,7 @@ resource "aws_s3_bucket_policy" "videos" {
 resource "aws_ssm_parameter" "cdn_domain" {
   name  = "/flickpond/${var.environment}/cloudfront_domain"
   type  = "String"
-  value = aws_cloudfront_distribution.videos.domain_name
+  value = local.cdn_signed_domain
 }
 
 resource "aws_ssm_parameter" "cdn_key_pair_id" {

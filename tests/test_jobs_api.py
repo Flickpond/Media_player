@@ -328,6 +328,33 @@ async def test_deleting_a_job_with_a_ladder_removes_every_segment_too(
 
 
 @pytest.mark.asyncio
+async def test_deleting_a_job_removes_its_seek_bar_preview_too(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reaper only sweeps `uploads/`, so a sheet left behind here would
+    stay in the bucket for good."""
+    preview = ["outputs/abc/preview/sprite.jpg", "outputs/abc/preview/sprite.vtt"]
+    storage = FakeStorage(listing=[*preview, "outputs/other/preview/sprite.jpg"])
+    client._transport.app.dependency_overrides[get_storage_service] = lambda: storage
+
+    job = make_job(status=JobStatus.DONE, output_key="outputs/abc/demo.mp4")
+    job.hls_key = "outputs/abc/hls/master.m3u8"
+    job.preview_key = "outputs/abc/preview/sprite.vtt"
+
+    async def fake_delete_job(_session, _job_id, *, owner_id):
+        return job
+
+    monkeypatch.setattr(jobs_api, "delete_job", fake_delete_job)
+    response = await client.delete(f"/jobs/{job.id}/permanently")
+
+    assert response.status_code == 204
+    assert storage.listed_prefixes == ["outputs/abc/hls/", "outputs/abc/preview/"]
+    for key in preview:
+        assert key in storage.deleted
+    assert "outputs/other/preview/sprite.jpg" not in storage.deleted
+
+
+@pytest.mark.asyncio
 async def test_a_storage_listing_failure_does_not_block_the_delete(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

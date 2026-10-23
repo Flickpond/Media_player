@@ -1,0 +1,15 @@
+# State holds the account ID and the subscribers' email addresses.
+.terraform/
+*.tfstate
+*.tfstate.*
+# alerts.tfvars holds the email addresses.
+*.tfvars
+*.tfvars.json
+!example.tfvars
+# Backend settings name the account's state bucket; the example is the template.
+*.backend.hcl
+!example.backend.hcl
+crash.log
+# Saved plans embed variable values.
+*.plan
+plan.txt

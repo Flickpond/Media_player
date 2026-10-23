@@ -92,3 +92,19 @@ variable "protect_data" {
   type        = bool
   default     = true
 }
+
+variable "cdn_alias" {
+  description = <<-EOT
+    Our own name for the CDN, e.g. "cdn.flickpond.com" (sprint 6). Null keeps
+    the *.cloudfront.net name, on whose shared certificate AWS will not hold
+    viewers to TLS 1.2. Set, it is two applies with a DNS record at Spaceship
+    between them -- README.md, "The CDN on our own name".
+  EOT
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.cdn_alias == null || can(regex("^([a-z0-9-]+\\.)+[a-z]{2,}$", var.cdn_alias))
+    error_message = "A lower-case host name such as cdn.flickpond.com, without a scheme or a path."
+  }
+}

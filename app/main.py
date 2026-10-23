@@ -11,6 +11,7 @@ from app.api.jobs import admin_router
 from app.api.jobs import router as jobs_router
 from app.api.limits import router as limits_router
 from app.api.multipart_uploads import router as multipart_router
+from app.api.preview import router as preview_router
 from app.api.uploads import MAX_FILE_SIZE
 from app.api.uploads import router as uploads_router
 from app.errors import ApiForbiddenError, ApiNotFoundError, ApiUnauthorizedError
@@ -66,6 +67,7 @@ def create_app() -> FastAPI:
     # Before jobs_router would also work; after is fine because the paths do
     # not overlap -- /jobs/{id}/hls/... has a segment /jobs/{id} cannot match.
     application.include_router(hls_router)
+    application.include_router(preview_router)
     application.include_router(admin_router)
     application.include_router(admin_users_router)
     application.include_router(uploads_router)

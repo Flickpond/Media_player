@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import CurrentUser, OperatorUser
+from app.api.preview import preview_vtt_path
 from app.config import get_settings
 from app.database import get_session
 from app.errors import ApiNotFoundError
@@ -124,9 +125,12 @@ async def _to_response(
     # nginx strips `/api/` before the app sees it -- the app's own routing
     # table does not know the path the browser used.
     hls_url = None
+    preview_vtt_url = None
     if job.status == JobStatus.DONE.value and job.hls_key:
         prefix = get_settings().api_public_prefix.rstrip("/")
         hls_url = f"{prefix}/jobs/{job.id}/hls/master.m3u8"
+        if job.preview_key:
+            preview_vtt_url = prefix + preview_vtt_path(job.id)
 
     error = job.error if job.status == JobStatus.FAILED.value else None
     purge_at = None
@@ -143,6 +147,7 @@ async def _to_response(
         height=job.height,
         duration_seconds=job.duration_seconds,
         thumbnail_url=thumbnail_url,
+        preview_vtt_url=preview_vtt_url,
         max_fps=job.max_fps,
         edit_source=_edit_source(job, base),
         edit_options=_edit_options(job, base),

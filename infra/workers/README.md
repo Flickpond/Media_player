@@ -27,7 +27,7 @@ ElastiCache 6379  ◀─┴── worker Auto Scaling Group  ◀── step scal
 | File | What |
 |---|---|
 | `compute.tf` | Launch template (AL2023 arm64, ECS-optimized so Docker is preinstalled; IMDSv2, encrypted gp3, the workers' own instance profile) and the group: 100% spot, `price-capacity-optimized`, five 4 vCPU instance types, capacity rebalance, a termination lifecycle hook for the drain. Two schedules: one warm worker 08:00–24:00 Asia/Shanghai, none overnight |
-| `scaling.tf` | Out: jobs still queued at two consecutive one-minute samples → +1/+2/+4 by backlog. In: nothing queued or running for 15 minutes → back to the scheduled minimum. An alarm for when queue-depth data stops |
+| `scaling.tf` | Out: jobs still queued at two consecutive one-minute samples → +1/+2/+4 by backlog. In: nothing queued or running for 15 minutes → back to the scheduled minimum. An alarm for when queue-depth data stops, sent to [`../alerts`](../alerts)' topic through `alarm_topic_arn` |
 | `network.tf` | Worker security group: no inbound; out 443, and Postgres and Valkey to their own security groups. The matching ingress on those groups, behind `open_datastores_to_workers` (off) |
 | `iam.tf` | **A worker role of its own:** the videos bucket, pull from the worker repository, read exactly `postgres_dsn`, `redis_host` and `redis_password`, complete this group's lifecycle actions. **On the core's role,** one inline policy: PutMetricData (namespace `Flickpond` only) and waking this group from zero (`SetDesiredCapacity`) |
 | `user-data.sh.tftpl` | Boot: Docker, the datastore settings from Parameter Store, ECR login, `python -m app.worker`, and the `flickpond-drain` service (contract 2.3) |
@@ -66,12 +66,28 @@ ElastiCache 6379  ◀─┴── worker Auto Scaling Group  ◀── step scal
 - **Workers share the base's instance profile**, as agreed: they need its
   bucket access, and this root adds the rest to `app_role_name`.
 
+## Switching a feature on (final week)
+
+Every new worker feature this week is behind an environment switch, off by
+default. Put it in `worker_switches` in `workers.tfvars`, never in
+`worker_settings`: setting that map replaces its four defaults, and a worker
+booted without `WORKER_HLS_MAX_HEIGHT=2160` silently caps the ladder at 1080p.
+
+```hcl
+worker_switches = { WORKER_PREVIEW_SPRITE = "true" }   # the seek-bar preview (D)
+```
+
+Plan with the tfvars the group was last applied with: the only change should
+be the launch template's user data (a new version). Running workers keep the
+old one; new ones -- the next scale-out, or an instance refresh -- get it.
+Switching off is the same with the entry removed.
+
 ## Run the tests (no AWS needed)
 
 ```bash
 cd infra/workers
 terraform init -backend=false
-terraform test          # 13 runs, Terraform 1.10+
+terraform test          # 16 runs, Terraform 1.10+
 ```
 
 Without Terraform installed, prefix each command with

@@ -24,6 +24,7 @@ from app.repositories.jobs import (
     mark_interrupted,
     mark_ladder_ready,
     mark_ladder_unavailable,
+    mark_preview_ready,
     mark_processing,
 )
 from app.repositories.users import create_user
@@ -694,6 +695,50 @@ async def test_an_empty_ladder_key_is_refused(session_factory) -> None:
     async with session_factory() as session:
         with pytest.raises(ValueError):
             await mark_ladder_ready(session, uuid4(), hls_key="  ")
+
+
+@pytest.mark.asyncio
+async def test_a_preview_is_recorded_once_the_ladder_is_ready(session_factory, owner) -> None:
+    job_id = await _done_with_ladder_pending(session_factory, owner)
+    key = f"outputs/{job_id}/preview/sprite.vtt"
+    try:
+        async with session_factory() as session:
+            # Not while the ladder is still pending: a preview follows it.
+            assert await mark_preview_ready(session, job_id, preview_key=key) is None
+            await mark_ladder_ready(session, job_id, hls_key=f"outputs/{job_id}/hls/master.m3u8")
+            job = await mark_preview_ready(session, job_id, preview_key=key)
+        assert (job.hls_status, job.preview_key) == ("ready", key)
+    finally:
+        await _cleanup(session_factory, job_id)
+
+
+@pytest.mark.asyncio
+async def test_a_preview_for_a_deleted_video_is_not_recorded(session_factory) -> None:
+    async with session_factory() as session:
+        assert await mark_preview_ready(session, uuid4(), preview_key="k/sprite.vtt") is None
+
+
+@pytest.mark.asyncio
+async def test_the_database_rejects_a_preview_without_a_ladder(session_factory, owner) -> None:
+    """`ck_jobs_preview_needs_ladder`, against real SQL."""
+    job_id = uuid4()
+    try:
+        async with session_factory() as session:
+            session.add(
+                Job(
+                    id=job_id,
+                    owner_id=owner.id,
+                    filename="bad.mp4",
+                    status=JobStatus.QUEUED.value,
+                    source_key=f"uploads/{job_id}/bad.mp4",
+                    preview_key=f"outputs/{job_id}/preview/sprite.vtt",
+                )
+            )
+            with pytest.raises(IntegrityError):
+                await session.commit()
+            await session.rollback()
+    finally:
+        await _cleanup(session_factory, job_id)
 
 
 @pytest.mark.asyncio

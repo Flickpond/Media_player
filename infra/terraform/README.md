@@ -11,6 +11,8 @@ does not edit these files.
 | `iam.tf` | Instance role: this bucket, this environment's SSM secrets, Session Manager. No access keys anywhere |
 | `compute.tf` | Default VPC, security group (80/443; 22 only from `admin_cidrs`), Graviton instance with IMDSv2, Elastic IP |
 | `datastores.tf` | **RDS PostgreSQL** (TLS forced, private, 7 days of backups) and **ElastiCache Valkey** (TLS, auth token, never public), each admitting only the core; their passwords generated here and kept in SSM under `/flickpond/<env>/` |
+| `cdn.tf` | CloudFront for HLS segments behind signed URLs; with `cdn_alias`, on our own name and certificate with TLS 1.2 enforced (below) |
+| `tests/` | `terraform test` with mocked providers, no account needed: `terraform init -backend=false && terraform test` |
 | `outputs.tf` | The interface D builds on (contract 2.1 of the sprint 5 plan) — change it only after telling D |
 
 **Read [`docs/datastore-review.md`](../../docs/datastore-review.md) before the
@@ -55,6 +57,49 @@ Reading a secret on a host (never print it into a shared terminal):
 ```bash
 aws ssm get-parameter --with-decryption --name /flickpond/staging/postgres_dsn --query Parameter.Value --output text
 ```
+
+## The CDN on our own name (sprint 6, Track D)
+
+`*.cloudfront.net` shares AWS's certificate, on which CloudFront still accepts
+TLS 1.0 whatever the distribution asks for (#88). With `cdn_alias` set, the
+distribution answers to `cdn.flickpond.com` on its own ACM certificate
+(us-east-1, as CloudFront requires) with `TLSv1.2_2021` as the floor, and the
+API signs segment URLs for that name. Null — the default — changes nothing:
+**a plan without it must say "No changes"**, or stop.
+
+The DNS is at Spaceship, not Route 53, so it takes two applies (`...` is the
+`docker run ... hashicorp/terraform:1.10` prefix from "Apply" above):
+
+```powershell
+# 1. Ask for the certificate only, and read the record ACM wants.
+... plan "-var-file=staging.tfvars" "-var=cdn_alias=cdn.flickpond.com" "-target=aws_acm_certificate.cdn" "-out=cert.plan"
+... apply cert.plan
+... output cdn_certificate_validation   # name, type CNAME, value
+... output cdn_domain                   # d…cloudfront.net
+```
+
+2. At Spaceship add **both** CNAMEs: the validation record above, and
+   `cdn` → the `cdn_domain` value. Leave them in place for good: ACM renews
+   against the same record.
+3. Put `cdn_alias = "cdn.flickpond.com"` in `staging.tfvars`, then plan and
+   apply in full. The plan should change only the distribution (in place),
+   the `cloudfront_domain` parameter, and add the validation; the apply
+   waits until ACM has issued the certificate.
+4. Prove it before the API uses it — a TLS 1.1 handshake must fail and 1.2
+   succeed, and an unsigned request must get 403 from CloudFront, not a
+   certificate error:
+   ```bash
+   openssl s_client -connect cdn.flickpond.com:443 -servername cdn.flickpond.com -tls1_1 </dev/null   # handshake failure
+   openssl s_client -connect cdn.flickpond.com:443 -servername cdn.flickpond.com -tls1_2 </dev/null   # Verify return code: 0
+   curl -sS -o /dev/null -w '%{http_code}\n' https://cdn.flickpond.com/outputs/x                     # 403
+   ```
+5. On the core: `sudo bash deploy/aws/fetch-secrets.sh staging`, then restart
+   the API (`... up -d api`). Play a video and check in the browser that
+   segments come from `cdn.flickpond.com`.
+
+**Back out** in the opposite order, or playback breaks in between: first set
+`CLOUDFRONT_DOMAIN` in the core's `.env` to the `cdn_domain` value and
+restart the API, then remove `cdn_alias` and apply.
 
 ## What it deliberately does not do
 

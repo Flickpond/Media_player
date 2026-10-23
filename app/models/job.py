@@ -82,6 +82,11 @@ class Job(Base):
             name="ck_jobs_media_dimensions_positive",
         ),
         CheckConstraint("max_fps IN (30, 60)", name="ck_jobs_max_fps"),
+        # A preview is made from a finished ladder's video, never without one.
+        CheckConstraint(
+            "preview_key IS NULL OR hls_key IS NOT NULL",
+            name="ck_jobs_preview_needs_ladder",
+        ),
         Index("ix_jobs_status", "status"),
         Index("ix_jobs_owner_id", "owner_id"),
         Index("ix_jobs_created_at", "created_at"),
@@ -117,6 +122,9 @@ class Job(Base):
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     thumbnail_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The seek-bar preview's WebVTT index (app/worker/preview.py), its sheet
+    # of frames beside it. Null until the worker has stored both.
+    preview_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The frame-rate ceiling the uploader chose: 30 unless they asked to keep
     # 60. Every encode of this job -- MP4, ladder, and any edit made from
     # it -- reads it from here.

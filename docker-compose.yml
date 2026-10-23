@@ -91,6 +91,8 @@ services:
       WORKER_FFMPEG_TIMEOUT_SECONDS: ${WORKER_FFMPEG_TIMEOUT_SECONDS:-870}
       WORKER_JOB_TIMEOUT_SECONDS: ${WORKER_JOB_TIMEOUT_SECONDS:-900}
       WORKER_OUTPUT_PREFIX: ${WORKER_OUTPUT_PREFIX:-outputs}
+      # The seek-bar preview (app/worker/preview.py): off until proven.
+      WORKER_PREVIEW_SPRITE: ${WORKER_PREVIEW_SPRITE:-false}
     depends_on:
       redis:
         condition: service_healthy

@@ -163,6 +163,29 @@ variable "worker_settings" {
   }
 }
 
+variable "worker_switches" {
+  description = <<-EOT
+    Feature switches for the final week, added on top of worker_settings
+    rather than replacing it, e.g. { WORKER_PREVIEW_SPRITE = "true" }.
+    Setting worker_settings itself replaces all four defaults above, which
+    is how a switch quietly costs the 4K ladder. Empty changes nothing.
+  EOT
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for key in keys(var.worker_switches) : can(regex("^[A-Z][A-Z0-9_]*$", key))])
+    error_message = "Names are environment variables: upper case, digits and underscores."
+  }
+
+  # User data writes these into an unquoted heredoc: `$` or a backtick in a
+  # value would be run by bash at boot.
+  validation {
+    condition     = alltrue([for value in values(var.worker_switches) : can(regex("^[A-Za-z0-9._:/-]*$", value))])
+    error_message = "Values are plain words and numbers: no spaces, quotes, $ or backticks."
+  }
+}
+
 variable "metrics_namespace" {
   description = "Must equal METRICS_NAMESPACE on the core host."
   type        = string
@@ -170,7 +193,7 @@ variable "metrics_namespace" {
 }
 
 variable "alarm_topic_arn" {
-  description = "Optional SNS topic told when queue-depth data stops arriving. Null: the alarm still shows in the console."
+  description = "SNS topic told when queue-depth data stops arriving, and again when it is back: infra/alerts' alerts_topic_arn. Null: the alarm still shows in the console, and tells nobody."
   type        = string
   default     = null
 }

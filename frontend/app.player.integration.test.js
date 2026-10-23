@@ -324,6 +324,90 @@ describe("playing a job", () => {
   });
 });
 
+describe("the seek-bar preview", () => {
+  // The index exactly as the API serves it (app/api/preview.py): the sheet's
+  // name already swapped for a signed URL, its rectangle kept after `#xywh=`.
+  const SHEET =
+    "https://cdn.example.test/outputs/1/preview/sprite.jpg?Expires=1&Signature=a~b_c-&Key-Pair-Id=K";
+  const INDEX = [
+    "WEBVTT",
+    "",
+    "00:00:00.000 --> 00:00:05.000",
+    `${SHEET}#xywh=0,0,160,90`,
+    "",
+    "00:00:05.000 --> 00:00:07.500",
+    `${SHEET}#xywh=160,0,160,90`,
+    "",
+  ].join("\n");
+
+  /** Plyr fetches the index with XMLHttpRequest, not fetch(). */
+  function serveIndex(body) {
+    const opened = [];
+    class IndexXhr {
+      constructor() {
+        this.withCredentials = false;
+        this.listeners = {};
+      }
+      addEventListener(type, listener) {
+        this.listeners[type] = listener;
+      }
+      open(method, url) {
+        opened.push([method, url]);
+      }
+      send() {
+        this.status = 200;
+        this.responseText = body;
+        this.response = body;
+        setTimeout(() => this.listeners.load?.(), 0);
+      }
+    }
+    vi.stubGlobal("XMLHttpRequest", IndexXhr);
+    return opened;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("has the real Plyr fetch the index and load the signed sheet it names", async () => {
+    const el = await loadPage();
+    const opened = serveIndex(INDEX);
+    const images = [];
+    const src = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src");
+    vi.spyOn(HTMLImageElement.prototype, "src", "set").mockImplementation(function set(value) {
+      images.push(value);
+      src.set.call(this, value);
+    });
+    await openLibrary(el, [{ ...PLAIN, preview_vtt_url: "/api/jobs/1/preview.vtt" }]);
+    const card = cardFor(el, "holiday.mp4");
+
+    play(card);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(videoIn(card).plyr.config.previewThumbnails).toMatchObject({
+      enabled: true,
+      src: "/api/jobs/1/preview.vtt",
+    });
+    // Same origin, so the session cookie goes with it as with any API call.
+    expect(opened).toEqual([["GET", "/api/jobs/1/preview.vtt"]]);
+    // The signed URL whole -- query string kept, rectangle cut off -- and not
+    // resolved against the index's own path, which would lose the signature.
+    expect(images).toContain(SHEET);
+  });
+
+  it("leaves the real Plyr's own time tooltip alone when there is no preview", async () => {
+    const el = await loadPage();
+    const opened = serveIndex(INDEX);
+    await openLibrary(el, [PLAIN]);
+    const card = cardFor(el, "holiday.mp4");
+
+    play(card);
+
+    expect(videoIn(card).plyr.config.previewThumbnails.enabled).toBe(false);
+    expect(opened).toEqual([]);
+  });
+});
+
 describe("the adaptive ladder", () => {
   it("builds Plyr's quality menu from the ladder's own levels", async () => {
     const el = await loadPage();

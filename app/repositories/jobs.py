@@ -343,6 +343,33 @@ async def mark_ladder_unavailable(session: AsyncSession, job_id: UUID) -> Job | 
     return await _settle_ladder(session, job_id, hls_status=HlsStatus.UNAVAILABLE, hls_key=None)
 
 
+async def mark_preview_ready(
+    session: AsyncSession, job_id: UUID, *, preview_key: str
+) -> Job | None:
+    """Record a video's seek-bar preview. `None` if it no longer has a ladder
+    to preview -- deleted while the sheet was being made -- so the caller can
+    remove the objects nobody else will ever find."""
+    if not preview_key.strip():
+        raise ValueError("preview_key must not be empty")
+    statement = (
+        update(Job)
+        .where(
+            Job.id == job_id,
+            Job.status == JobStatus.DONE.value,
+            Job.hls_status == HlsStatus.READY.value,
+        )
+        .values(preview_key=preview_key, updated_at=func.now())
+        .returning(Job)
+    )
+    result = await session.execute(statement)
+    job = result.scalar_one_or_none()
+    if job is None:
+        await session.rollback()
+        return None
+    await session.commit()
+    return job
+
+
 async def list_stale_ladders(session: AsyncSession, *, before: datetime) -> list[Job]:
     """Done jobs whose ladder has been pending since before `before`."""
     statement = (
