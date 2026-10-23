@@ -94,8 +94,22 @@
     }
     const reset = createElement("button", "btn-ghost crop-reset", { type: "button" });
     reset.textContent = "Reset";
+    // An exact size, typed: dragging to 1000 x 1000 on a scaled-down still
+    // is guesswork. Same rules as a drag -- `legal` decides what it becomes.
+    const size = createElement("div", "crop-size");
+    const widthInput = createElement("input", "crop-size-input", {
+      type: "number", inputmode: "numeric", min: String(MIN_SIZE), step: "2",
+      "aria-label": "Crop width in pixels",
+    });
+    const heightInput = createElement("input", "crop-size-input", {
+      type: "number", inputmode: "numeric", min: String(MIN_SIZE), step: "2",
+      "aria-label": "Crop height in pixels",
+    });
+    const times = createElement("span", "crop-size-times", { "aria-hidden": "true" });
+    times.textContent = "×";
+    size.append(widthInput, times, heightInput);
     const readout = createElement("p", "crop-readout", { "aria-live": "polite" });
-    toolbar.append(aspect, reset);
+    toolbar.append(aspect, size, reset);
     stage.append(canvas, selection);
     root.append(stage, toolbar, readout);
     host.append(root);
@@ -138,6 +152,40 @@
       readout.textContent = state.touched
         ? `${w} × ${h} from ${x}, ${y} of ${state.width} × ${state.height}`
         : `Drag on the frame to draw a box (${state.width} × ${state.height}).`;
+      widthInput.max = String(state.width);
+      heightInput.max = String(state.height);
+      // Not under the reader's cursor: rewriting a field mid-typing would
+      // fight them. It catches up when they leave it.
+      if (document.activeElement !== widthInput) widthInput.value = String(w);
+      if (document.activeElement !== heightInput) heightInput.value = String(h);
+    }
+
+    /** A typed size, kept centred on the box it replaces. Typing a size is
+     *  choosing the shape, so the aspect menu goes to Free. */
+    function onSizeTyped() {
+      if (!state.box) return;
+      const w = Number(widthInput.value);
+      const h = Number(heightInput.value);
+      if (!(w > 0) || !(h > 0)) {
+        render();
+        return;
+      }
+      state.ratio = null;
+      aspect.value = ASPECTS[0].label;
+      const { x, y } = state.box;
+      const centreX = x + state.box.w / 2;
+      const centreY = y + state.box.h / 2;
+      const next = legal({ x: 0, y: 0, w, h });
+      setBox({ ...next, x: centreX - next.w / 2, y: centreY - next.h / 2 });
+      // What it actually became -- even, inside the frame -- not what was typed.
+      widthInput.value = String(state.box.w);
+      heightInput.value = String(state.box.h);
+    }
+
+    function onSizeKey(event) {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      onSizeTyped();
     }
 
     /** Make any requested box a legal one: inside the frame, at least the
@@ -372,6 +420,10 @@
     selection.addEventListener("keydown", onKeyDown);
     reset.addEventListener("click", resetBox);
     aspect.addEventListener("change", onAspectChange);
+    for (const input of [widthInput, heightInput]) {
+      input.addEventListener("change", onSizeTyped);
+      input.addEventListener("keydown", onSizeKey);
+    }
     video.addEventListener("loadedmetadata", readFrame);
     video.addEventListener("loadeddata", readFrame);
     video.addEventListener("resize", readFrame);
