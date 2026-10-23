@@ -1132,6 +1132,25 @@ video {
   height: 100%;
   width: 100%;
 }
+/* The small players -- a library card, an admin table cell -- get Plyr's
+   whole desktop row in ~330 px, and the volume slider and picture-in-picture
+   squeezed the seek bar to 3 px (24 Oct 2026). Here mute stays and the
+   slider goes, and picture-in-picture is left to the full-size players:
+   the seek bar gets ~124 px. */
+.video-thumb .plyr__volume input[type="range"],
+.admin-table .plyr__volume input[type="range"] {
+  display: none;
+}
+.video-thumb .plyr__volume,
+.admin-table .plyr__volume {
+  min-width: 0;
+  width: auto;
+  max-width: none;
+}
+.video-thumb .plyr__controls [data-plyr="pip"],
+.admin-table .plyr__controls [data-plyr="pip"] {
+  display: none;
+}
 .video-card-body {
   padding: 14px 16px 16px;
 }
