@@ -6,8 +6,8 @@ open #129; measurements on flickpond.com, 19–24 October
 Saturday 24 to Wednesday 28 is debugging time, fixes only.
 **Status:** **flickpond.com runs on AWS** since the cutover on 19 October. All
 five tracks' features are merged and live behind their switches; every new
-edit operation was run on the live site. Three of D's switches wait on a
-person: DNS records for the CDN, and email addresses for the alerts.
+edit operation was run on the live site. One of D's pieces waits on a
+person: the email addresses for the alerts.
 **Plan:** [`sprint6-plan.md`](sprint6-plan.md) — one feature per member on a
 shared edit-operation seam, everything behind a switch.
 
@@ -35,7 +35,7 @@ shared edit-operation seam, everything behind a switch.
 | `MEDIA_MAX_DURATION_SECONDS` | 600 | workers and API |
 | `TRASH_RETENTION_DAYS` — library trash | 30 | API and reaper |
 | `WORKER_PREVIEW_SPRITE` — seek-bar preview (D) | **on** since 24 Oct, checked live | `infra/workers` |
-| `cdn_alias` — `cdn.flickpond.com` (D) | certificate requested; waits on two CNAMEs at Spaceship | `infra/terraform` |
+| `cdn_alias` — `cdn.flickpond.com` (D) | **on** since 24 Oct: video segments served from `cdn.flickpond.com` | `infra/terraform` |
 | `infra/alerts` — email alerts (D) | not applied; waits on the list of addresses | `infra/alerts` |
 
 **What a user gets since this sprint** (each checked on flickpond.com):
@@ -112,6 +112,7 @@ labelled CSS fallback; 15 WebGL-versus-FFmpeg comparisons.
 | AV1 for popular videos | AV1 1080p peaks at **3.4 Mbps** against H.264's 6.0; Chromium starts in AV1 |
 | New edits | rotate → 1080×1920; flip, colour, B&W preset → 1920×1080; speed 1.5× → 70 s became 46.7 s; all eight operations at once → 540×720, 35 s, MKV |
 | Trash | delete → hidden from library, page and player; restore → back; Delete forever → **12 output files and the original gone from S3** |
+| `cdn.flickpond.com` (D) | TLS 1.1 refused, TLS 1.2 on our own certificate (verified), unsigned request 403 from CloudFront; a played segment's link redirects to `cdn.flickpond.com` (200). The old `*.cloudfront.net` name turned out to refuse TLS 1.1 as well |
 | Seek-bar preview (D) | 51 s after a 70 s upload: `preview.vtt` 200, 15 cues (one per 5 s), the sheet (1600 × 180) through CloudFront, a frame shown on hovering the bar. Not checked: that the frame matches the moment hovered |
 | Worker image | 1.05 GB → **787 MB** |
 
@@ -191,7 +192,6 @@ D's and the trash's migrations were both "07" after "06"; with both merged
 
 | Item | Who | When |
 |---|---|---|
-| Add the two CNAMEs for `cdn.flickpond.com` at Spaceship, then the second apply and its TLS checks | Ibrahim, then A | before or during 24–28 Oct |
 | Choose the alert addresses; apply `infra/alerts`; everyone confirms two emails | team, then A | 24–28 Oct |
 | Final dump of the Alibaba host and shut it down | A | after 26 Oct |
 | Delete the test account `cutover-check-…@example.com` with its videos | operator | any time |
