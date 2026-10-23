@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -62,6 +63,10 @@ class JobResponse(BaseModel):
     # has got. The ladder after it is `hls_status`'s to describe.
     progress: int | None = None
     error: str | None = None
+    # Only on a job in the trash: when it was put there, and when the reaper
+    # deletes it for good.
+    deleted_at: datetime | None = None
+    purge_at: datetime | None = None
 
 
 class ErrorResponse(BaseModel):
