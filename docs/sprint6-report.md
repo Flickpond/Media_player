@@ -6,8 +6,7 @@ open #129; measurements on flickpond.com, 19–24 October
 Saturday 24 to Wednesday 28 is debugging time, fixes only.
 **Status:** **flickpond.com runs on AWS** since the cutover on 19 October. All
 five tracks' features are merged and live behind their switches; every new
-edit operation was run on the live site. One of D's pieces waits on a
-person: the email addresses for the alerts.
+edit operation was run on the live site. Every piece of D's work is now on.
 **Plan:** [`sprint6-plan.md`](sprint6-plan.md) — one feature per member on a
 shared edit-operation seam, everything behind a switch.
 
@@ -36,7 +35,7 @@ shared edit-operation seam, everything behind a switch.
 | `TRASH_RETENTION_DAYS` — library trash | 30 | API and reaper |
 | `WORKER_PREVIEW_SPRITE` — seek-bar preview (D) | **on** since 24 Oct, checked live | `infra/workers` |
 | `cdn_alias` — `cdn.flickpond.com` (D) | **on** since 24 Oct: video segments served from `cdn.flickpond.com` | `infra/terraform` |
-| `infra/alerts` — email alerts (D) | not applied; waits on the list of addresses | `infra/alerts` |
+| `infra/alerts` — email alerts (D) | **on** since 24 Oct: site down, queue metrics missing, budget US$80, to the operator's address (both subscriptions confirmed) | `infra/alerts` |
 
 **What a user gets since this sprint** (each checked on flickpond.com):
 
@@ -192,7 +191,7 @@ D's and the trash's migrations were both "07" after "06"; with both merged
 
 | Item | Who | When |
 |---|---|---|
-| Choose the alert addresses; apply `infra/alerts`; everyone confirms two emails | team, then A | 24–28 Oct |
+| Add teammates to the alerts if wanted (`alert_emails` in `infra/alerts/alerts.tfvars`, apply, two confirmations each) | anyone | optional |
 | Final dump of the Alibaba host and shut it down | A | after 26 Oct |
 | Delete the test account `cutover-check-…@example.com` with its videos | operator | any time |
 | Make the browser smoke test a required check on `main` | Ibrahim | any time |
