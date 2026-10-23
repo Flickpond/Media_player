@@ -345,7 +345,7 @@ async def test_deleting_a_job_removes_its_seek_bar_preview_too(
         return job
 
     monkeypatch.setattr(jobs_api, "delete_job", fake_delete_job)
-    response = await client.delete(f"/jobs/{job.id}")
+    response = await client.delete(f"/jobs/{job.id}/permanently")
 
     assert response.status_code == 204
     assert storage.listed_prefixes == ["outputs/abc/hls/", "outputs/abc/preview/"]
