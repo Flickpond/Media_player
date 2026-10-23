@@ -16,9 +16,19 @@ PROBE = SourceProbe(width=3840, height=2160, duration_seconds=41.2)
 
 
 @pytest.mark.parametrize(
-    ("duration", "expected"), [(41.2, 1.0), (2.0, 1.0), (1.0, 0.5), (0.4, 0.2), (0.0, 0.0)]
+    ("duration", "expected"),
+    [
+        (126.6, 12.66),  # the LG demo, black for its first ~5 s: past it
+        (41.2, 4.12),
+        (600.0, 30.0),  # never more than half a minute in
+        (8.0, 1.0),  # never less than a second
+        (2.0, 1.0),
+        (1.0, 0.5),  # the middle of a clip too short for a second
+        (0.4, 0.2),
+        (0.0, 0.0),
+    ],
 )
-def test_the_frame_is_a_second_in_or_the_middle_of_a_shorter_clip(duration, expected):
+def test_the_frame_is_a_tenth_of_the_way_in_within_bounds(duration, expected):
     assert thumbnail_offset(duration) == pytest.approx(expected)
 
 
