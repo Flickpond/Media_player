@@ -216,3 +216,79 @@ def test_an_unreadable_edit_output_still_finishes_without_a_ladder():
 
     assert result.ladder_pending is False
     assert result.height is None
+
+
+# --- an edit gets a poster frame too, taken from what the edit produced ------
+
+
+def _edit_with_thumbnails(operations, *, thumbnailer, output=None):
+    uploads: list[tuple[str, str]] = []
+
+    class Store(_LadderStore):
+        def upload_file(self, *, key, source, content_type="video/mp4"):
+            uploads.append((key, content_type))
+
+    def runner(command, **_kwargs):
+        Path(command[-1]).write_bytes(b"out")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    prober, _ = _probes(
+        source=SourceProbe(1920, 1080, 60.0), output=output or SourceProbe(640, 480, 60.0)
+    )
+    job_id = uuid4()
+    result = EditProcessor(
+        Store(), operations, output_prefix="outputs", runner=runner, prober=prober,
+        thumbnailer=thumbnailer,
+    ).run(job_id=job_id, source_key="uploads/a/demo.mp4")
+    return job_id, result, uploads
+
+
+def test_an_edit_gets_its_own_poster_frame_from_the_edited_video():
+    """Every edit's library card was blank (23 Oct 2026): uploads took a
+    frame, edits never did. Taken from the output, so it shows the crop."""
+    seen = []
+
+    def thumbnailer(source_path, output_path, probe):
+        seen.append((source_path.name, probe.width, probe.height))
+        output_path.write_bytes(b"jpeg")
+        return output_path
+
+    job_id, result, uploads = _edit_with_thumbnails(
+        [
+            {"operation": "crop", "params": {"x": 240, "y": 0, "w": 1440, "h": 1080}},
+            {"operation": "downscale", "params": {"height": 480}},
+            {"operation": "convert", "params": {"format": "mkv"}},
+        ],
+        thumbnailer=thumbnailer,
+    )
+
+    assert seen == [("output.mkv", 640, 480)]
+    assert result.thumbnail_key == f"outputs/{job_id}/thumbnail.jpg"
+    assert (result.thumbnail_key, "image/jpeg") in uploads
+
+
+def test_a_poster_frame_that_fails_never_fails_the_edit():
+    def thumbnailer(*_args):
+        raise RuntimeError("ffmpeg could not seek")
+
+    _, result, _ = _edit_with_thumbnails(
+        [{"operation": "downscale", "params": {"height": 480}}], thumbnailer=thumbnailer
+    )
+
+    assert result.thumbnail_key is None
+    assert result.ladder_pending is True, "the edit itself is done"
+
+
+def test_an_mp3_edit_gets_no_poster_frame():
+    def thumbnailer(*_args):
+        raise AssertionError("an MP3 has no picture")
+
+    _, result, _ = _edit_with_thumbnails(
+        [
+            {"operation": "clip", "params": {"start": 0, "end": 1}},
+            {"operation": "convert", "params": {"format": "mp3"}},
+        ],
+        thumbnailer=thumbnailer,
+    )
+
+    assert result.thumbnail_key is None
