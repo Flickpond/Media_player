@@ -1,0 +1,24 @@
+.motion-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.motion-choices button {
+  padding: 0.55rem 0.85rem;
+  border: 1px solid currentColor;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.motion-choices button[aria-pressed="true"] {
+  background: #365e95;
+  color: #fff;
+}
+
+.motion-choices button:focus-visible {
+  outline: 2px solid #90baff;
+  outline-offset: 3px;
+}

@@ -29,6 +29,10 @@ from app.worker.storage import ObjectStoreError
 @pytest.fixture
 def stand_ins():
     """A rotate that turns the frame and a speed that changes only the sound."""
+    saved_rules, saved_filters = OPERATION_RULES.copy(), FILTERS.copy()
+    for name in ("rotate", "speed"):
+        OPERATION_RULES.pop(name, None)
+        FILTERS.pop(name, None)
 
     def rotate_rule(params, frame):
         if params["degrees"] in (90, 270):
@@ -48,9 +52,10 @@ def stand_ins():
         ),
     )
     yield
-    for name in ("rotate", "speed"):
-        OPERATION_RULES.pop(name, None)
-        FILTERS.pop(name, None)
+    OPERATION_RULES.clear()
+    OPERATION_RULES.update(saved_rules)
+    FILTERS.clear()
+    FILTERS.update(saved_filters)
 
 
 def test_operations_run_in_the_fixed_order_whatever_order_they_are_sent_in():
@@ -183,7 +188,7 @@ def test_registration_refuses_an_unplaced_a_duplicate_or_an_unchecked_operation(
     with pytest.raises(ValueError, match="twice"):
         register_rule("crop", OperationRule(label="crop", check=lambda p, f: f))
     with pytest.raises(ValueError, match="no rule"):
-        register_filter("flip", lambda p, f: FilterStep())
+        register_filter("unregistered-test-operation", lambda p, f: FilterStep())
 
 
 def test_mp3_names_every_picture_operation_asked_for():
