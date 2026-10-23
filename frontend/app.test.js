@@ -109,6 +109,10 @@ async function loadApp({ signedIn = true, role = "user", limits = null, prepare 
     editResultDownload: document.getElementById("edit-result-download"),
     editResultNote: document.getElementById("edit-result-note"),
     editResultPlayer: document.getElementById("edit-result-player"),
+    editKeep: document.getElementById("edit-keep"),
+    editKeepQuestion: document.getElementById("edit-keep-question"),
+    editKeepBoth: document.getElementById("edit-keep-both"),
+    editDeleteOriginal: document.getElementById("edit-delete-original"),
     editForm: document.getElementById("edit-form"),
     editProcess: document.getElementById("edit-process"),
     editHint: document.getElementById("edit-hint"),
@@ -3347,6 +3351,91 @@ describe("editor", () => {
     expect(el.editResultDownload.getAttribute("download")).toBe(EDITED.filename);
     expect(el.editResultPlayer.querySelector("video")).not.toBeNull();
     expect(el.editProgress.hidden).toBe(true);
+  });
+
+  async function finishEdit(el, { deleteStatus = 204 } = {}) {
+    mockEditFlow([EDITED]);
+    const answer = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (url, init) => {
+      if (init?.method === "DELETE") {
+        return deleteStatus === 204
+          ? new Response(null, { status: 204 })
+          : jsonResponse({ error: "boom" }, false, deleteStatus);
+      }
+      return answer(url, init);
+    });
+    el.editConvert.checked = true;
+    el.editConvert.dispatchEvent(new Event("change"));
+    submit(el);
+    await vi.advanceTimersByTimeAsync(0);
+  }
+
+  it("asks whether to keep the original once the edit is done", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+    await finishEdit(el);
+
+    expect(el.editKeep.hidden).toBe(false);
+    expect(el.editKeepQuestion.textContent).toBe('Keep "holiday.mp4" as well?');
+  });
+
+  it("keeps both without asking the server anything", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+    await finishEdit(el);
+    fetchMock.mockClear();
+
+    el.editKeepBoth.dispatchEvent(new Event("click"));
+
+    expect(el.editKeep.hidden).toBe(true);
+    expect(el.editStatus.textContent).toContain("kept both");
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+  });
+
+  it("deletes the original on request, and leaves nothing to edit", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+    await finishEdit(el);
+    window.confirm = vi.fn(() => true);
+
+    el.editDeleteOriginal.dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(window.confirm).toHaveBeenCalledWith('Delete "holiday.mp4"? This cannot be undone.');
+    const deletes = fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE");
+    expect(deletes.map(([url]) => url)).toEqual(["/api/jobs/1"]);
+    expect(el.editKeep.hidden).toBe(true);
+    expect(el.editStatus.textContent).toContain('Deleted "holiday.mp4"');
+    expect(el.editProcess.disabled).toBe(true);
+    // The result stays: it is what the reader chose to keep.
+    expect(el.editResult.hidden).toBe(false);
+  });
+
+  it("does nothing if the deletion is not confirmed", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+    await finishEdit(el);
+    window.confirm = vi.fn(() => false);
+
+    el.editDeleteOriginal.dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+    expect(el.editKeep.hidden).toBe(false);
+  });
+
+  it("says so, and offers the choice again, when the deletion fails", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+    await finishEdit(el, { deleteStatus: 500 });
+    window.confirm = vi.fn(() => true);
+
+    el.editDeleteOriginal.dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.editStatus.textContent).toContain('Could not delete "holiday.mp4"');
+    expect(el.editKeep.hidden).toBe(false);
+    expect(el.editDeleteOriginal.disabled).toBe(false);
   });
 
   it("warns that a converted result may not play inline", async () => {

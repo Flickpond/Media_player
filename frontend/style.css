@@ -958,6 +958,33 @@ video {
 .edit-result-head .job-filename {
   flex: 1;
 }
+/* After an edit: keep the original, or delete it. */
+.edit-keep {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+.edit-keep-question {
+  flex: 1;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.edit-keep-actions {
+  display: flex;
+  gap: 8px;
+}
+/* A ghost button that deletes: the same red the card's trash turns. */
+.btn-danger {
+  color: var(--danger);
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
 .card-edit {
   padding: 3px 10px;
   font-size: 11.5px;
