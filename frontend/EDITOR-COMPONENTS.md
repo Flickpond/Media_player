@@ -1,17 +1,18 @@
 # The components the editor mounts
 
-`app.js` owns the editing panel: the five operation sections, the request body,
-and the polling. Two of those sections are not its own work — the crop box
-(Track B) and the clip scrubber (Track C) — so it mounts them through the
+`app.js` owns the editing panel: the core operation sections, the request body,
+and the polling. Other sections are not its own work — the crop box, the clip
+scrubber, and the sprint 6 filter presets — so it mounts them through the
 contract below instead of implementing them.
 
 ```js
 // Each is a global the panel looks up when the editor opens.
 window.mountCropBox(video, onChange, { width, height }); // crop-box.js
 window.mountClipScrubber(video, onChange);                // clip-scrubber.js, Track C
+window.mountPresetPanel(video, onChange, { width, height, duration }); // preset.js
 ```
 
-**Both take the `<video>` element the selection is drawn against and a
+**Each takes the `<video>` element the selection is drawn against and a
 callback, and call the callback whenever the user changes the selection.
 Nothing else crosses the seam.** The panel owns the request body and the
 Process button; the component owns its own DOM, its own drag maths, and its own
@@ -22,6 +23,7 @@ crop box drawn over a paused frame needs.
 |---|---|
 | Crop box | `{ x, y, w, h }` in the **source video's** pixels, not the element's |
 | Clip scrubber | `{ start, end }` in seconds, `start < end` |
+| Preset panel | `{ name }`, one of `bw`, `warm`, `cool`, `vintage`, `vivid`; `null` for the original |
 
 Returning a cleanup function is optional but supported — it is called when the
 editor closes or opens another job, so a component that adds listeners to
@@ -83,3 +85,16 @@ for each one:
 The third argument is the original's size and length (`edit_source`), so a
 preview can be drawn to scale before the element has metadata. Step by step,
 with the server side: [`docs/adding-an-edit-operation.md`](../docs/adding-an-edit-operation.md).
+
+## Filter preset preview
+
+`preset.js` samples `preset-luts.png`, generated from the worker's actual
+filter chains by `scripts/generate-preset-luts.py`. Regenerate the PNG and
+JSON manifest when the worker's preset filters change; the manifest test
+rejects stale tables. Presets run in BT.709 after the HDR tone map and end
+in browser-playable 4:2:0 pixels. WebGL/download/CORS failures retain an
+explicitly labelled approximate CSS preview.
+
+Local pixel comparisons, complete browser processing checks, regeneration
+commands and release steps are in
+[`docs/e-sprint6-presets.md`](../docs/e-sprint6-presets.md).

@@ -638,6 +638,7 @@ def get_edit_processing_step(operations: list[dict]) -> ProcessingStep:
 
     from app.worker.operations import EditProcessor
     from app.worker.probe import probe_source
+    from app.worker.thumbnail import extract_thumbnail
 
     settings = get_settings()
     store = MinioObjectStore(internal_client(), bucket=bucket())
@@ -652,6 +653,13 @@ def get_edit_processing_step(operations: list[dict]) -> ProcessingStep:
         prober=partial(
             probe_source,
             ffprobe_binary=settings.worker_ffprobe_binary,
+            timeout_seconds=settings.worker_ffprobe_timeout_seconds,
+        ),
+        thumbnailer=partial(
+            extract_thumbnail,
+            ffmpeg_binary=settings.worker_ffmpeg_binary,
+            max_width=settings.thumbnail_max_width,
+            max_height=settings.thumbnail_max_height,
             timeout_seconds=settings.worker_ffprobe_timeout_seconds,
         ),
     )

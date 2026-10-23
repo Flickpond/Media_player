@@ -83,6 +83,38 @@ class AdjustParams(_StrictModel):
         return {name: value for name, value in handler(self).items() if value is not None}
 
 
+class RotateParams(_StrictModel):
+    degrees: Annotated[StrictInt, Field(ge=90, le=270, multiple_of=90)]
+
+
+class FlipParams(_StrictModel):
+    axis: Literal["horizontal", "vertical"]
+
+
+class SpeedParams(_StrictModel):
+    factor: Annotated[float, Field(strict=True, ge=0.5, le=2, multiple_of=0.25,
+                                  allow_inf_nan=False)]
+
+
+class SpeedOperation(_StrictModel):
+    operation: Literal["speed"]
+    params: SpeedParams
+
+
+class RotateOperation(_StrictModel):
+    operation: Literal["rotate"]
+    params: RotateParams
+
+
+class FlipOperation(_StrictModel):
+    operation: Literal["flip"]
+    params: FlipParams
+
+
+class PresetParams(_StrictModel):
+    name: Literal["bw", "warm", "cool", "vintage", "vivid"]
+
+
 class ClipOperation(_StrictModel):
     operation: Literal["clip"]
     params: ClipParams
@@ -113,12 +145,21 @@ class AdjustOperation(_StrictModel):
     params: AdjustParams
 
 
+class PresetOperation(_StrictModel):
+    operation: Literal["preset"]
+    params: PresetParams
+
+
 EditOperation = Annotated[
     ClipOperation
     | CropOperation
     | DownscaleOperation
     | UpscaleOperation
+    | RotateOperation
+    | FlipOperation
+    | SpeedOperation
     | ConvertOperation
+    | PresetOperation
     | AdjustOperation,
     Field(discriminator="operation"),
 ]

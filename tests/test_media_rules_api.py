@@ -293,7 +293,7 @@ async def test_an_unprobed_job_leaves_the_comparison_to_the_worker(api):
 async def test_deleting_a_job_deletes_its_poster_frame(api):
     api.state["job"] = make_job(height=1080, thumbnail_key="outputs/abc/thumbnail.jpg")
 
-    response = await api.delete(f"/jobs/{api.state['job'].id}")
+    response = await api.delete(f"/jobs/{api.state['job'].id}/permanently")
 
     assert response.status_code == 204
     assert "outputs/abc/thumbnail.jpg" in api.storage.deleted
@@ -316,6 +316,7 @@ async def test_the_page_can_read_the_duration_limit_without_signing_in(monkeypat
         "max_duration_seconds": 300,
         "max_edit_height": 2160,
         "max_upload_bytes": get_settings().max_upload_bytes,
+        "trash_retention_days": get_settings().trash_retention_days,
     }
 
 

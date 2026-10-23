@@ -16,6 +16,8 @@
     <link rel="stylesheet" href="style.css" />
     <link rel="stylesheet" href="clip-scrubber.css" />
     <link rel="stylesheet" href="crop-box.css" />
+    <link rel="stylesheet" href="motion.css" />
+    <link rel="stylesheet" href="preset.css" />
     <link rel="stylesheet" href="adjust.css" />
   </head>
   <body>
@@ -326,6 +328,9 @@
             <button type="button" class="chip" data-status="processing">Processing</button>
             <button type="button" class="chip" data-status="queued">Queued</button>
             <button type="button" class="chip" data-status="failed">Failed</button>
+            <button type="button" id="library-trash-chip" class="chip chip-trash" data-status="trash" hidden>
+              Trash
+            </button>
           </div>
 
           <p id="library-status" class="status" hidden></p>
@@ -443,6 +448,15 @@
                 </div>
                 <p id="edit-result-note" class="hint" hidden></p>
                 <div id="edit-result-player" class="player-host"></div>
+                <div id="edit-keep" class="edit-keep" hidden>
+                  <p id="edit-keep-question" class="edit-keep-question"></p>
+                  <div class="edit-keep-actions">
+                    <button type="button" id="edit-keep-both" class="btn-ghost">Keep both</button>
+                    <button type="button" id="edit-delete-original" class="btn-ghost btn-danger">
+                      Delete original
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -469,6 +483,33 @@
                 <div class="edit-op-body">
                   <div id="edit-clip-mount" class="edit-mount"></div>
                 </div>
+              </details>
+
+              <details class="edit-op" data-operation="rotate" data-mount="mountRotatePanel">
+                <summary>
+                  <input type="checkbox" id="edit-rotate" />
+                  <span class="edit-op-name">Rotate</span>
+                  <span class="edit-op-hint">90°, 180° or 270° clockwise</span>
+                </summary>
+                <div class="edit-op-body"><div class="edit-mount"></div></div>
+              </details>
+
+              <details class="edit-op" data-operation="flip" data-mount="mountFlipPanel">
+                <summary>
+                  <input type="checkbox" id="edit-flip" />
+                  <span class="edit-op-name">Mirror</span>
+                  <span class="edit-op-hint">horizontal or vertical</span>
+                </summary>
+                <div class="edit-op-body"><div class="edit-mount"></div></div>
+              </details>
+
+              <details class="edit-op" data-operation="speed" data-mount="mountSpeedPanel">
+                <summary>
+                  <input type="checkbox" id="edit-speed" />
+                  <span class="edit-op-name">Speed</span>
+                  <span class="edit-op-hint">0.5×–2×, keeps audio pitch</span>
+                </summary>
+                <div class="edit-op-body"><div class="edit-mount"></div></div>
               </details>
 
               <details class="edit-op" id="edit-downscale-section">
@@ -518,6 +559,17 @@
                 </div>
               </details>
 
+              <details class="edit-op" data-operation="preset" data-mount="mountPresetPanel">
+                <summary>
+                  <input type="checkbox" id="edit-preset" />
+                  <span class="edit-op-name">Presets</span>
+                  <span class="edit-op-hint">one-click looks</span>
+                </summary>
+                <div class="edit-op-body">
+                  <div id="edit-preset-mount" class="edit-mount"></div>
+                </div>
+              </details>
+
               <details class="edit-op">
                 <summary>
                   <input type="checkbox" id="edit-convert" />
@@ -555,6 +607,8 @@
     <script src="vendor/plyr.min.js" defer></script>
     <script src="clip-scrubber.js" defer></script>
     <script src="crop-box.js" defer></script>
+    <script src="motion.js" defer></script>
+    <script src="preset.js" defer></script>
     <script src="adjust.js" defer></script>
     <script src="app.js" defer></script>
   </body>

@@ -78,7 +78,11 @@ async def create_edit_job(
 
 
 async def get_job(
-    session: AsyncSession, job_id: UUID, *, owner_id: UUID | None = None
+    session: AsyncSession,
+    job_id: UUID,
+    *,
+    owner_id: UUID | None = None,
+    include_trashed: bool = False,
 ) -> Job | None:
     """Fetch a job, optionally requiring an owner.
 
@@ -89,6 +93,11 @@ async def get_job(
     """
     job = await session.get(Job, job_id)
     if job is None or (owner_id is not None and job.owner_id != owner_id):
+        return None
+    # An owner's view hides their trash, so a trashed video's page, player
+    # and edit button all answer 404 like a deleted one. The worker and the
+    # reaper (no owner) still see it: a job trashed mid-encode finishes.
+    if owner_id is not None and job.deleted_at is not None and not include_trashed:
         return None
     return job
 
@@ -105,7 +114,7 @@ async def list_jobs(
     Scoping happens in the query, not by filtering afterwards: filtering a page
     after fetching it silently shrinks the page and breaks pagination.
     """
-    statement = select(Job)
+    statement = select(Job).where(Job.deleted_at.is_(None))
     if owner_id is not None:
         statement = statement.where(Job.owner_id == owner_id)
     # `id` breaks ties on `created_at`. Without it two rows written in the same
@@ -114,6 +123,62 @@ async def list_jobs(
     statement = statement.order_by(Job.created_at.desc(), Job.id).limit(limit).offset(offset)
     result = await session.execute(statement)
     return list(result.scalars().all())
+
+
+async def list_trash(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    limit: int = DEFAULT_PAGE_SIZE,
+    offset: int = 0,
+) -> list[Job]:
+    """An owner's trash, most recently trashed first."""
+    statement = (
+        select(Job)
+        .where(Job.owner_id == owner_id, Job.deleted_at.is_not(None))
+        .order_by(Job.deleted_at.desc(), Job.id)
+        .limit(limit)
+        .offset(offset)
+    )
+    return list((await session.execute(statement)).scalars().all())
+
+
+async def trash_job(session: AsyncSession, job_id: UUID, *, owner_id: UUID) -> Job | None:
+    """Move an owner's job to their trash. None if it is not theirs or is
+    already there -- the endpoint answers 404 for both, as for a delete."""
+    statement = (
+        update(Job)
+        .where(Job.id == job_id, Job.owner_id == owner_id, Job.deleted_at.is_(None))
+        .values(deleted_at=func.now())
+        .returning(Job)
+    )
+    job = (await session.execute(statement)).scalar_one_or_none()
+    await session.commit()
+    return job
+
+
+async def restore_job(session: AsyncSession, job_id: UUID, *, owner_id: UUID) -> Job | None:
+    """Put a trashed job back in its owner's library. None if it is not in
+    their trash."""
+    statement = (
+        update(Job)
+        .where(Job.id == job_id, Job.owner_id == owner_id, Job.deleted_at.is_not(None))
+        .values(deleted_at=None)
+        .returning(Job)
+    )
+    job = (await session.execute(statement)).scalar_one_or_none()
+    await session.commit()
+    return job
+
+
+async def list_expired_trash(session: AsyncSession, *, before: datetime) -> list[Job]:
+    """Jobs trashed before `before`: the reaper deletes these for good."""
+    statement = (
+        select(Job)
+        .where(Job.deleted_at.is_not(None), Job.deleted_at < before)
+        .order_by(Job.deleted_at)
+    )
+    return list((await session.execute(statement)).scalars().all())
 
 
 def _derived_hls_status(next_status: JobStatus, hls_key: str | None) -> HlsStatus:

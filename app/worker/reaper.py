@@ -21,12 +21,15 @@ from app.queue import (
     ladder_rq_job_id,
 )
 from app.repositories.jobs import (
+    delete_job,
+    list_expired_trash,
     list_source_keys,
     list_stale,
     list_stale_ladders,
     mark_ladder_unavailable,
     mark_stale_failed,
 )
+from app.services.job_cleanup import delete_job_storage
 from app.services.storage import get_storage_service
 from app.services.upload_cleanup import cleanup_expired
 from app.worker.__main__ import configure_logging
@@ -145,6 +148,26 @@ async def run_once() -> tuple[int, int, int]:
     return reaped, requeued, deleted
 
 
+async def empty_trash(*, now: datetime | None = None) -> int:
+    """Delete for good what has been in the trash past its time. Returns how
+    many. Exactly what an immediate delete does -- the row, then its files,
+    best-effort -- only a month later. With the trash switched off (0 days)
+    whatever is still in it goes now."""
+    days = max(0, get_settings().trash_retention_days)
+    before = (now or datetime.now(UTC)) - timedelta(days=days)
+    storage = get_storage_service()
+    emptied = 0
+    async with get_session_factory()() as session:
+        for job in await list_expired_trash(session, before=before):
+            gone = await delete_job(session, job.id)
+            if gone is None:
+                continue
+            await delete_job_storage(storage, gone, best_effort=True)
+            logger.info("job %s: deleted for good after %s days in the trash", job.id, days)
+            emptied += 1
+    return emptied
+
+
 async def main() -> None:
     configure_logging("INFO")
     settings = get_settings()
@@ -152,6 +175,7 @@ async def main() -> None:
         try:
             reaped, requeued, deleted = await run_once()
             await cleanup_expired()
+            await empty_trash()
             logger.info(
                 "reaper pass complete: reaped=%s requeued=%s deleted=%s",
                 reaped,
