@@ -252,3 +252,66 @@ async def test_a_live_worker_stuck_past_the_lease_is_still_reaped(processing_env
     processing_env.alive = {job.id}
 
     assert await reaper.run_once() == (1, 0, 0)
+
+
+# --- the trash ----------------------------------------------------------------
+
+
+def _trash_setup(monkeypatch, *, days, expired, gone=None):
+    asked, deleted_rows, cleaned = {}, [], []
+
+    @asynccontextmanager
+    async def sessions():
+        yield object()
+
+    async def list_expired_trash(_session, *, before):
+        asked["before"] = before
+        return expired
+
+    async def delete_job(_session, job_id, *, owner_id=None):
+        deleted_rows.append(job_id)
+        return None if gone and job_id in gone else SimpleNamespace(id=job_id)
+
+    async def delete_job_storage(_storage, job, *, best_effort=False):
+        assert best_effort, "a file that will not go must not stop the rest"
+        cleaned.append(job.id)
+
+    monkeypatch.setattr(reaper, "get_settings", lambda: SimpleNamespace(trash_retention_days=days))
+    monkeypatch.setattr(reaper, "get_session_factory", lambda: sessions)
+    monkeypatch.setattr(reaper, "get_storage_service", lambda: object())
+    monkeypatch.setattr(reaper, "list_expired_trash", list_expired_trash)
+    monkeypatch.setattr(reaper, "delete_job", delete_job)
+    monkeypatch.setattr(reaper, "delete_job_storage", delete_job_storage)
+    return asked, deleted_rows, cleaned
+
+
+@pytest.mark.asyncio
+async def test_the_trash_is_emptied_of_what_has_been_there_past_its_month(monkeypatch):
+    now = datetime(2026, 11, 22, 12, 0, tzinfo=UTC)
+    expired = [SimpleNamespace(id="a"), SimpleNamespace(id="b")]
+    asked, deleted_rows, cleaned = _trash_setup(monkeypatch, days=30, expired=expired)
+
+    assert await reaper.empty_trash(now=now) == 2
+
+    assert asked["before"] == now - timedelta(days=30)
+    assert deleted_rows == ["a", "b"]
+    assert cleaned == ["a", "b"], "the row first, then its files"
+
+
+@pytest.mark.asyncio
+async def test_a_video_restored_or_deleted_meanwhile_is_left_alone(monkeypatch):
+    expired = [SimpleNamespace(id="a"), SimpleNamespace(id="b")]
+    _, deleted_rows, cleaned = _trash_setup(monkeypatch, days=30, expired=expired, gone={"a"})
+
+    assert await reaper.empty_trash() == 1
+    assert cleaned == ["b"]
+
+
+@pytest.mark.asyncio
+async def test_switching_the_trash_off_empties_it_now(monkeypatch):
+    now = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
+    asked, _, _ = _trash_setup(monkeypatch, days=0, expired=[])
+
+    await reaper.empty_trash(now=now)
+
+    assert asked["before"] == now

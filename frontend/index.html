@@ -17,6 +17,7 @@
     <link rel="stylesheet" href="clip-scrubber.css" />
     <link rel="stylesheet" href="crop-box.css" />
     <link rel="stylesheet" href="motion.css" />
+    <link rel="stylesheet" href="preset.css" />
   </head>
   <body>
     <!-- Shown until /auth/me says who we are. The session cookie is HttpOnly,
@@ -326,6 +327,9 @@
             <button type="button" class="chip" data-status="processing">Processing</button>
             <button type="button" class="chip" data-status="queued">Queued</button>
             <button type="button" class="chip" data-status="failed">Failed</button>
+            <button type="button" id="library-trash-chip" class="chip chip-trash" data-status="trash" hidden>
+              Trash
+            </button>
           </div>
 
           <p id="library-status" class="status" hidden></p>
@@ -443,6 +447,15 @@
                 </div>
                 <p id="edit-result-note" class="hint" hidden></p>
                 <div id="edit-result-player" class="player-host"></div>
+                <div id="edit-keep" class="edit-keep" hidden>
+                  <p id="edit-keep-question" class="edit-keep-question"></p>
+                  <div class="edit-keep-actions">
+                    <button type="button" id="edit-keep-both" class="btn-ghost">Keep both</button>
+                    <button type="button" id="edit-delete-original" class="btn-ghost btn-danger">
+                      Delete original
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -534,6 +547,17 @@
                 </div>
               </details>
 
+              <details class="edit-op" data-operation="preset" data-mount="mountPresetPanel">
+                <summary>
+                  <input type="checkbox" id="edit-preset" />
+                  <span class="edit-op-name">Presets</span>
+                  <span class="edit-op-hint">one-click looks</span>
+                </summary>
+                <div class="edit-op-body">
+                  <div id="edit-preset-mount" class="edit-mount"></div>
+                </div>
+              </details>
+
               <details class="edit-op">
                 <summary>
                   <input type="checkbox" id="edit-convert" />
@@ -572,6 +596,7 @@
     <script src="clip-scrubber.js" defer></script>
     <script src="crop-box.js" defer></script>
     <script src="motion.js" defer></script>
+    <script src="preset.js" defer></script>
     <script src="app.js" defer></script>
   </body>
 </html>

@@ -70,6 +70,10 @@ class FlipOperation(_StrictModel):
     params: FlipParams
 
 
+class PresetParams(_StrictModel):
+    name: Literal["bw", "warm", "cool", "vintage", "vivid"]
+
+
 class ClipOperation(_StrictModel):
     operation: Literal["clip"]
     params: ClipParams
@@ -95,6 +99,11 @@ class ConvertOperation(_StrictModel):
     params: ConvertParams
 
 
+class PresetOperation(_StrictModel):
+    operation: Literal["preset"]
+    params: PresetParams
+
+
 EditOperation = Annotated[
     ClipOperation
     | CropOperation
@@ -103,7 +112,8 @@ EditOperation = Annotated[
     | RotateOperation
     | FlipOperation
     | SpeedOperation
-    | ConvertOperation,
+    | ConvertOperation
+    | PresetOperation,
     Field(discriminator="operation"),
 ]
 

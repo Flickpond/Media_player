@@ -56,6 +56,7 @@ code that split is `ObjectStoreError`: `str(exc)` is the operator's half,
 | `max_fps` | SmallInteger, NOT NULL, default `30` | `30` or `60` (`ck_jobs_max_fps`). The frame-rate ceiling for every encode of this job — MP4, ladder and any edit made from it. `60` only when the uploader ticked *Keep 60 fps*; an edit inherits its source's value. Also on `upload_sessions`, carried to the job on completion. Always returned by `GET /jobs/{id}` |
 | `thumbnail_key` | Text, nullable | Object key of the poster frame (`outputs/<id>/thumbnail.jpg`), once extracted. Set by `mark_done` with the MP4 and cleared by every other transition. Best-effort: a done job may have none. The API returns it as a signed `thumbnail_url` |
 | `error` | Text, nullable | Present only for `failed` jobs. **User-facing** — see the rule above |
+| `deleted_at` | Timestamp with time zone, nullable, indexed | When the owner moved it to the trash; null while it is in their library. The worker and the reaper still act on a trashed job; owner-scoped reads do not see it |
 | `created_at` | Timestamp with time zone | Set when the API creates the job |
 | `updated_at` | Timestamp with time zone | Updated on every worker transition |
 
@@ -127,15 +128,29 @@ POST /jobs/{id}/edit
 
 GET /limits                     // public, no sign-in
   200 { "max_duration_seconds": 300, "max_edit_height": 2160,
-        "max_upload_bytes": 2147483648 }
+        "max_upload_bytes": 2147483648, "trash_retention_days": 30 }
                                   // 0 = no duration limit configured;
                                   // max_upload_bytes is POST /uploads' cap
 
 DELETE /jobs/{id}
-  204                          // no body. Deletes regardless of status.
-  404 { "error": "not found" } // unknown id, or not this caller's job -- same
-                                // as GET, never 403: a 403 confirms the id
-                                // exists and lets someone probe for valid ids.
+  204                          // no body. Any status. With a trash
+                                // (TRASH_RETENTION_DAYS > 0, 30 on AWS) the job
+                                // moves to it: hidden from GET /jobs, its page,
+                                // player and edit (404), files untouched; the
+                                // reaper deletes it for good after that many
+                                // days. With 0 it is deleted at once.
+  404 { "error": "not found" } // unknown id, not this caller's job, or already
+                                // in the trash -- never 403: a 403 confirms the
+                                // id exists and lets someone probe for valid ids.
+
+GET /jobs/trash?limit=&offset=
+  200 [ ...job shape + "deleted_at", "purge_at" ... ]  // most recently trashed first
+POST /jobs/{id}/restore
+  200 { ...job shape... }      // back in the library as it was
+  404                          // not in this caller's trash
+DELETE /jobs/{id}/permanently
+  204                          // deleted for good now, row and files, trash or not
+  404
 
 GET /jobs?limit=<1..200>&offset=<n>
   200 [ ...same job shape... ]   // the caller's own jobs only

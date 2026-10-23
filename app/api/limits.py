@@ -28,6 +28,9 @@ class LimitsResponse(BaseModel):
     # "up to 2 GB" and refuse a bigger file before sending any of it, rather
     # than quoting the number from a 413 after the fact.
     max_upload_bytes: int
+    # Days a deleted video stays in the trash before it is gone for good; 0
+    # means a delete is immediate. The page words its delete prompts from it.
+    trash_retention_days: int
 
 
 @router.get("/limits", response_model=LimitsResponse)
@@ -37,4 +40,5 @@ async def get_limits() -> LimitsResponse:
         max_duration_seconds=max(0, settings.media_max_duration_seconds),
         max_edit_height=MAX_SCALE_HEIGHT,
         max_upload_bytes=settings.max_upload_bytes,
+        trash_retention_days=max(0, settings.trash_retention_days),
     )

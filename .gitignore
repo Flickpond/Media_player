@@ -1,5 +1,7 @@
 .env
 .venv/
+.playwright-browsers/
+.pnpm-store/
 __pycache__/
 *.py[cod]
 *.egg-info/

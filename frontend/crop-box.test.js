@@ -410,6 +410,56 @@ describe("crop box", () => {
     expect(lastReport()).toEqual({ x: 0, y: 0, w: 1920, h: 1080 });
   });
 
+  it("takes a typed size, centred on the box it had, and switches to Free", () => {
+    mount();
+    const [width, height] = host.querySelectorAll(".crop-size-input");
+    const aspect = host.querySelector(".crop-aspect");
+    aspect.value = "16:9";
+    aspect.dispatchEvent(new Event("change"));
+
+    width.value = "1000";
+    height.value = "1000";
+    height.dispatchEvent(new Event("change"));
+
+    expect(lastReport()).toEqual({ x: 1420, y: 580, w: 1000, h: 1000 });
+    expect(aspect.value).toBe("Free");
+    expect(readout()).toBe("1000 × 1000 from 1420, 580 of 3840 × 2160");
+  });
+
+  it("makes a typed size legal and shows what it became", () => {
+    mount();
+    const [width, height] = host.querySelectorAll(".crop-size-input");
+
+    width.value = "5001";
+    height.value = "999";
+    width.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+    expect(lastReport()).toEqual({ x: 0, y: 580, w: 3840, h: 998 });
+    expect(isLegal(lastReport())).toBe(true);
+    expect([width.value, height.value]).toEqual(["3840", "998"]);
+  });
+
+  it("keeps the typed fields in step with a drawn box", () => {
+    mount();
+    drag(stage(), at(0.25, 0.25), at(0.75, 0.75));
+    const [width, height] = host.querySelectorAll(".crop-size-input");
+    expect([width.value, height.value]).toEqual([String(lastReport().w), String(lastReport().h)]);
+  });
+
+  it("ignores an empty or nonsense size and puts the real one back", () => {
+    mount();
+    drag(stage(), at(0.25, 0.25), at(0.75, 0.75));
+    const before = lastReport();
+    const calls = onChange.mock.calls.length;
+    const [width] = host.querySelectorAll(".crop-size-input");
+
+    width.value = "";
+    width.dispatchEvent(new Event("change"));
+
+    expect(onChange.mock.calls.length).toBe(calls);
+    expect(width.value).toBe(String(before.w));
+  });
+
   it("stops listening and removes itself when unmounted", () => {
     mount();
     pointer(stage(), "pointerdown", at(0.25, 0.25));
