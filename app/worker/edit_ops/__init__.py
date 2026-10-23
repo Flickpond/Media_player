@@ -5,6 +5,7 @@ added to the import line below.
 """
 
 from app.worker.edit_ops import (  # noqa: F401 (registers the filters)
+    adjust,
     crop,
     flip,
     preset,

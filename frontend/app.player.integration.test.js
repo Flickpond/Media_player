@@ -177,7 +177,7 @@ describe("the page's player wiring", () => {
     // Plyr has no HLS support of its own, so it has to be able to see hls.js,
     // and app.js has to see both -- and the clip scrubber, which the editor
     // looks up as a global when it opens (EDITOR-COMPONENTS.md), and the
-    // crop box and the preset panel, the same way.
+    // crop box, the colour panel and the preset panel, the same way.
     expect(scripts).toEqual([
       "vendor/hls.min.js",
       "vendor/plyr.min.js",
@@ -185,6 +185,7 @@ describe("the page's player wiring", () => {
       "crop-box.js",
       "motion.js",
       "preset.js",
+      "adjust.js",
       "app.js",
     ]);
     for (const src of scripts) {
@@ -198,6 +199,8 @@ describe("the page's player wiring", () => {
     expect(existsSync(join(here, "crop-box.css")), "crop-box.css is missing").toBe(true);
     expect(markup).toContain('<link rel="stylesheet" href="preset.css" />');
     expect(existsSync(join(here, "preset.css")), "preset.css is missing").toBe(true);
+    expect(markup).toContain('<link rel="stylesheet" href="adjust.css" />');
+    expect(existsSync(join(here, "adjust.css")), "adjust.css is missing").toBe(true);
     // The two files Plyr fetches for itself, plus the licences that have to
     // travel with the code. A vendored file that never got committed fails
     // here rather than as a missing icon in production.

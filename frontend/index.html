@@ -18,6 +18,7 @@
     <link rel="stylesheet" href="crop-box.css" />
     <link rel="stylesheet" href="motion.css" />
     <link rel="stylesheet" href="preset.css" />
+    <link rel="stylesheet" href="adjust.css" />
   </head>
   <body>
     <!-- Shown until /auth/me says who we are. The session cookie is HttpOnly,
@@ -547,6 +548,17 @@
                 </div>
               </details>
 
+              <details class="edit-op" data-operation="adjust" data-mount="mountAdjustPanel">
+                <summary>
+                  <input type="checkbox" id="edit-adjust" />
+                  <span class="edit-op-name">Colour</span>
+                  <span class="edit-op-hint">brightness, contrast, saturation, gamma</span>
+                </summary>
+                <div class="edit-op-body">
+                  <div id="edit-adjust-mount" class="edit-mount"></div>
+                </div>
+              </details>
+
               <details class="edit-op" data-operation="preset" data-mount="mountPresetPanel">
                 <summary>
                   <input type="checkbox" id="edit-preset" />
@@ -597,6 +609,7 @@
     <script src="crop-box.js" defer></script>
     <script src="motion.js" defer></script>
     <script src="preset.js" defer></script>
+    <script src="adjust.js" defer></script>
     <script src="app.js" defer></script>
   </body>
 </html>
