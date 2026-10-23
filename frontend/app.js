@@ -146,6 +146,10 @@ const el = {
   editResultDownload: document.getElementById("edit-result-download"),
   editResultNote: document.getElementById("edit-result-note"),
   editResultPlayer: document.getElementById("edit-result-player"),
+  editKeep: document.getElementById("edit-keep"),
+  editKeepQuestion: document.getElementById("edit-keep-question"),
+  editKeepBoth: document.getElementById("edit-keep-both"),
+  editDeleteOriginal: document.getElementById("edit-delete-original"),
   editForm: document.getElementById("edit-form"),
   editCrop: document.getElementById("edit-crop"),
   editCropMount: document.getElementById("edit-crop-mount"),
@@ -1727,7 +1731,8 @@ function editOperations() {
  *  under it says which of the two reasons it is. */
 function updateProcessButton() {
   const count = editOperations().length;
-  el.editProcess.disabled = count === 0;
+  // No video to edit once its original was deleted from the result panel.
+  el.editProcess.disabled = count === 0 || !editingJob;
   el.editHint.textContent = count
     ? `${count} operation${count === 1 ? "" : "s"} in one pass.`
     : "Check an operation and set it up first — a box to crop, a range to keep, or one of the dropdowns.";
@@ -1918,6 +1923,7 @@ function openEditor(job) {
   const open = ++editorOpens;
   el.editSource.textContent = job.filename;
   el.editResult.hidden = true;
+  el.editKeep.hidden = true;
   el.editProgress.hidden = true;
   setEditStatus("");
 
@@ -1990,10 +1996,73 @@ function showEditResult(job) {
 
   mountPlayer(el.editResultPlayer, job);
   updateProcessButton();
+  offerKeepOrDelete();
   // Same as switching to Library: the new job is an ordinary entry now, so
   // make sure it is there when the user goes back.
   void loadLibrary();
 }
+
+/** After an edit: keep the video it was made from, or let it go. Asked here
+ *  because this is when the reader knows whether the edit is what they
+ *  wanted -- and the edit keeps playing either way (the worker edits an edit
+ *  from its own file once its original is gone). */
+function offerKeepOrDelete() {
+  if (!editingJob) return;
+  el.editKeepQuestion.textContent = `Keep "${editingJob.filename}" as well?`;
+  el.editKeepBoth.disabled = false;
+  el.editDeleteOriginal.disabled = false;
+  el.editKeep.hidden = false;
+}
+
+function settleKeep(message) {
+  el.editKeep.hidden = true;
+  setEditStatus(message);
+}
+
+el.editKeepBoth.addEventListener("click", () => {
+  settleKeep("Done — kept both. The result is a new library entry.");
+});
+
+el.editDeleteOriginal.addEventListener("click", async () => {
+  const original = editingJob;
+  if (!original) return;
+  if (!window.confirm(`Delete "${original.filename}"? This cannot be undone.`)) return;
+  el.editKeepBoth.disabled = true;
+  el.editDeleteOriginal.disabled = true;
+  try {
+    const res = await fetch(`${API}/jobs/${original.id}`, { method: "DELETE" });
+    if (res.status === 401) {
+      showSignedOut();
+      setAuthStatus("Your session expired. Sign in again.");
+      return;
+    }
+    // 404: already gone -- deleted elsewhere meanwhile -- which is the
+    // outcome asked for.
+    if (!res.ok && res.status !== 404) {
+      const data = await res.json().catch(() => ({}));
+      el.editKeepBoth.disabled = false;
+      el.editDeleteOriginal.disabled = false;
+      setEditStatus(`Could not delete "${original.filename}": ${data.error ?? res.status}`);
+      return;
+    }
+  } catch (err) {
+    el.editKeepBoth.disabled = false;
+    el.editDeleteOriginal.disabled = false;
+    setEditStatus(`Request failed: ${err.message}`);
+    return;
+  }
+  // The editor was open on the original: nothing is left to edit, so its
+  // player goes and Process cannot send an edit of a deleted video.
+  if (editingJob === original) {
+    unmountEditComponents();
+    unmountPlayer(el.editPlayer);
+    editingJob = null;
+    updateProcessButton();
+  }
+  libraryJobs = libraryJobs.filter((job) => job.id !== original.id);
+  settleKeep(`Deleted "${original.filename}". The edited video is in your library.`);
+  void loadLibrary();
+});
 
 el.editBack.addEventListener("click", () => switchView("library"));
 el.jobEdit.addEventListener("click", () => {
