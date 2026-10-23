@@ -1,8 +1,16 @@
 """Shared object cleanup for individual jobs and storage-first account deletion."""
 
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Deletes in flight at once. One at a time, a 4K video's ladder -- hundreds of
+# segments, more with HDR and AV1 -- took minutes, and deleting an account of
+# a few such videos outlasted nginx's 60 s: the page said it failed while the
+# API was still deleting (24 Oct 2026). Under the thread pool's 40 workers, so
+# a cleanup cannot starve the API's other requests.
+CONCURRENT_DELETES = 32
 
 
 async def delete_job_storage(storage, job, *, best_effort=False):
@@ -26,10 +34,20 @@ async def delete_job_storage(storage, job, *, best_effort=False):
             if not best_effort:
                 raise
             logger.warning("job %s: could not list objects under %s", job.id, prefix)
-    for key in dict.fromkeys(keys):
-        try:
+    slots = asyncio.Semaphore(CONCURRENT_DELETES)
+
+    async def delete(key):
+        async with slots:
             await storage.delete_object(key)
-        except Exception:
-            if not best_effort:
-                raise
-            logger.warning("job %s: could not delete storage object %s", job.id, key)
+
+    unique = list(dict.fromkeys(keys))
+    # Every delete is attempted before any failure is raised: a strict caller
+    # (account deletion) retries the whole account, and a partial pass would
+    # only make the retry longer.
+    results = await asyncio.gather(*(delete(key) for key in unique), return_exceptions=True)
+    for key, result in zip(unique, results, strict=True):
+        if not isinstance(result, Exception):
+            continue
+        if not best_effort:
+            raise result
+        logger.warning("job %s: could not delete storage object %s", job.id, key)
