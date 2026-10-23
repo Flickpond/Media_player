@@ -1,0 +1,62 @@
+{
+  "size": 32,
+  "order": [
+    "bw",
+    "warm",
+    "cool",
+    "vintage",
+    "vivid"
+  ],
+  "filters": {
+    "bw": [
+      "scale=in_color_matrix=auto:out_color_matrix=bt709:out_range=tv",
+      "format=yuv444p",
+      "setparams=colorspace=bt709:range=limited",
+      "eq=saturation=0",
+      "scale=in_color_matrix=auto:out_color_matrix=bt709:out_range=tv",
+      "format=yuv420p",
+      "setparams=colorspace=bt709:range=limited"
+    ],
+    "warm": [
+      "scale=in_color_matrix=auto:out_color_matrix=bt709:out_range=tv",
+      "format=yuv444p",
+      "setparams=colorspace=bt709:range=limited",
+      "eq=saturation=1.12:brightness=0.02",
+      "colorbalance=rm=0.08:bm=-0.08",
+      "scale=in_color_matrix=auto:out_color_matrix=bt709:out_range=tv",
+      "format=yuv420p",
+      "setparams=colorspace=bt709:range=limited"
+    ],
+    "cool": [
+      "scale=in_color_matrix=auto:out_color_matrix=bt709:out_range=tv",
+      "format=yuv444p",
+      "setparams=colorspace=bt709:range=limited",
+      "eq=saturation=1.05:brightness=0.01",
+      "colorbalance=rm=-0.06:bm=0.08",
+      "scale=in_color_matrix=auto:out_color_matrix=bt709:out_range=tv",
+      "format=yuv420p",
+      "setparams=colorspace=bt709:range=limited"
+    ],
+    "vintage": [
+      "scale=in_color_matrix=auto:out_color_matrix=bt709:out_range=tv",
+      "format=yuv444p",
+      "setparams=colorspace=bt709:range=limited",
+      "eq=saturation=0.82:contrast=0.95",
+      "curves=preset=vintage",
+      "scale=in_color_matrix=auto:out_color_matrix=bt709:out_range=tv",
+      "format=yuv420p",
+      "setparams=colorspace=bt709:range=limited"
+    ],
+    "vivid": [
+      "scale=in_color_matrix=auto:out_color_matrix=bt709:out_range=tv",
+      "format=yuv444p",
+      "setparams=colorspace=bt709:range=limited",
+      "eq=saturation=1.38:contrast=1.12",
+      "colorbalance=rm=0.03:bm=0.03",
+      "scale=in_color_matrix=auto:out_color_matrix=bt709:out_range=tv",
+      "format=yuv420p",
+      "setparams=colorspace=bt709:range=limited"
+    ]
+  },
+  "sha256": "becf9017ab3d0f84dff65eb51b679111c162678f9c963d7b908dcb41fcdbba85"
+}

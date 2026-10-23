@@ -90,6 +90,7 @@ class Job(Base):
         Index("ix_jobs_status", "status"),
         Index("ix_jobs_owner_id", "owner_id"),
         Index("ix_jobs_created_at", "created_at"),
+        Index("ix_jobs_deleted_at", "deleted_at"),
     )
 
     id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -131,6 +132,10 @@ class Job(Base):
         SmallInteger, nullable=False, default=30, server_default=text("30")
     )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When its owner moved it to the trash; null while it is in the library.
+    # A trashed job is invisible to its owner's library, page and player, and
+    # the reaper deletes it for good `trash_retention_days` after this.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

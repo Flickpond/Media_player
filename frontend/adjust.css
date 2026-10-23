@@ -1,0 +1,51 @@
+/* The colour panel (adjust.js). Only the page's colour tokens come from
+   style.css; everything else the panel draws is styled here. */
+
+/* The SVG that holds the preview's filter: in the document so the video can
+   point at it, but never seen and never in the way. */
+.adjust-filter-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.adjust-panel {
+  display: grid;
+  gap: 12px;
+  padding-top: 2px;
+}
+
+.adjust-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  row-gap: 4px;
+  font-size: 13px;
+}
+.adjust-row label {
+  color: var(--text-muted);
+}
+.adjust-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+.adjust-row input[type="range"] {
+  grid-column: 1 / -1;
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.adjust-reset {
+  justify-self: end;
+  padding: 5px 12px;
+  font-size: 12.5px;
+}
+.adjust-reset:disabled {
+  opacity: 0.45;
+  cursor: default;
+}

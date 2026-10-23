@@ -1,0 +1,151 @@
+/* Filter presets: the tiles in the editor's Presets section, and the WebGL
+   canvas that previews the look over the playing video. */
+
+.preset-panel {
+  display: grid;
+  gap: 9px;
+}
+
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.preset-tile {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: var(--bg-overlay);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    background 0.15s,
+    transform 0.15s;
+}
+
+.preset-tile:hover {
+  border-color: var(--border);
+  transform: translateY(-1px);
+}
+
+.preset-tile:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.preset-tile.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.preset-swatch {
+  width: 30px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 16%);
+}
+
+.preset-swatch-bw {
+  background: linear-gradient(135deg, #141414, #d6d6d6);
+}
+
+.preset-swatch-warm {
+  background: linear-gradient(135deg, #ff8f4d, #ffd39b 60%, #ffe9c9);
+}
+
+.preset-swatch-cool {
+  background: linear-gradient(135deg, #3f6dff, #8fc7ff 60%, #d9edff);
+}
+
+.preset-swatch-vintage {
+  background: linear-gradient(135deg, #76583f, #c3a77f 60%, #e8d9bc);
+}
+
+.preset-swatch-vivid {
+  background: linear-gradient(135deg, #ff2f74, #ffcb2f 55%, #24d6a3);
+}
+
+.preset-copy {
+  display: grid;
+  min-width: 0;
+  line-height: 1.15;
+}
+
+.preset-name {
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preset-hint {
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preset-clear {
+  padding: 6px 9px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.preset-clear:hover:not(:disabled) {
+  border-color: var(--border-subtle);
+  color: var(--text);
+}
+
+.preset-clear:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.preset-clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.preset-note {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* The canvas sits over the video, under Plyr's controls (z-index 3) and
+   overlaid play button (z-index 2). object-fit keeps a portrait source from
+   being stretched when the player letterboxes it. */
+.preset-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.preset-preview[hidden] {
+  display: none;
+}
+
+#edit-player {
+  position: relative;
+}

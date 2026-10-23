@@ -127,9 +127,14 @@ class EditProcessor:
         timeout_seconds: int = 870,
         runner=run_process,
         prober,
+        thumbnailer=None,
     ) -> None:
         self._store = store
         self._operations = operations
+        # The same poster frame an upload gets (`app.worker.thumbnail`), taken
+        # from the edited result so the library shows the crop, not the
+        # original. Without it every edit's card was blank (23 Oct 2026).
+        self._thumbnailer = thumbnailer
         self._output_prefix = output_prefix.strip("/")
         self._ffmpeg_binary = ffmpeg_binary
         self._preset = preset
@@ -137,6 +142,23 @@ class EditProcessor:
         self._timeout_seconds = timeout_seconds
         self._runner = runner
         self._prober = prober
+
+    def _thumbnail(self, job_id: UUID, output_path: Path, produced, temp_dir: Path) -> str | None:
+        """The edit's poster frame's key, or None. Never fails the edit."""
+        if self._thumbnailer is None:
+            return None
+        from app.worker.thumbnail import THUMBNAIL_CONTENT_TYPE, THUMBNAIL_FILENAME
+
+        try:
+            frame = self._thumbnailer(output_path, temp_dir / THUMBNAIL_FILENAME, produced)
+            key = f"{self._output_prefix}/{job_id}/{THUMBNAIL_FILENAME}"
+            self._store.upload_file(
+                key=key, source=str(frame), content_type=THUMBNAIL_CONTENT_TYPE
+            )
+            return key
+        except Exception:
+            logger.warning("job %s: no thumbnail for the edit", job_id, exc_info=True)
+            return None
 
     def _request(self) -> EditRequest:
         try:
@@ -267,6 +289,7 @@ class EditProcessor:
                 width=produced.width,
                 height=produced.height,
                 duration_seconds=produced.duration_seconds,
+                thumbnail_key=self._thumbnail(job_id, output_path, produced, temp_dir),
             )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)

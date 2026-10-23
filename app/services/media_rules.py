@@ -275,8 +275,19 @@ def _unchanged(_params: dict, frame: Frame) -> Frame:
     return frame
 
 
+def _rotate_rule(params: dict, frame: Frame) -> Frame:
+    if params["degrees"] in (90, 270):
+        return Frame(width=frame.height, height=frame.width)
+    return frame
+
+
+register_rule("rotate", OperationRule(label="rotate", check=_rotate_rule))
+register_rule("flip", OperationRule(label="flip", check=_unchanged))
+register_rule("speed", OperationRule(label="speed", check=_unchanged, changes_picture=False))
 register_rule("clip", OperationRule(label="clip", check=_unchanged, changes_picture=False))
 register_rule("crop", OperationRule(label="crop", check=_crop_rule))
 register_rule("downscale", OperationRule(label="scale", check=_scale_rule("downscale")))
 register_rule("upscale", OperationRule(label="scale", check=_scale_rule("upscale")))
+register_rule("adjust", OperationRule(label="colour", check=_unchanged))
+register_rule("preset", OperationRule(label="preset", check=_unchanged))
 register_rule("convert", OperationRule(label="convert", check=_unchanged, changes_picture=False))

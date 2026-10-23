@@ -284,7 +284,7 @@ async def test_deleting_a_done_job_removes_both_storage_objects(
         return job
 
     monkeypatch.setattr(jobs_api, "delete_job", fake_delete_job)
-    response = await client.delete(f"/jobs/{job.id}")
+    response = await client.delete(f"/jobs/{job.id}/permanently")
 
     assert response.status_code == 204
     assert response.content == b""
@@ -317,7 +317,7 @@ async def test_deleting_a_job_with_a_ladder_removes_every_segment_too(
         return job
 
     monkeypatch.setattr(jobs_api, "delete_job", fake_delete_job)
-    response = await client.delete(f"/jobs/{job.id}")
+    response = await client.delete(f"/jobs/{job.id}/permanently")
 
     assert response.status_code == 204
     assert storage.listed_prefixes == ["outputs/abc/hls/"]
@@ -377,7 +377,7 @@ async def test_a_storage_listing_failure_does_not_block_the_delete(
         return job
 
     monkeypatch.setattr(jobs_api, "delete_job", fake_delete_job)
-    response = await client.delete(f"/jobs/{job.id}")
+    response = await client.delete(f"/jobs/{job.id}/permanently")
 
     assert response.status_code == 204
     assert sorted(storage.deleted) == ["outputs/abc/demo.mp4", "uploads/demo.mp4"]
@@ -394,7 +394,7 @@ async def test_deleting_a_queued_job_only_touches_the_source_key(
         return job
 
     monkeypatch.setattr(jobs_api, "delete_job", fake_delete_job)
-    response = await client.delete(f"/jobs/{job.id}")
+    response = await client.delete(f"/jobs/{job.id}/permanently")
 
     assert response.status_code == 204
     assert storage.deleted == ["uploads/demo.mp4"]
@@ -412,7 +412,7 @@ async def test_deleting_an_edit_never_deletes_the_original_jobs_output(
         return job
 
     monkeypatch.setattr(jobs_api, "delete_job", fake_delete_job)
-    response = await client.delete(f"/jobs/{job.id}")
+    response = await client.delete(f"/jobs/{job.id}/permanently")
 
     assert response.status_code == 204
     assert storage.deleted == ["outputs/edit/result.mp4"]
@@ -428,7 +428,7 @@ async def test_deleting_an_unknown_or_unowned_job_returns_contract_error(
         return None
 
     monkeypatch.setattr(jobs_api, "delete_job", fake_delete_job)
-    response = await client.delete(f"/jobs/{uuid4()}")
+    response = await client.delete(f"/jobs/{uuid4()}/permanently")
 
     assert response.status_code == 404
     assert response.json() == {"error": "not found"}
@@ -462,7 +462,7 @@ async def test_a_storage_failure_does_not_undo_the_delete(
     authenticate_as(application, test_user)
     transport = ASGITransport(app=application)
     async with AsyncClient(transport=transport, base_url="http://test") as failing_client:
-        response = await failing_client.delete(f"/jobs/{job.id}")
+        response = await failing_client.delete(f"/jobs/{job.id}/permanently")
 
     assert response.status_code == 204
     assert failing_storage.deleted == []
@@ -554,3 +554,157 @@ async def test_a_job_with_a_ladder_reports_it_ready(
 
     assert body["hls_status"] == "ready"
     assert "hls_url" in body
+
+
+# --- the trash: a delete waits a month before it is final -------------------
+
+
+async def _fake_roots(_session, jobs):
+    return {job.id: job for job in jobs}
+
+
+@pytest.mark.asyncio
+async def test_deleting_moves_a_video_to_the_trash_and_touches_no_file(
+    client: AsyncClient, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "trash_retention_days", 30)
+    job = make_job(status=JobStatus.DONE, output_key="outputs/demo.mp4")
+    trashed = []
+
+    async def fake_trash_job(_session, job_id: UUID, *, owner_id):
+        trashed.append(job_id)
+        return job
+
+    async def never(*_args, **_kwargs):
+        raise AssertionError("a delete with a trash deletes nothing yet")
+
+    monkeypatch.setattr(jobs_api, "trash_job", fake_trash_job)
+    monkeypatch.setattr(jobs_api, "delete_job", never)
+
+    response = await client.delete(f"/jobs/{job.id}")
+
+    assert response.status_code == 204
+    assert trashed == [job.id]
+    assert storage.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_trashing_what_is_not_yours_or_already_in_the_trash_is_404(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "trash_retention_days", 30)
+
+    async def fake_trash_job(_session, _job_id, *, owner_id):
+        return None
+
+    monkeypatch.setattr(jobs_api, "trash_job", fake_trash_job)
+
+    response = await client.delete(f"/jobs/{uuid4()}")
+
+    assert response.status_code == 404
+    assert response.json() == {"error": "not found"}
+
+
+@pytest.mark.asyncio
+async def test_with_the_trash_switched_off_a_delete_is_immediate(
+    client: AsyncClient, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "trash_retention_days", 0)
+    job = make_job(status=JobStatus.DONE, output_key="outputs/demo.mp4")
+
+    async def fake_delete_job(_session, _job_id, *, owner_id):
+        return job
+
+    monkeypatch.setattr(jobs_api, "delete_job", fake_delete_job)
+
+    response = await client.delete(f"/jobs/{job.id}")
+
+    assert response.status_code == 204
+    assert sorted(storage.deleted) == ["outputs/demo.mp4", "uploads/demo.mp4"]
+
+
+@pytest.mark.asyncio
+async def test_the_trash_lists_when_each_video_goes_for_good(
+    client: AsyncClient, test_user, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import timedelta
+
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "trash_retention_days", 30)
+    job = make_job(status=JobStatus.DONE, output_key="outputs/demo.mp4")
+    job.deleted_at = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
+    asked = {}
+
+    async def fake_list_trash(_session, *, owner_id, limit, offset):
+        asked.update(owner_id=owner_id, limit=limit, offset=offset)
+        return [job]
+
+    monkeypatch.setattr(jobs_api, "list_trash", fake_list_trash)
+    monkeypatch.setattr(jobs_api, "resolve_edit_roots", _fake_roots)
+
+    response = await client.get("/jobs/trash")
+
+    assert response.status_code == 200, "not taken for a job id"
+    assert asked == {"owner_id": test_user.id, "limit": DEFAULT_PAGE_SIZE, "offset": 0}
+    [entry] = response.json()
+    assert entry["id"] == str(job.id)
+    purge_at = datetime.fromisoformat(entry["purge_at"].replace("Z", "+00:00"))
+    assert purge_at == job.deleted_at + timedelta(days=30)
+
+
+@pytest.mark.asyncio
+async def test_a_video_in_the_library_carries_no_trash_fields(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = make_job(status=JobStatus.DONE, output_key="outputs/demo.mp4")
+
+    async def fake_list_jobs(_session, *, owner_id=None, limit, offset):
+        return [job]
+
+    monkeypatch.setattr(jobs_api, "list_jobs", fake_list_jobs)
+    monkeypatch.setattr(jobs_api, "resolve_edit_roots", _fake_roots)
+
+    [entry] = (await client.get("/jobs")).json()
+
+    assert "deleted_at" not in entry and "purge_at" not in entry
+
+
+@pytest.mark.asyncio
+async def test_restoring_puts_a_video_back_and_returns_it(
+    client: AsyncClient, test_user, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = make_job(status=JobStatus.DONE, output_key="outputs/demo.mp4")
+
+    async def fake_restore_job(_session, job_id, *, owner_id):
+        assert (job_id, owner_id) == (job.id, test_user.id)
+        return job
+
+    monkeypatch.setattr(jobs_api, "restore_job", fake_restore_job)
+    monkeypatch.setattr(jobs_api, "resolve_edit_roots", _fake_roots)
+
+    response = await client.post(f"/jobs/{job.id}/restore")
+
+    assert response.status_code == 200
+    assert response.json()["id"] == str(job.id)
+    assert "deleted_at" not in response.json()
+
+
+@pytest.mark.asyncio
+async def test_restoring_what_is_not_in_your_trash_is_404(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_restore_job(_session, _job_id, *, owner_id):
+        return None
+
+    monkeypatch.setattr(jobs_api, "restore_job", fake_restore_job)
+
+    response = await client.post(f"/jobs/{uuid4()}/restore")
+
+    assert response.status_code == 404

@@ -120,6 +120,7 @@ const el = {
 
   viewLibrary: document.getElementById("view-library"),
   libraryFilters: document.getElementById("library-filters"),
+  libraryTrashChip: document.getElementById("library-trash-chip"),
   libraryStatus: document.getElementById("library-status"),
   libraryGrid: document.getElementById("library-grid"),
   libraryEmpty: document.getElementById("library-empty"),
@@ -152,6 +153,10 @@ const el = {
   editResultDownload: document.getElementById("edit-result-download"),
   editResultNote: document.getElementById("edit-result-note"),
   editResultPlayer: document.getElementById("edit-result-player"),
+  editKeep: document.getElementById("edit-keep"),
+  editKeepQuestion: document.getElementById("edit-keep-question"),
+  editKeepBoth: document.getElementById("edit-keep-both"),
+  editDeleteOriginal: document.getElementById("edit-delete-original"),
   editForm: document.getElementById("edit-form"),
   editCrop: document.getElementById("edit-crop"),
   editCropMount: document.getElementById("edit-crop-mount"),
@@ -521,7 +526,7 @@ el.uploadCancel.addEventListener("click", cancelUpload);
 async function deleteActiveJob() {
   if (!activeJobId) return;
   const filename = el.jobFilename.textContent || "this video";
-  if (!window.confirm(`Delete "${filename}"? This cannot be undone.`)) return;
+  if (!window.confirm(deletePrompt(filename))) return;
 
   const jobId = activeJobId;
   try {
@@ -545,7 +550,7 @@ async function deleteActiveJob() {
     resetJobCard();
     activeJobId = null;
     lastFile = null;
-    setStatus("Video deleted.");
+    setStatus(trashDays() > 0 ? "Video moved to the trash." : "Video deleted.");
   } catch (err) {
     setStatus(`Request failed: ${err.message}`);
   }
@@ -574,6 +579,22 @@ function loadLimits() {
   return limitsPromise;
 }
 
+/** Days a deleted video waits in the trash; 0 when there is no trash. */
+function trashDays() {
+  return Math.max(0, limits?.trash_retention_days ?? 0);
+}
+
+/** The question before a delete: a move to the trash when there is one.
+ *  Synchronous -- the limits are read at startup -- and, in the moment before
+ *  they arrive, it promises neither a trash nor a final delete. */
+function deletePrompt(filename) {
+  if (!limits) return `Delete "${filename}"?`;
+  const days = trashDays();
+  return days > 0
+    ? `Move "${filename}" to the trash? It is deleted for good after ${days} days.`
+    : `Delete "${filename}"? This cannot be undone.`;
+}
+
 /** A limit the way a person would say it: "5 minutes", "90 seconds". */
 function describeLimit(seconds) {
   if (seconds % 60 === 0) {
@@ -597,6 +618,8 @@ function describeSize(bytes) {
  * still goes through the one-shot endpoint, which still stops at 100 MB, and
  * `sendWholeFile` is where that is said. */
 function applyLimitHint() {
+  // The Trash chip only where there is a trash.
+  el.libraryTrashChip.hidden = trashDays() === 0;
   const bounds = [];
   if (limits?.max_duration_seconds > 0) bounds.push(describeLimit(limits.max_duration_seconds));
   if (limits?.max_upload_bytes > 0) bounds.push(describeSize(limits.max_upload_bytes));
@@ -1746,7 +1769,8 @@ function editOperations() {
  *  under it says which of the two reasons it is. */
 function updateProcessButton() {
   const count = editOperations().length;
-  el.editProcess.disabled = count === 0;
+  // No video to edit once its original was deleted from the result panel.
+  el.editProcess.disabled = count === 0 || !editingJob;
   el.editHint.textContent = count
     ? `${count} operation${count === 1 ? "" : "s"} in one pass.`
     : "Check an operation and set it up first — a box to crop, a range to keep, or one of the dropdowns.";
@@ -1937,6 +1961,7 @@ function openEditor(job) {
   const open = ++editorOpens;
   el.editSource.textContent = job.filename;
   el.editResult.hidden = true;
+  el.editKeep.hidden = true;
   el.editProgress.hidden = true;
   setEditStatus("");
 
@@ -2009,10 +2034,78 @@ function showEditResult(job) {
 
   mountPlayer(el.editResultPlayer, job);
   updateProcessButton();
+  offerKeepOrDelete();
   // Same as switching to Library: the new job is an ordinary entry now, so
   // make sure it is there when the user goes back.
   void loadLibrary();
 }
+
+/** After an edit: keep the video it was made from, or let it go. Asked here
+ *  because this is when the reader knows whether the edit is what they
+ *  wanted -- and the edit keeps playing either way (the worker edits an edit
+ *  from its own file once its original is gone). */
+function offerKeepOrDelete() {
+  if (!editingJob) return;
+  el.editKeepQuestion.textContent = `Keep "${editingJob.filename}" as well?`;
+  el.editKeepBoth.disabled = false;
+  el.editDeleteOriginal.disabled = false;
+  el.editKeep.hidden = false;
+}
+
+function settleKeep(message) {
+  el.editKeep.hidden = true;
+  setEditStatus(message);
+}
+
+el.editKeepBoth.addEventListener("click", () => {
+  settleKeep("Done — kept both. The result is a new library entry.");
+});
+
+el.editDeleteOriginal.addEventListener("click", async () => {
+  const original = editingJob;
+  if (!original) return;
+  // The same question as every delete: a move to the trash when there is one.
+  if (!window.confirm(deletePrompt(original.filename))) return;
+  el.editKeepBoth.disabled = true;
+  el.editDeleteOriginal.disabled = true;
+  try {
+    const res = await fetch(`${API}/jobs/${original.id}`, { method: "DELETE" });
+    if (res.status === 401) {
+      showSignedOut();
+      setAuthStatus("Your session expired. Sign in again.");
+      return;
+    }
+    // 404: already gone -- deleted elsewhere meanwhile -- which is the
+    // outcome asked for.
+    if (!res.ok && res.status !== 404) {
+      const data = await res.json().catch(() => ({}));
+      el.editKeepBoth.disabled = false;
+      el.editDeleteOriginal.disabled = false;
+      setEditStatus(`Could not delete "${original.filename}": ${data.error ?? res.status}`);
+      return;
+    }
+  } catch (err) {
+    el.editKeepBoth.disabled = false;
+    el.editDeleteOriginal.disabled = false;
+    setEditStatus(`Request failed: ${err.message}`);
+    return;
+  }
+  // The editor was open on the original: nothing is left to edit, so its
+  // player goes and Process cannot send an edit of a deleted video.
+  if (editingJob === original) {
+    unmountEditComponents();
+    unmountPlayer(el.editPlayer);
+    editingJob = null;
+    updateProcessButton();
+  }
+  libraryJobs = libraryJobs.filter((job) => job.id !== original.id);
+  settleKeep(
+    trashDays() > 0
+      ? `Moved "${original.filename}" to the trash. The edited video is in your library.`
+      : `Deleted "${original.filename}". The edited video is in your library.`,
+  );
+  void loadLibrary();
+});
 
 el.editBack.addEventListener("click", () => switchView("library"));
 el.jobEdit.addEventListener("click", () => {
@@ -2152,18 +2245,70 @@ function makeThumbImage(job) {
   return img;
 }
 
+/** An edit converted to MP3 has no picture: no poster frame, and a blank
+ *  card that looked like a video still processing. The extension is the
+ *  signal -- MP3 is only ever an edit's output, named by the worker. */
+function isAudioOnly(job) {
+  return /\.mp3$/i.test(job.filename ?? "");
+}
+
+const MUSIC_NOTE_PATHS = ["M9 18V5l12-2v13", "M9 9l12-2"];
+
+function makeAudioPlaceholder() {
+  const wrap = document.createElement("div");
+  wrap.className = "audio-placeholder";
+  // Spoken, unlike the poster frame: here the card's picture is the only
+  // thing saying this is sound, not a video.
+  wrap.setAttribute("role", "img");
+  wrap.setAttribute("aria-label", "Audio only");
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.5");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  for (const d of MUSIC_NOTE_PATHS) {
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", d);
+    svg.appendChild(path);
+  }
+  for (const [cx, cy] of [[6, 18], [18, 16]]) {
+    const circle = document.createElementNS(SVG_NS, "circle");
+    circle.setAttribute("cx", String(cx));
+    circle.setAttribute("cy", String(cy));
+    circle.setAttribute("r", "3");
+    svg.appendChild(circle);
+  }
+  const label = document.createElement("span");
+  label.textContent = "Audio";
+  wrap.append(svg, label);
+  return wrap;
+}
+
 function renderLibrary() {
   // Re-rendering throws the cards away, and a card can be holding a player.
   // Both libraries keep listeners on the element they were handed, so they
   // have to be destroyed before their cards go, not left to the GC.
   unmountPlayersIn(el.libraryGrid);
   el.libraryGrid.replaceChildren();
-  const visible = libraryJobs.filter((j) => libraryFilter === "all" || j.status === libraryFilter);
+  const inTrash = libraryFilter === "trash";
+  const visible = inTrash
+    ? libraryJobs
+    : libraryJobs.filter((j) => libraryFilter === "all" || j.status === libraryFilter);
+  el.libraryEmpty.textContent = inTrash
+    ? "The trash is empty."
+    : "No videos here yet — upload one to get started.";
 
   el.libraryEmpty.hidden = visible.length > 0;
   el.libraryGrid.hidden = visible.length === 0;
 
   for (const job of visible) {
+    if (inTrash) {
+      el.libraryGrid.appendChild(makeTrashCard(job));
+      continue;
+    }
     const card = document.createElement("div");
     card.className = "video-card";
 
@@ -2171,7 +2316,8 @@ function renderLibrary() {
     thumb.className = "video-thumb";
     // First, so the player that expands later -- and the badge and play
     // overlay after it -- paint on top of the frame rather than under it.
-    if (job.thumbnail_url) thumb.appendChild(makeThumbImage(job));
+    if (isAudioOnly(job)) thumb.appendChild(makeAudioPlaceholder());
+    else if (job.thumbnail_url) thumb.appendChild(makeThumbImage(job));
     thumb.appendChild(makeBadge(job.status));
 
     // Playable means the API handed back something to play: the ladder or the
@@ -2271,7 +2417,7 @@ function makeEditButton(job) {
 }
 
 async function deleteJob(job) {
-  if (!window.confirm(`Delete "${job.filename}"? This cannot be undone.`)) return;
+  if (!window.confirm(deletePrompt(job.filename))) return;
 
   try {
     const res = await fetch(`${API}/jobs/${job.id}`, { method: "DELETE" });
@@ -2328,7 +2474,8 @@ function toggleInlinePlayer(container, job) {
 
 async function loadLibrary() {
   try {
-    const res = await fetch(`${API}/jobs?limit=${PAGE_SIZE}&offset=${libraryOffset}`);
+    const path = libraryFilter === "trash" ? "jobs/trash" : "jobs";
+    const res = await fetch(`${API}/${path}?limit=${PAGE_SIZE}&offset=${libraryOffset}`);
     if (res.status === 401) {
       showSignedOut();
       setAuthStatus("Your session expired. Sign in again.");
@@ -2343,12 +2490,116 @@ async function loadLibrary() {
 
 for (const button of el.libraryFilters.querySelectorAll("[data-status]")) {
   button.addEventListener("click", () => {
+    // The trash is a different list from the server, not a filter of this
+    // one: into or out of it means fetching, from its first page.
+    const crossesTrash = (libraryFilter === "trash") !== (button.dataset.status === "trash");
     libraryFilter = button.dataset.status;
     for (const b of el.libraryFilters.querySelectorAll("[data-status]")) {
       b.classList.toggle("active", b === button);
     }
-    renderLibrary();
+    if (crossesTrash) {
+      libraryOffset = 0;
+      libraryJobs = [];
+      renderLibrary();
+      void loadLibrary();
+    } else {
+      renderLibrary();
+    }
   });
+}
+
+/** "in 29 days", "tomorrow", "today": when a trashed video goes for good. */
+function describePurge(purgeAt) {
+  const ms = Date.parse(purgeAt) - Date.now();
+  if (!Number.isFinite(ms)) return "";
+  const days = Math.ceil(ms / 86_400_000);
+  if (days <= 0) return "Deleted for good today";
+  if (days === 1) return "Deleted for good tomorrow";
+  return `Deleted for good in ${days} days`;
+}
+
+/** A card in the trash: no player, no edit -- what it was, when it goes,
+ *  and the two ways out. */
+function makeTrashCard(job) {
+  const card = document.createElement("div");
+  card.className = "video-card is-trashed";
+
+  const thumb = document.createElement("div");
+  thumb.className = "video-thumb";
+  if (job.thumbnail_url) thumb.appendChild(makeThumbImage(job));
+  const badge = document.createElement("span");
+  badge.className = "badge badge-trash";
+  badge.append(badgeDot(), document.createTextNode("In trash"));
+  thumb.appendChild(badge);
+
+  const body = document.createElement("div");
+  body.className = "video-card-body";
+  const name = document.createElement("div");
+  name.className = "video-filename";
+  name.textContent = job.filename;
+  const when = document.createElement("p");
+  when.className = "trash-when";
+  when.textContent = job.purge_at ? describePurge(job.purge_at) : "";
+  const actions = document.createElement("div");
+  actions.className = "trash-actions";
+  const restore = document.createElement("button");
+  restore.type = "button";
+  restore.className = "btn-ghost trash-restore";
+  restore.textContent = "Restore";
+  restore.addEventListener("click", () => void restoreJob(job));
+  const forever = document.createElement("button");
+  forever.type = "button";
+  forever.className = "btn-ghost btn-danger trash-forever";
+  forever.textContent = "Delete forever";
+  forever.addEventListener("click", () => void deleteForever(job));
+  actions.append(restore, forever);
+  body.append(name, when, actions);
+
+  card.append(thumb, body);
+  return card;
+}
+
+async function restoreJob(job) {
+  try {
+    const res = await fetch(`${API}/jobs/${job.id}/restore`, { method: "POST" });
+    if (res.status === 401) {
+      showSignedOut();
+      setAuthStatus("Your session expired. Sign in again.");
+      return;
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setLibraryStatus(`Could not restore "${job.filename}": ${data.error ?? res.status}`);
+      return;
+    }
+    libraryJobs = libraryJobs.filter((j) => j.id !== job.id);
+    setLibraryStatus(`Restored "${job.filename}" to your library.`);
+    renderLibrary();
+  } catch (err) {
+    setLibraryStatus(`Request failed: ${err.message}`);
+  }
+}
+
+async function deleteForever(job) {
+  if (!window.confirm(`Delete "${job.filename}" for good? This cannot be undone.`)) return;
+  try {
+    const res = await fetch(`${API}/jobs/${job.id}/permanently`, { method: "DELETE" });
+    if (res.status === 401) {
+      showSignedOut();
+      setAuthStatus("Your session expired. Sign in again.");
+      return;
+    }
+    // 404: gone already, which is what was asked for.
+    if (!res.ok && res.status !== 404) {
+      const data = await res.json().catch(() => ({}));
+      setLibraryStatus(`Could not delete "${job.filename}": ${data.error ?? res.status}`);
+      return;
+    }
+    libraryJobs = libraryJobs.filter((j) => j.id !== job.id);
+    renderLibrary();
+  } catch (err) {
+    setLibraryStatus(`Request failed: ${err.message}`);
+  }
 }
 el.libraryPrev.addEventListener("click", () => {
   libraryOffset = Math.max(0, libraryOffset - PAGE_SIZE);

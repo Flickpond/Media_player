@@ -90,6 +90,7 @@ async function loadApp({ signedIn = true, role = "user", limits = null, prepare 
     libraryEmpty: document.getElementById("library-empty"),
     libraryStatus: document.getElementById("library-status"),
     libraryFilters: document.getElementById("library-filters"),
+    libraryTrashChip: document.getElementById("library-trash-chip"),
     libraryPrev: document.getElementById("library-prev"),
     libraryNext: document.getElementById("library-next"),
     libraryPageLabel: document.getElementById("library-page-label"),
@@ -109,6 +110,10 @@ async function loadApp({ signedIn = true, role = "user", limits = null, prepare 
     editResultDownload: document.getElementById("edit-result-download"),
     editResultNote: document.getElementById("edit-result-note"),
     editResultPlayer: document.getElementById("edit-result-player"),
+    editKeep: document.getElementById("edit-keep"),
+    editKeepQuestion: document.getElementById("edit-keep-question"),
+    editKeepBoth: document.getElementById("edit-keep-both"),
+    editDeleteOriginal: document.getElementById("edit-delete-original"),
     editForm: document.getElementById("edit-form"),
     editProcess: document.getElementById("edit-process"),
     editHint: document.getElementById("edit-hint"),
@@ -1675,6 +1680,29 @@ describe("library", () => {
     expect(el.libraryGrid.querySelector(".video-filename").textContent).toBe("holiday.mp4");
   });
 
+  it("marks an MP3 edit as audio with a note, not a blank video card", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        { id: "9", filename: "talk-edited.mp3", status: "done", output_url: "http://minio/t.mp3" },
+        { ...JOBS[0], thumbnail_url: "http://minio/thumbs/1.jpg" },
+      ]),
+    );
+
+    el.navLibrary.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    const [audio, video] = el.libraryGrid.querySelectorAll(".video-thumb");
+    const note = audio.querySelector(".audio-placeholder");
+    expect(note.getAttribute("aria-label")).toBe("Audio only");
+    expect(note.querySelector("svg")).not.toBeNull();
+    expect(audio.querySelector(".badge")).not.toBeNull();
+    expect(audio.classList.contains("playable")).toBe(true);
+    expect(video.querySelector(".audio-placeholder")).toBeNull();
+    expect(video.querySelector(".thumb-image")).not.toBeNull();
+  });
+
   it("shows the empty state when there are no jobs at all", async () => {
     const el = await loadApp();
     fetchMock.mockResolvedValueOnce(jsonResponse([]));
@@ -1734,6 +1762,122 @@ describe("library", () => {
     );
     return card.querySelector(".card-delete");
   }
+
+  describe("the trash", () => {
+    const TRASH_LIMITS = { max_duration_seconds: 600, max_edit_height: 2160, trash_retention_days: 30 };
+    const inDays = (days) => new Date(Date.now() + days * 86_400_000 - 60_000).toISOString();
+    const TRASHED = [
+      { id: "7", filename: "old-trip.mp4", status: "done", hls_status: "ready", purge_at: inDays(29) },
+      { id: "8", filename: "blurry.mov", status: "done", hls_status: "ready", purge_at: inDays(1) },
+    ];
+
+    async function openTrash(el, jobs = TRASHED) {
+      await openLibraryWith(el, JOBS);
+      fetchMock.mockResolvedValueOnce(jsonResponse(jobs));
+      el.libraryTrashChip.dispatchEvent(new Event("click"));
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(0);
+    }
+
+    it("offers the Trash only where the server keeps one", async () => {
+      expect((await loadApp()).libraryTrashChip.hidden).toBe(true);
+      expect((await loadApp({ limits: { ...TRASH_LIMITS, trash_retention_days: 0 } })).libraryTrashChip.hidden).toBe(true);
+      expect((await loadApp({ limits: TRASH_LIMITS })).libraryTrashChip.hidden).toBe(false);
+    });
+
+    it("says a delete is a move to the trash, and for how long", async () => {
+      const el = await loadApp({ limits: TRASH_LIMITS });
+      await openLibraryWith(el, JOBS);
+      vi.spyOn(window, "confirm").mockReturnValue(false);
+
+      deleteButtonFor(el, "holiday.mp4").dispatchEvent(new Event("click", { bubbles: true }));
+
+      expect(window.confirm).toHaveBeenCalledWith(
+        'Move "holiday.mp4" to the trash? It is deleted for good after 30 days.',
+      );
+    });
+
+    it("lists the trash from the server, with when each goes and the ways out", async () => {
+      const el = await loadApp({ limits: TRASH_LIMITS });
+      await openTrash(el);
+
+      expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/^\/api\/jobs\/trash\?limit=\d+&offset=0$/));
+      const cards = [...el.libraryGrid.querySelectorAll(".video-card")];
+      expect(cards.map((c) => c.querySelector(".video-filename").textContent)).toEqual([
+        "old-trip.mp4",
+        "blurry.mov",
+      ]);
+      expect(cards.map((c) => c.querySelector(".trash-when").textContent)).toEqual([
+        "Deleted for good in 29 days",
+        "Deleted for good tomorrow",
+      ]);
+      expect(cards[0].querySelector(".trash-restore")).not.toBeNull();
+      expect(cards[0].querySelector(".trash-forever")).not.toBeNull();
+      // Nothing to play, edit or delete again from the trash.
+      expect(el.libraryGrid.querySelector(".card-edit, .card-delete, .playable")).toBeNull();
+    });
+
+    it("says so when the trash is empty", async () => {
+      const el = await loadApp({ limits: TRASH_LIMITS });
+      await openTrash(el, []);
+
+      expect(el.libraryEmpty.hidden).toBe(false);
+      expect(el.libraryEmpty.textContent).toBe("The trash is empty.");
+    });
+
+    it("restores a video to the library", async () => {
+      const el = await loadApp({ limits: TRASH_LIMITS });
+      await openTrash(el);
+      fetchMock.mockClear();
+      fetchMock.mockResolvedValueOnce(jsonResponse(TRASHED[0]));
+
+      el.libraryGrid.querySelector(".trash-restore").dispatchEvent(new Event("click"));
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchMock).toHaveBeenCalledWith("/api/jobs/7/restore", { method: "POST" });
+      const names = [...el.libraryGrid.querySelectorAll(".video-filename")].map((n) => n.textContent);
+      expect(names).toEqual(["blurry.mov"]);
+      expect(el.libraryStatus.textContent).toBe('Restored "old-trip.mp4" to your library.');
+    });
+
+    it("deletes for good only once confirmed", async () => {
+      const el = await loadApp({ limits: TRASH_LIMITS });
+      await openTrash(el);
+      fetchMock.mockClear();
+      vi.spyOn(window, "confirm").mockReturnValue(false);
+
+      el.libraryGrid.querySelector(".trash-forever").dispatchEvent(new Event("click"));
+      expect(window.confirm).toHaveBeenCalledWith(
+        'Delete "old-trip.mp4" for good? This cannot be undone.',
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      window.confirm.mockReturnValue(true);
+      fetchMock.mockResolvedValueOnce({ ok: true, status: 204, json: async () => ({}) });
+      el.libraryGrid.querySelector(".trash-forever").dispatchEvent(new Event("click"));
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchMock).toHaveBeenCalledWith("/api/jobs/7/permanently", { method: "DELETE" });
+      const names = [...el.libraryGrid.querySelectorAll(".video-filename")].map((n) => n.textContent);
+      expect(names).toEqual(["blurry.mov"]);
+    });
+
+    it("goes back to the library's own list when another filter is chosen", async () => {
+      const el = await loadApp({ limits: TRASH_LIMITS });
+      await openTrash(el);
+      fetchMock.mockClear();
+      fetchMock.mockResolvedValueOnce(jsonResponse(JOBS));
+
+      el.libraryFilters.querySelector('[data-status="all"]').dispatchEvent(new Event("click"));
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/^\/api\/jobs\?limit=/));
+      expect(el.libraryGrid.querySelector(".trash-restore")).toBeNull();
+    });
+  });
 
   it("asks for confirmation before deleting, and does nothing if declined", async () => {
     const el = await loadApp();
@@ -3371,6 +3515,111 @@ describe("editor", () => {
     expect(el.editResultDownload.getAttribute("download")).toBe(EDITED.filename);
     expect(el.editResultPlayer.querySelector("video")).not.toBeNull();
     expect(el.editProgress.hidden).toBe(true);
+  });
+
+  async function finishEdit(el, { deleteStatus = 204 } = {}) {
+    mockEditFlow([EDITED]);
+    const answer = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (url, init) => {
+      if (init?.method === "DELETE") {
+        return deleteStatus === 204
+          ? new Response(null, { status: 204 })
+          : jsonResponse({ error: "boom" }, false, deleteStatus);
+      }
+      return answer(url, init);
+    });
+    el.editConvert.checked = true;
+    el.editConvert.dispatchEvent(new Event("change"));
+    submit(el);
+    await vi.advanceTimersByTimeAsync(0);
+  }
+
+  it("asks whether to keep the original once the edit is done", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+    await finishEdit(el);
+
+    expect(el.editKeep.hidden).toBe(false);
+    expect(el.editKeepQuestion.textContent).toBe('Keep "holiday.mp4" as well?');
+  });
+
+  it("keeps both without asking the server anything", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+    await finishEdit(el);
+    fetchMock.mockClear();
+
+    el.editKeepBoth.dispatchEvent(new Event("click"));
+
+    expect(el.editKeep.hidden).toBe(true);
+    expect(el.editStatus.textContent).toContain("kept both");
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+  });
+
+  it("deletes the original on request, and leaves nothing to edit", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+    await finishEdit(el);
+    window.confirm = vi.fn(() => true);
+
+    el.editDeleteOriginal.dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    // No /limits in this test: the prompt promises neither a trash nor a final delete.
+    expect(window.confirm).toHaveBeenCalledWith('Delete "holiday.mp4"?');
+    const deletes = fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE");
+    expect(deletes.map(([url]) => url)).toEqual(["/api/jobs/1"]);
+    expect(el.editKeep.hidden).toBe(true);
+    expect(el.editStatus.textContent).toContain('Deleted "holiday.mp4"');
+    expect(el.editProcess.disabled).toBe(true);
+    // The result stays: it is what the reader chose to keep.
+    expect(el.editResult.hidden).toBe(false);
+  });
+
+  it("moves the original to the trash when there is one, and says so", async () => {
+    const el = await loadApp({
+      limits: { max_duration_seconds: 600, max_edit_height: 2160, trash_retention_days: 30 },
+    });
+    await openEditor(el);
+    await finishEdit(el);
+    window.confirm = vi.fn(() => true);
+
+    el.editDeleteOriginal.dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      'Move "holiday.mp4" to the trash? It is deleted for good after 30 days.',
+    );
+    expect(el.editStatus.textContent).toBe(
+      'Moved "holiday.mp4" to the trash. The edited video is in your library.',
+    );
+  });
+
+  it("does nothing if the deletion is not confirmed", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+    await finishEdit(el);
+    window.confirm = vi.fn(() => false);
+
+    el.editDeleteOriginal.dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+    expect(el.editKeep.hidden).toBe(false);
+  });
+
+  it("says so, and offers the choice again, when the deletion fails", async () => {
+    const el = await loadApp();
+    await openEditor(el);
+    await finishEdit(el, { deleteStatus: 500 });
+    window.confirm = vi.fn(() => true);
+
+    el.editDeleteOriginal.dispatchEvent(new Event("click"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(el.editStatus.textContent).toContain('Could not delete "holiday.mp4"');
+    expect(el.editKeep.hidden).toBe(false);
+    expect(el.editDeleteOriginal.disabled).toBe(false);
   });
 
   it("warns that a converted result may not play inline", async () => {

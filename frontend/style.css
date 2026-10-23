@@ -958,6 +958,33 @@ video {
 .edit-result-head .job-filename {
   flex: 1;
 }
+/* After an edit: keep the original, or delete it. */
+.edit-keep {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+.edit-keep-question {
+  flex: 1;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.edit-keep-actions {
+  display: flex;
+  gap: 8px;
+}
+/* A ghost button that deletes: the same red the card's trash turns. */
+.btn-danger {
+  color: var(--danger);
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
 .card-edit {
   padding: 3px 10px;
   font-size: 11.5px;
@@ -1025,6 +1052,22 @@ video {
   align-items: center;
   justify-content: center;
   color: var(--text-faint);
+}
+/* An MP3 edit's card: a note where the picture would be, so it does not read
+   as a video still waiting for its poster frame. */
+.audio-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted, var(--text-faint));
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.audio-placeholder svg {
+  width: 44px;
+  height: 44px;
 }
 .video-thumb .badge {
   position: absolute;
@@ -1121,6 +1164,30 @@ video {
   transition:
     background 0.15s,
     color 0.15s;
+}
+/* The trash: a card with what it was, when it goes, and two ways out. */
+.video-card.is-trashed .video-thumb {
+  opacity: 0.55;
+}
+.badge-trash {
+  color: var(--text-muted);
+  background: var(--bg-overlay);
+}
+.trash-when {
+  margin: 4px 0 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.trash-actions {
+  display: flex;
+  gap: 8px;
+}
+.btn-danger {
+  color: var(--danger);
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
 }
 .card-delete:hover {
   background: var(--danger-soft);
