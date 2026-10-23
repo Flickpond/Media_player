@@ -2133,6 +2133,48 @@ function makeThumbImage(job) {
   return img;
 }
 
+/** An edit converted to MP3 has no picture: no poster frame, and a blank
+ *  card that looked like a video still processing. The extension is the
+ *  signal -- MP3 is only ever an edit's output, named by the worker. */
+function isAudioOnly(job) {
+  return /\.mp3$/i.test(job.filename ?? "");
+}
+
+const MUSIC_NOTE_PATHS = ["M9 18V5l12-2v13", "M9 9l12-2"];
+
+function makeAudioPlaceholder() {
+  const wrap = document.createElement("div");
+  wrap.className = "audio-placeholder";
+  // Spoken, unlike the poster frame: here the card's picture is the only
+  // thing saying this is sound, not a video.
+  wrap.setAttribute("role", "img");
+  wrap.setAttribute("aria-label", "Audio only");
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.5");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  for (const d of MUSIC_NOTE_PATHS) {
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", d);
+    svg.appendChild(path);
+  }
+  for (const [cx, cy] of [[6, 18], [18, 16]]) {
+    const circle = document.createElementNS(SVG_NS, "circle");
+    circle.setAttribute("cx", String(cx));
+    circle.setAttribute("cy", String(cy));
+    circle.setAttribute("r", "3");
+    svg.appendChild(circle);
+  }
+  const label = document.createElement("span");
+  label.textContent = "Audio";
+  wrap.append(svg, label);
+  return wrap;
+}
+
 function renderLibrary() {
   // Re-rendering throws the cards away, and a card can be holding a player.
   // Both libraries keep listeners on the element they were handed, so they
@@ -2152,7 +2194,8 @@ function renderLibrary() {
     thumb.className = "video-thumb";
     // First, so the player that expands later -- and the badge and play
     // overlay after it -- paint on top of the frame rather than under it.
-    if (job.thumbnail_url) thumb.appendChild(makeThumbImage(job));
+    if (isAudioOnly(job)) thumb.appendChild(makeAudioPlaceholder());
+    else if (job.thumbnail_url) thumb.appendChild(makeThumbImage(job));
     thumb.appendChild(makeBadge(job.status));
 
     // Playable means the API handed back something to play: the ladder or the

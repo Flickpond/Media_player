@@ -1675,6 +1675,29 @@ describe("library", () => {
     expect(el.libraryGrid.querySelector(".video-filename").textContent).toBe("holiday.mp4");
   });
 
+  it("marks an MP3 edit as audio with a note, not a blank video card", async () => {
+    const el = await loadApp();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        { id: "9", filename: "talk-edited.mp3", status: "done", output_url: "http://minio/t.mp3" },
+        { ...JOBS[0], thumbnail_url: "http://minio/thumbs/1.jpg" },
+      ]),
+    );
+
+    el.navLibrary.dispatchEvent(new Event("click"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+
+    const [audio, video] = el.libraryGrid.querySelectorAll(".video-thumb");
+    const note = audio.querySelector(".audio-placeholder");
+    expect(note.getAttribute("aria-label")).toBe("Audio only");
+    expect(note.querySelector("svg")).not.toBeNull();
+    expect(audio.querySelector(".badge")).not.toBeNull();
+    expect(audio.classList.contains("playable")).toBe(true);
+    expect(video.querySelector(".audio-placeholder")).toBeNull();
+    expect(video.querySelector(".thumb-image")).not.toBeNull();
+  });
+
   it("shows the empty state when there are no jobs at all", async () => {
     const el = await loadApp();
     fetchMock.mockResolvedValueOnce(jsonResponse([]));
