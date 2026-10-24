@@ -51,8 +51,8 @@
             <div class="eyebrow">Async video pipeline</div>
             <h1>From raw upload to a playable video.</h1>
             <p>
-              Flickpond queues, transcodes to a web-ready 720p MP4, and hosts the result —
-              automatically, with nothing to configure.
+              Flickpond queues, transcodes to an MP4 and an adaptive stream up to 4K, and hosts
+              the result — automatically, with nothing to configure.
             </p>
 
             <ol class="pipeline-timeline">
@@ -89,7 +89,7 @@
                 </span>
                 <span class="pipeline-text">
                   <strong>Transcode</strong>
-                  <span>FFmpeg re-encodes to 720p H.264 + AAC.</span>
+                  <span>FFmpeg encodes an MP4, then an HLS ladder from 360p to 2160p.</span>
                 </span>
               </li>
               <li class="pipeline-step pipeline-step-play">
@@ -190,7 +190,7 @@
         <section id="view-upload" class="view">
           <div class="view-header">
             <h1>Upload a video</h1>
-            <p class="muted">Drop a file below — we'll transcode it to 720p MP4 automatically.</p>
+            <p class="muted">Drop a file below — we'll make it streamable, up to 4K, automatically.</p>
           </div>
 
           <div id="dropzone" class="dropzone">
