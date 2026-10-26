@@ -238,11 +238,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+      # The date re-runs the Dockerfile's apt upgrade once a day; with only the
+      # layer cache, a Debian fix published after the cached build never lands.
+      - id: day
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: false
           tags: flickpond-api:ci
+          build-args: APT_REFRESH=${{ steps.day.outputs.date }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -256,11 +261,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+      - id: day
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: .
           load: true
           tags: flickpond-api:ci
+          build-args: APT_REFRESH=${{ steps.day.outputs.date }}
           cache-from: type=gha
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
