@@ -22,7 +22,13 @@ COPY migrations ./migrations
 # tone-map chain and libx264, and a probe. If removing those files ever breaks
 # what the workers run, the build fails here instead of the first job.
 # Licences (`copyright` files) are kept; the rest of /usr/share/doc goes.
-RUN apt-get update \
+#
+# APT_REFRESH is only a cache key. A cached copy of this layer keeps the
+# packages of the day it was first built, so a Debian fix published since
+# never arrives; CI passes the date, which re-runs the upgrade once a day.
+ARG APT_REFRESH=""
+RUN echo "apt refresh: ${APT_REFRESH:-not set}" \
+    && apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
