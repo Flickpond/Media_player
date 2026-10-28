@@ -7,7 +7,7 @@
 # PACKAGE_REFRESH is only a cache key, as APT_REFRESH is in the root
 # Dockerfile: CI and the core deploy pass the date, so the upgrade re-runs
 # once a day instead of being served from a cached layer.
-FROM nginx:1.30-alpine
+FROM nginx:1.31-alpine
 
 ARG PACKAGE_REFRESH=""
 RUN echo "package refresh: ${PACKAGE_REFRESH:-not set}" \
