@@ -107,8 +107,9 @@ ssh -i ~/.ssh/flickpond-staging.pem ec2-user@47.128.86.77
 cd /srv/Media_player
 sudo git fetch origin && sudo git reset --hard origin/main     # fetch first (T-20)
 sudo bash deploy/aws/fetch-secrets.sh staging                  # .env from SSM
-sudo docker compose -f docker-compose.yml -f deploy/aws/compose.aws.yml \
-  -f deploy/aws/compose.core.yml up -d --build                 # --build (T-21)
+sudo APT_REFRESH="$(date -u +%F)" docker compose \
+  -f docker-compose.yml -f deploy/aws/compose.aws.yml \
+  -f deploy/aws/compose.core.yml up -d --build                 # --build (T-21); date: fresh packages
 ```
 
 **Workers do not deploy with the core.** They boot the image the launch
