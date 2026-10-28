@@ -80,7 +80,7 @@ jobs:
       SHA: ${{ needs.decide.outputs.sha }}
       ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.decide.outputs.sha }}
           persist-credentials: false

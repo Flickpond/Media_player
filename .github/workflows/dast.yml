@@ -36,7 +36,7 @@ jobs:
     outputs:
       scan: ${{ steps.diff.outputs.scan }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: github.event_name == 'pull_request'
         with:
           # The PR merged into its base, plus both parents.
@@ -77,7 +77,7 @@ jobs:
       # Unique per run: staging keeps every account a previous scan made.
       DAST_EMAIL: dast-${{ github.run_id }}@example.com
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Choose the target
         run: |
