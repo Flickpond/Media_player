@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Empty locally; the core deploy passes the date (see the Dockerfile).
+      args:
+        APT_REFRESH: ${APT_REFRESH:-}
     image: flickpond-api:dev
     ports:
       # Loopback-bound like every other service here. The API has no
@@ -59,6 +62,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Empty locally; the core deploy passes the date (see the Dockerfile).
+      args:
+        APT_REFRESH: ${APT_REFRESH:-}
     image: flickpond-worker:dev
     # No container_name and no host ports, so `docker compose up --scale worker=2`
     # brings up interchangeable replicas sharing one queue (N2/N5).
@@ -117,6 +123,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Empty locally; the core deploy passes the date (see the Dockerfile).
+      args:
+        APT_REFRESH: ${APT_REFRESH:-}
     image: flickpond-worker:dev
     command: ["python", "-m", "app.worker.reaper"]
     environment:
@@ -160,6 +169,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Empty locally; the core deploy passes the date (see the Dockerfile).
+      args:
+        APT_REFRESH: ${APT_REFRESH:-}
     image: flickpond-worker:dev
     profiles: ["metrics"]
     entrypoint: ["python", "-m", "app.metrics.queue_depth"]
@@ -272,7 +284,12 @@ services:
     restart: unless-stopped
 
   frontend:
-    image: nginx:1.27-alpine
+    # nginx with its Alpine packages upgraded; deploy/images/nginx says why.
+    build:
+      context: deploy/images/nginx
+      args:
+        PACKAGE_REFRESH: ${APT_REFRESH:-}
+    image: flickpond-nginx:dev
     # The only service that is ever published beyond loopback. It proxies /api/
     # and /videos/ over the compose network, so nothing else needs a host port.
     # Local default stays 127.0.0.1:3000; a deployment sets FRONTEND_BIND=0.0.0.0
@@ -328,7 +345,13 @@ services:
     restart: unless-stopped
 
   certbot:
-    image: certbot/certbot:latest
+    # A pinned certbot release, cleaned of what it does not need to run;
+    # deploy/images/certbot says why.
+    build:
+      context: deploy/images/certbot
+      args:
+        PACKAGE_REFRESH: ${APT_REFRESH:-}
+    image: flickpond-certbot:dev
     # Behind a profile: a developer with no certificate has nothing to renew,
     # and should not pull this image on `docker compose up`. A deployment sets
     # COMPOSE_PROFILES=tls in .env so it starts with everything else.

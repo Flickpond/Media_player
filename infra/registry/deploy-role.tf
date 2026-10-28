@@ -31,7 +31,9 @@ resource "aws_ssm_document" "deploy_core" {
             - git -c safe.directory=/srv/Media_player fetch origin
             - git -c safe.directory=/srv/Media_player reset --hard origin/main
             - bash deploy/aws/fetch-secrets.sh staging >/dev/null
-            - docker compose -f docker-compose.yml -f deploy/aws/compose.aws.yml -f deploy/aws/compose.core.yml up -d --build
+            # The date re-runs each image's package upgrade once a day, as in
+            # CI; the host's build cache would otherwise keep the first day's.
+            - APT_REFRESH="$(date -u +%F)" docker compose -f docker-compose.yml -f deploy/aws/compose.aws.yml -f deploy/aws/compose.core.yml up -d --build
             - sleep 20
             - git -c safe.directory=/srv/Media_player log --oneline -1
             - curl -fsS https://flickpond.com/api/health

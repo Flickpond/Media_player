@@ -1,0 +1,21 @@
+# Weekly pull requests for dependencies with newer releases. Security updates
+# arrive as soon as an advisory is published, independent of this schedule.
+# Each one goes through the same CI and scans as any other pull request.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directories: ["/", "/deploy/images/nginx", "/deploy/images/certbot"]
+    schedule:
+      interval: weekly

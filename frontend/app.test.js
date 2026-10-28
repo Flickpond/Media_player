@@ -273,6 +273,11 @@ beforeEach(() => {
   fetchMock = vi.fn();
   globalThis.fetch = fetchMock;
   vi.useFakeTimers();
+  // Before the first test too, not only after each: under Vitest 5 the global
+  // URL is Node's, which has object URLs, so the first upload would otherwise
+  // wait on a <video> probe that jsdom never answers.
+  URL.createObjectURL = undefined;
+  URL.revokeObjectURL = undefined;
 });
 
 afterEach(() => {

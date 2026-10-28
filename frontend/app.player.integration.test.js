@@ -161,6 +161,10 @@ function installStubHls() {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  // Node's URL has object URLs and jsdom's never did; without this an upload
+  // waits on a <video> probe that jsdom never answers (see app.test.js).
+  URL.createObjectURL = undefined;
+  URL.revokeObjectURL = undefined;
 });
 
 afterEach(() => {
