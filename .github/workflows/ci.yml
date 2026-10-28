@@ -241,7 +241,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       # The date re-runs the Dockerfile's apt upgrade once a day; with only the
       # layer cache, a Debian fix published after the cached build never lands.
       - id: day
@@ -264,7 +264,7 @@ jobs:
     needs: build
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - id: day
         run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
@@ -293,7 +293,7 @@ jobs:
         image: [nginx, certbot]
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - id: day
         run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
