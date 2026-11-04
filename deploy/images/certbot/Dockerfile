@@ -8,7 +8,7 @@
 #
 # The final stage copies the result into one layer: a file deleted in a later
 # layer is still in the one below it, and the scanner reads it there.
-FROM certbot/certbot:v5.8.0 AS upstream
+FROM certbot/certbot:v5.9.0 AS upstream
 
 ARG PACKAGE_REFRESH=""
 RUN echo "package refresh: ${PACKAGE_REFRESH:-not set}" \
